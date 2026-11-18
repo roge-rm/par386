@@ -1,0 +1,31 @@
+#include "palm/resource.h"
+
+VERSION ID 1 kAppVersion
+
+ICONFAMILYEX
+BEGIN
+  BITMAP "../res/icon-1.bmp" BPP 1
+  BITMAP "../res/icon-2.bmp" BPP 2
+END
+
+SMALLICONFAMILYEX
+BEGIN
+  BITMAP "../res/small-1.bmp" BPP 1
+  BITMAP "../res/small-2.bmp" BPP 2
+END
+
+FORM ID MainForm AT (0 0 160 160)
+NOFRAME
+USABLE
+BEGIN
+  TITLE "Par 386"
+  LABEL "Par 386" AUTOID AT (CENTER 70) FONT 2
+END
+
+ALERT ID RomIncompatibleAlert
+ERROR
+BEGIN
+  TITLE "Par 386"
+  MESSAGE "Par 386 needs Palm OS 3.1 or newer."
+  BUTTONS "OK"
+END

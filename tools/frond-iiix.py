@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""Runs build/Par386.prc on a Palm IIIx in Frond (frond-68k, OS 3.1).
+
+Boots the ROM through setup once and keeps that launcher session in
+build/iiix/ (it holds the ROM, so it stays out of the repo). Each run starts
+from the session, installs the PRC, launches Par 386, waits and saves a
+screenshot as OUTDIR/end.png.
+
+Usage: frond-iiix.py OUTDIR [--seconds N] [--rom ROM] [--prc PRC] [--speed original|uncapped]
+"""
+import argparse
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+FROND = Path.home() / 'Projects/palm/frond'
+sys.path.insert(0, str(FROND / 'tools'))
+import palm_boot  # noqa: E402
+
+ROM = Path('build/firmware/palm/Palm/IIIx/Palm-IIIx-3.1-en.rom')
+
+
+def session_for(rom):
+    """The launcher session for a ROM, booting through setup the first time."""
+    folder = ROOT / 'build/iiix'
+    folder.mkdir(parents=True, exist_ok=True)
+    session = folder / (rom.stem + '-launcher.frond')
+    if session.is_file():
+        return session
+    core = palm_boot.Core(['--rom', rom, '--device', 'palm-iiix'], folder / 'boot-log.txt')
+    try:
+        palm_boot.iiix_setup(core, folder)
+        core.send(f'save-session "{session}"', 'wrote session', 60)
+    finally:
+        core.close()
+    return session
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument('out', type=Path)
+    p.add_argument('--seconds', type=float, default=5)
+    p.add_argument('--speed', default='original', choices=['original', 'uncapped'])
+    p.add_argument('--rom', type=Path, default=ROM)
+    p.add_argument('--prc', type=Path, default=ROOT / 'build/Par386.prc')
+    a = p.parse_args()
+    out = a.out.resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    session = session_for(a.rom)
+    core = palm_boot.Core([session, '--device', 'palm-iiix', '--speed', a.speed], out / 'core.log')
+    try:
+        core.until('speed-state', 'speed:', 'speed', 30)
+        reply = core.send(f'install "{a.prc.resolve()}"', 'install', 60)
+        if 'successful' not in reply:
+            raise SystemExit(f'install: {reply.strip()}')
+        core.launch('Par 386')
+        time.sleep(a.seconds)
+        core.frame(out / 'end.png')
+    finally:
+        core.close()
+        for f in out.glob('console-*.replay'):
+            f.unlink()
+
+
+if __name__ == '__main__':
+    main()
