@@ -5,11 +5,39 @@
 #define PLATE_Y 5
 #define PLATE_H 13
 
+/* The players screen's Back line. */
+#define BACK_LINE 4
+
+static void SEC_UI main_menu(Front *f)
+{
+	if (f->saved)
+		ui_menu_init(&f->menu, "Continue round|Play a round|Practice|Courses|Settings|Quit", 16, 34, 128, 18);
+	else
+		ui_menu_init(&f->menu, "Play a round|Practice|Courses|Settings|Quit", 22, 36, 116, 20);
+}
+
 void front_init(Front *f)
 {
 	f->screen = SCR_TITLE;
-	f->dialog = 0;
-	ui_menu_init(&f->menu, "Play a round|Practice|Courses|Settings|Quit", 22, 36, 116, 20);
+	f->dialog = DLG_NONE;
+	f->saved = 0;
+	f->players = 1;
+	f->oldSel = 0;
+	main_menu(f);
+}
+
+void front_clubhouse(Front *f, uint8_t saved)
+{
+	f->screen = SCR_MENU;
+	f->dialog = DLG_NONE;
+	f->saved = saved;
+	main_menu(f);
+}
+
+uint8_t front_action(const Front *f, uint8_t line)
+{
+	if (!f->saved) return line;
+	return line ? (uint8_t)(line - 1) : MAIN_CONTINUE;
 }
 
 uint16_t front_picture(const Front *f)
@@ -19,27 +47,64 @@ uint16_t front_picture(const Front *f)
 
 void front_draw(const Front *f, Surface *s)
 {
+	const char *plate = f->screen == SCR_PLAYERS ? "PLAYERS" : "CLUBHOUSE";
+	int16_t n;
+
 	if (f->screen == SCR_TITLE) {
 		ui_ctext(s, 80, 146, "PRESS ANY BUTTON", 16, UIC_WHITE, UIC_BLACK);
 		return;
 	}
-	ui_ctext(s, PLATE_CX + 1, PLATE_Y + (PLATE_H - UI_CHAR) / 2 + 1, "CLUBHOUSE", 9, UIC_BRASS_LT, -1);
-	ui_ctext(s, PLATE_CX, PLATE_Y + (PLATE_H - UI_CHAR) / 2, "CLUBHOUSE", 9, UIC_BRASS_DK, -1);
+	for (n = 0; plate[n]; n++) {}
+	ui_ctext(s, PLATE_CX + 1, PLATE_Y + (PLATE_H - UI_CHAR) / 2 + 1, plate, n, UIC_BRASS_LT, -1);
+	ui_ctext(s, PLATE_CX, PLATE_Y + (PLATE_H - UI_CHAR) / 2, plate, n, UIC_BRASS_DK, -1);
 	ui_menu_draw(s, &f->menu);
 	if (f->dialog)
 		ui_dialog_draw(s, &f->dlg);
 }
 
-static int open_item(Front *f, uint8_t i)
+static int SEC_UI players_screen(Front *f)
 {
+	f->screen = SCR_PLAYERS;
+	ui_menu_init(&f->menu, "1 player|2 players|3 players|4 players|Back", 22, 36, 116, 20);
+	f->menu.sel = (uint8_t)(f->players ? f->players - 1 : 0);
+	return FR_REDRAW;
+}
+
+static int SEC_UI open_item(Front *f, uint8_t i)
+{
+	if (f->screen == SCR_PLAYERS) {
+		if (i >= BACK_LINE) {
+			front_clubhouse(f, f->saved);
+			f->menu.sel = f->saved;
+			return FR_REDRAW;
+		}
+		f->players = (uint8_t)(i + 1);
+		return FR_PLAY;
+	}
+	i = front_action(f, i);
 	if (i == MAIN_QUIT) return FR_QUIT;
-	if (i == MAIN_PLAY) return FR_PLAY;
+	if (i == MAIN_CONTINUE) return FR_CONTINUE;
+	if (i == MAIN_PLAY) {
+		if (!f->saved) return players_screen(f);
+		ui_dialog_init(&f->dlg, "New round", "The saved round\nwill be lost.", "OK|Cancel");
+		f->dialog = DLG_NEW_ROUND;
+		return FR_REDRAW;
+	}
 	switch (i) {
 	case MAIN_PRACTICE: ui_dialog_init(&f->dlg, "Practice", "The range and the\ngreen come later.", "OK"); break;
 	case MAIN_COURSES: ui_dialog_init(&f->dlg, "Courses", "No courses yet.", "OK"); break;
 	default: ui_dialog_init(&f->dlg, "Settings", "Nothing to set yet.", "OK"); break;
 	}
-	f->dialog = 1;
+	f->dialog = DLG_MESSAGE;
+	return FR_REDRAW;
+}
+
+/* Button i of the open dialog was picked. */
+static int SEC_UI close_dialog(Front *f, uint8_t i)
+{
+	uint8_t d = f->dialog;
+	f->dialog = DLG_NONE;
+	if (d == DLG_NEW_ROUND && i == 0) return players_screen(f);
 	return FR_REDRAW;
 }
 
@@ -47,7 +112,7 @@ void front_message(Front *f, const char *title, const char *text)
 {
 	f->screen = SCR_MENU;
 	ui_dialog_init(&f->dlg, title, text, "OK");
-	f->dialog = 1;
+	f->dialog = DLG_MESSAGE;
 }
 
 int front_key(Front *f, uint8_t key)
@@ -66,8 +131,9 @@ int front_key(Front *f, uint8_t key)
 			if (f->dlg.count > 1) { f->dlg.sel = (uint8_t)((f->dlg.sel + 1) % f->dlg.count); return FR_REDRAW; }
 			return 0;
 		case KEY_SELECT:
-			f->dialog = 0;
-			return FR_REDRAW;
+			return close_dialog(f, f->dlg.sel);
+		case KEY_BACK:
+			return close_dialog(f, 0xFF);
 		}
 		return 0;
 	}
@@ -75,6 +141,9 @@ int front_key(Front *f, uint8_t key)
 	case KEY_UP: f->oldSel = f->menu.sel; ui_menu_move(&f->menu, -1); return FR_REDRAW | FR_LINES;
 	case KEY_DOWN: f->oldSel = f->menu.sel; ui_menu_move(&f->menu, 1); return FR_REDRAW | FR_LINES;
 	case KEY_SELECT: return open_item(f, f->menu.sel);
+	case KEY_BACK:
+		if (f->screen == SCR_PLAYERS) return open_item(f, BACK_LINE);
+		return 0;
 	}
 	return 0;
 }
@@ -90,8 +159,7 @@ int front_tap(Front *f, int16_t x, int16_t y)
 	if (f->dialog) {
 		i = ui_dialog_hit(&f->dlg, x, y);
 		if (i < 0) return 0;
-		f->dialog = 0;
-		return FR_REDRAW;
+		return close_dialog(f, (uint8_t)i);
 	}
 	i = ui_menu_hit(&f->menu, x, y);
 	if (i < 0) return 0;

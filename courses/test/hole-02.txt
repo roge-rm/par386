@@ -1,0 +1,11 @@
+# A par 3 over the pond from a tee south of it, to hole 1's green.
+from hole-01.txt
+name Pond Carry
+par 3
+aim 140 405
+
+tee Blue 150 207
+tee White 150 211
+tee Red 150 215
+
+rect tee 145 203 155 219

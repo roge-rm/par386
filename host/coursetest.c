@@ -224,7 +224,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	CHECK(strcmp(a.name, "Par386 Test") == 0);
-	CHECK(a.count == 2);
+	CHECK(a.count == 4);
 
 	/* Round trip through the dump. */
 	CHECK(a.count == b.count);
@@ -234,9 +234,10 @@ int main(int argc, char **argv)
 	/* Course header. */
 	CHECK(course_parse(&c, a.rec[0], a.len[0]) == HOLE_OK);
 	CHECK(strcmp(c.name, "Test") == 0);
-	CHECK(c.hole_count == 1 && c.tee_count == 3);
+	CHECK(c.hole_count == 3 && c.tee_count == 3);
 	CHECK(strcmp(c.tee_names[0], "Blue") == 0 && strcmp(c.tee_names[2], "Red") == 0);
 	CHECK(c.par[0] == 4 && c.yards[0] == 413);
+	CHECK(c.par[1] == 3 && c.par[2] == 5 && c.yards[2] > 470);
 
 	/* Hole fields. */
 	CHECK(hole_parse(&h, a.rec[1], a.len[1]) == HOLE_OK);
@@ -317,6 +318,33 @@ int main(int argc, char **argv)
 	bad[16] = 0xFF;    /* aim off the hole */
 	CHECK(hole_parse(&h, bad, a.len[1]) == HOLE_ERR_VALUE);
 	free(bad);
+	/* Holes 2 and 3, made from hole 1 with "from": a par 3 over the pond from
+	 * its own tee, and a par 5 on past the old green, now fairway. */
+	CHECK(hole_parse(&h, a.rec[2], a.len[2]) == HOLE_OK);
+	CHECK(h.number == 2 && h.par == 3 && strcmp(h.name, "Pond Carry") == 0);
+	CHECK(h.tee_count == 3 && h.tees[0].pos.x == Y(150) && h.tees[0].pos.y == Y(207));
+	CHECK(h.tees[0].yards > 185 && h.tees[0].yards < 205);
+	CHECK(h.aim.x == Y(140) && h.aim.y == Y(405) && h.shape_count == 14 && h.object_count == 18);
+	surface_size(&h, &g);
+	rows_seen = rows_bad = 0;
+	surface_raster(&h, row, put_row, &g);
+	g.cells = grid;
+	CHECK(rows_bad == 0);
+	CHECK(at(&g, 150, 207) == SURF_TEE && at(&g, 140, 405) == SURF_GREEN && at(&g, 135, 235) == SURF_WATER);
+	CHECK(hole_parse(&h, a.rec[3], a.len[3]) == HOLE_OK);
+	CHECK(h.number == 3 && h.par == 5 && h.length == 500 && h.tees[0].pos.y == Y(12));
+	CHECK(h.object_count == 19);
+	surface_size(&h, &g);
+	CHECK(g.h == 250);
+	rows_seen = rows_bad = 0;
+	surface_raster(&h, row, put_row, &g);
+	g.cells = grid;
+	CHECK(rows_bad == 0 && rows_seen == 250);
+	for (i = 0; i < HOLE_PINS; i++)
+		CHECK(surface_at(&g, h.pins[i].x, h.pins[i].y) == SURF_GREEN);
+	CHECK(at(&g, 140, 405) == SURF_FAIRWAY && at(&g, 145, 445) == SURF_FAIRWAY);
+	CHECK(at(&g, 158, 420) == SURF_BUNKER && at(&g, 5, 470) == SURF_OOB);
+
 	fuzz(a.rec[0], a.len[0], 0);
 	fuzz(a.rec[1], a.len[1], 1);
 

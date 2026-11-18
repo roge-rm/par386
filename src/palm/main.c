@@ -36,9 +36,14 @@ static UInt32 gHeapStart;      /* free dynamic heap at launch */
  * dynamic heap. */
 #define kScratchName "Par386 Scratch"
 #define kCreator     'P386'
+#define kCourseName  "Par386 Test"
+/* The saved round: record 0, written by rules_pack. */
+#define kSaveName    "Par386 Save"
+#define kSaveType    'Save'
 #define PIC_SCENE    0xFFFF     /* gBgPic when gBg holds the scene */
 static Boolean gPlaying;
 static Play gPlay;
+static Round gRound;
 static Hole gHole;
 static SurfaceGrid gGrid;
 static DmOpenRef gCourseDb, gScratchDb;
@@ -264,6 +269,7 @@ static UInt8 MapKey(const EventType *e)
 		return KEY_SELECT;
 	}
 	if (e->data.keyDown.modifiers & commandKeyMask) return KEY_NONE;
+	if (c == 'c' || c == 'C' || c == 's' || c == 'S') return KEY_CARD;
 	return c >= 32 && c < 256 ? KEY_OTHER : KEY_NONE;
 }
 
@@ -343,36 +349,163 @@ static void PlayEnd(void)
 	gPlaying = false;
 }
 
-/* Opens hole 1 of the test course and draws its surface grid into the scratch record. */
-static Boolean PlayStart(void)
+static void DeleteSave(void)
 {
-	LocalID id = DmFindDatabase(0, "Par386 Test");
+	LocalID id = DmFindDatabase(0, kSaveName);
+	if (id) DmDeleteDatabase(0, id);
+}
+
+/* Saves the round, as it will be after any shot in the air lands, or
+ * deletes the save once the round is over. */
+static void SaveRound(void)
+{
+	LocalID id;
+	DmOpenRef db;
+	MemHandle h;
+	UInt8 *buf;
+	UInt16 len, at = 0;
+	Boolean ok = false;
+
+	if (!gPlaying) return;
+	play_settle(&gPlay);
+	if (gRound.over) {
+		DeleteSave();
+		return;
+	}
+	if ((buf = MemPtrNew(RULES_SAVE_MAX)) == NULL) return;
+	len = rules_pack(&gRound, buf);
+	if ((id = DmFindDatabase(0, kSaveName)) == 0) {
+		if (DmCreateDatabase(0, kSaveName, kCreator, kSaveType, false) == errNone) {
+			id = DmFindDatabase(0, kSaveName);
+			if (id) {
+				UInt16 attr;
+				DmDatabaseInfo(0, id, NULL, &attr, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+				attr |= dmHdrAttrBackup;
+				DmSetDatabaseInfo(0, id, NULL, &attr, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+			}
+		}
+	}
+	if (id && (db = DmOpenDatabase(0, id, dmModeReadWrite)) != 0) {
+		if (DmNumRecords(db) == 0) h = DmNewRecord(db, &at, len);
+		else h = DmResizeRecord(db, 0, len) ? DmGetRecord(db, 0) : NULL;
+		if (h) {
+			ok = DmWrite(MemHandleLock(h), 0, buf, len) == errNone;
+			MemHandleUnlock(h);
+			DmReleaseRecord(db, 0, true);
+		}
+		DmCloseDatabase(db);
+	}
+	/* a save that couldn't be written is removed, not left to resume an older state */
+	if (!ok) DeleteSave();
+	MemPtrFree(buf);
+}
+
+/* Reads the course header from record 0 of an open course database. */
+static Boolean CourseHeader(DmOpenRef db, Course *c)
+{
+	MemHandle h = DmQueryRecord(db, 0);
+	Boolean ok;
+
+	if (!h) return false;
+	ok = course_parse(c, MemHandleLock(h), MemHandleSize(h)) == HOLE_OK && DmNumRecords(db) > c->hole_count;
+	MemHandleUnlock(h);
+	return ok;
+}
+
+/* Reads the saved round into r. False if there's none, it's of another
+ * version or broken, or its course is gone or has changed. */
+static Boolean LoadSave(Round *r)
+{
+	LocalID id = DmFindDatabase(0, kSaveName);
+	DmOpenRef db;
+	MemHandle h;
+	Course c;
+	Boolean ok = false;
+	UInt8 k;
+
+	if (!id || (db = DmOpenDatabase(0, id, dmModeReadOnly)) == 0) return false;
+	if ((h = DmQueryRecord(db, 0)) != NULL) {
+		ok = rules_unpack(r, MemHandleLock(h), MemHandleSize(h)) == 0 && !r->over;
+		MemHandleUnlock(h);
+	}
+	DmCloseDatabase(db);
+	if (!ok) return false;
+	if ((id = DmFindDatabase(0, r->course)) == 0 || (db = DmOpenDatabase(0, id, dmModeReadOnly)) == 0) return false;
+	ok = CourseHeader(db, &c) && c.hole_count == r->holes;
+	for (k = 0; ok && k < r->holes; k++)
+		if (c.par[k] != r->pars[k]) ok = false;
+	DmCloseDatabase(db);
+	return ok;
+}
+
+/* Hole n (from 1) of the open course: parses it, keeping its record
+ * locked, and draws its surface grid into record 0 of the scratch database
+ * in place of the last hole's. */
+static Boolean LoadHole(UInt16 n)
+{
 	MemHandle h;
 	UInt16 at = 0;
 	UInt8 row[SURF_ROW_MAX];
 
-	if (!id || (gCourseDb = DmOpenDatabase(0, id, dmModeReadOnly)) == 0) return false;
-	if ((h = DmQueryRecord(gCourseDb, 1)) == NULL) return false;
+	if (gGridH) {
+		MemHandleUnlock(gGridH);
+		DmRemoveRecord(gScratchDb, 0);
+		gGridH = NULL;
+	}
+	if (gHoleH) MemHandleUnlock(gHoleH);
+	gHoleH = NULL;
+	if ((h = DmQueryRecord(gCourseDb, n)) == NULL) return false;
 	gHoleH = h;
 	if (hole_parse(&gHole, MemHandleLock(h), MemHandleSize(h)) != HOLE_OK) return false;
 	surface_size(&gHole, &gGrid);
-	if ((id = DmFindDatabase(0, kScratchName)) != 0) DmDeleteDatabase(0, id);
-	if (DmCreateDatabase(0, kScratchName, kCreator, 'Tmp ', false) != errNone) return false;
-	if ((id = DmFindDatabase(0, kScratchName)) == 0) return false;
-	if ((gScratchDb = DmOpenDatabase(0, id, dmModeReadWrite)) == 0) return false;
 	if ((h = DmNewRecord(gScratchDb, &at, (UInt32)gGrid.stride * gGrid.h)) == NULL) return false;
 	surface_raster(&gHole, row, GridRow, MemHandleLock(h));
 	MemHandleUnlock(h);
 	DmReleaseRecord(gScratchDb, at, true);
 	gGridH = h;
 	gGrid.cells = MemHandleLock(h);
+	return true;
+}
+
+/* Opens the course and the scratch database and starts the round's hole:
+ * the saved round if resume, else a new one on the test course for the
+ * players picked in the clubhouse, saved straight away. */
+/* Set by PlayStart(true) when the saved round itself can't be used. */
+static Boolean gSaveBad;
+
+static Boolean PlayStart(Boolean resume)
+{
+	LocalID id;
+	Course c;
+	UInt32 seed;
+
+	if (resume) {
+		gSaveBad = !LoadSave(&gRound);
+		if (gSaveBad) return false;
+	} else {
+		if ((id = DmFindDatabase(0, kCourseName)) == 0 || (gCourseDb = DmOpenDatabase(0, id, dmModeReadOnly)) == 0)
+			return false;
+		if (!CourseHeader(gCourseDb, &c)) return false;
+		DmCloseDatabase(gCourseDb);
+		gCourseDb = 0;
 #ifdef PLAY_SEED
-	/* a fixed wind, for Frond replays that play the hole through */
-	play_init(&gPlay, &gHole, &gGrid, PLAY_SEED);
+		/* a fixed wind, for Frond replays that play the holes through */
+		seed = PLAY_SEED;
 #else
-	play_init(&gPlay, &gHole, &gGrid, TimGetSeconds());
+		seed = TimGetSeconds();
 #endif
+		rules_init(&gRound, kCourseName, gFront.players, c.hole_count, c.par, seed);
+	}
+	if ((id = DmFindDatabase(0, gRound.course)) == 0 || (gCourseDb = DmOpenDatabase(0, id, dmModeReadOnly)) == 0)
+		return false;
+	if ((id = DmFindDatabase(0, kScratchName)) != 0) DmDeleteDatabase(0, id);
+	if (DmCreateDatabase(0, kScratchName, kCreator, 'Tmp ', false) != errNone) return false;
+	if ((id = DmFindDatabase(0, kScratchName)) == 0) return false;
+	if ((gScratchDb = DmOpenDatabase(0, id, dmModeReadWrite)) == 0) return false;
+	if (!LoadHole(gRound.hole + 1)) return false;
+	play_start(&gPlay, &gHole, &gGrid, &gRound);
 	gPlaying = true;
+	if (!resume) SaveRound();
 	return true;
 }
 
@@ -430,6 +563,19 @@ static void ShowRect(const URect *d)
 
 static void SceneRender(void);
 
+/* Shows the strip saying whose turn it is while the scene draws. */
+static void TurnStrip(void)
+{
+	URect u;
+
+	play_turn(&gS, &gPlay);
+	u.x = 0;
+	u.y = (160 - RENDER_STATUS) * gS.scale;
+	u.w = gS.w;
+	u.h = RENDER_STATUS * gS.scale;
+	ShowRect(&u);
+}
+
 #ifdef DEBUG
 /* Notes the physics time when a click (or the meter running out) started the flight or putt. */
 static void SimTime(UInt8 before, UInt32 t0)
@@ -452,6 +598,7 @@ static void PlayFrame(void)
 	f = play_frame(&gPlay, &gS, gBg && gBgPic == PIC_SCENE ? &gBgS : NULL, NowMs());
 	if (f & PL_RENDER) {
 		/* the next shot, or aimed off the side: SceneRender comes back here once it's drawn */
+		if (f & PL_TURN) TurnStrip();
 		SceneRender();
 		return;
 	}
@@ -480,14 +627,16 @@ static void PlayStatus(void)
 #ifdef DEBUG
 	char t[32];
 	UInt32 tps = SysTicksPerSecond();
-	StrPrintF(t, "S%lu M%lu F%lu P%lu", gDrawTicks * 1000 / tps,
-	          gMtrN ? gMtrTicks * 10000 / tps / gMtrN : 0,
-	          gFlyN ? gFlyTicks * 10000 / tps / gFlyN : 0, gSimTicks * 1000 / tps);
-	play_status(&gS, &gPlay, t);
+	play_status(&gS, &gPlay, NULL);
 	StrPrintF(t, "m%lu %luK u%luK", gMapTicks * 1000 / tps, gMinFree >> 10,
 	          gHeapStart > gMinFree ? (gHeapStart - gMinFree) >> 10 : 0);
 	gfx_fill(&gS, 0, 0, (Int16)(StrLen(t) * 8 * gS.scale), 8 * gS.scale, UIC_BLACK);
 	gfx_text(&gS, 0, 0, t, StrLen(t), UIC_WHITE);
+	StrPrintF(t, "S%lu M%lu F%lu P%lu", gDrawTicks * 1000 / tps,
+	          gMtrN ? gMtrTicks * 10000 / tps / gMtrN : 0,
+	          gFlyN ? gFlyTicks * 10000 / tps / gFlyN : 0, gSimTicks * 1000 / tps);
+	gfx_fill(&gS, 0, 8 * gS.scale, (Int16)(StrLen(t) * 8 * gS.scale), 8 * gS.scale, UIC_BLACK);
+	gfx_text(&gS, 0, 8 * gS.scale, t, StrLen(t), UIC_WHITE);
 #else
 	play_status(&gS, &gPlay, NULL);
 #endif
@@ -559,10 +708,31 @@ static void PlayAct(int f)
 	RectangleType r = { { 0, 0 }, { 160, 160 } };
 
 	if (f & PL_BACK) {
+		/* the round is kept to continue, unless it's over */
 		gAnim = false;
+		SaveRound();
 		PlayEnd();
-		gFront.screen = SCR_MENU;
+		front_clubhouse(&gFront, !gRound.over);
 		Redraw();
+	} else if (f & PL_NEXT) {
+		gAnim = false;
+		if (!LoadHole(gRound.hole + 1)) {
+			PlayEnd();
+			front_clubhouse(&gFront, 0);
+			front_message(&gFront, "No hole", "The course can't\nbe read.");
+			Redraw();
+			return;
+		}
+		play_start(&gPlay, &gHole, &gGrid, &gRound);
+		TurnStrip();
+		SceneRender();
+	} else if (f & PL_CARD) {
+		/* over the kept scene; saved when it opens at the end of a hole */
+		gAnim = false;
+		if (gBg && gBgPic == PIC_SCENE) WinCopyRectangle(gBg, gOff, &r, 0, 0, winPaint);
+		play_card(&gS, &gPlay);
+		Show();
+		if (gPlay.card != CARD_VIEW) SaveRound();
 	} else if (f & PL_MAP) {
 #ifdef DEBUG
 		UInt32 t0 = TimGetTicks();
@@ -578,6 +748,7 @@ static void PlayAct(int f)
 		WinCopyRectangle(gBg, gOff, &r, 0, 0, winPaint);
 		PlayFrame();
 	} else if (f & (PL_SCENE | PL_RENDER)) {
+		if (f & PL_TURN) TurnStrip();
 		SceneRender();
 	} else {
 		PlayFrame();
@@ -601,11 +772,25 @@ static void PlayInput(Boolean tap, Int16 x, Int16 y, UInt8 key)
 
 static void Act(int r)
 {
-	if (r & FR_PLAY) {
-		if (PlayStart()) {
+	if (r & (FR_PLAY | FR_CONTINUE)) {
+		if (PlayStart((r & FR_CONTINUE) != 0)) {
+			TurnStrip();
 			SceneRender();
+		} else if ((r & FR_CONTINUE) && gSaveBad) {
+			PlayEnd();
+			DeleteSave();
+			front_clubhouse(&gFront, 0);
+			front_message(&gFront, "Can't continue", "The saved round's\ncourse is missing.");
+			Redraw();
+		} else if (r & FR_CONTINUE) {
+			/* the save is fine, there wasn't the memory to open the hole */
+			PlayEnd();
+			front_clubhouse(&gFront, 1);
+			front_message(&gFront, "Out of memory", "Free some storage\nand try again.");
+			Redraw();
 		} else {
 			PlayEnd();
+			front_clubhouse(&gFront, LoadSave(&gRound));
 			front_message(&gFront, "No course", "Install\nPar386-Test.pdb\nand try again.");
 			Redraw();
 		}
@@ -702,10 +887,16 @@ UInt32 PilotMain(UInt16 cmd, void *cmdPBP, UInt16 launchFlags)
 	DebugCoreCheck();
 #endif
 	front_init(&gFront);
+	front_clubhouse(&gFront, LoadSave(&gRound));
+	gFront.screen = SCR_TITLE;
 	FrmGotoForm(MainForm);
 	EventLoop();
 	FrmCloseAllForms();
-	if (gPlaying) PlayEnd();
+	/* leaving mid-round saves it */
+	if (gPlaying) {
+		SaveRound();
+		PlayEnd();
+	}
 	ScreenClose();
 	return 0;
 }

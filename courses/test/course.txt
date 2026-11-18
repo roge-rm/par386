@@ -1,6 +1,7 @@
-# Par 386 test course: one hole for the tests.
+# Par 386 test course: three holes for the tests, the second and third made
+# from the first (hole-01 is the one the render and physics tests use).
 name Test
 tee Blue
 tee White
 tee Red
-holes 1
+holes 3

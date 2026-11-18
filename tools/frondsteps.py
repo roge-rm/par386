@@ -5,7 +5,8 @@ scaled to the device), wait:1.5 or snap:menu (saves OUTDIR/menu.png).
 replay:FILE sends a Frond input replay (lines of MS COMMAND ARGS, with
 {out} standing for OUTDIR and {n} for how many replays have run, from 1)
 and waits for its last line, for taps that need
-exact timing such as the swing meter.
+exact timing such as the swing meter. launch:NAME launches an app by its
+database name, which leaves the one running.
 """
 import time
 
@@ -27,6 +28,8 @@ def run(core, out, steps, scale=1):
                      for l in open(arg).read().splitlines() if l.strip() and not l.startswith('#')]
             core.replay(out, lines)
             time.sleep(int(lines[-1].split()[0]) / 1000 + 0.5)
+        elif kind == 'launch':
+            core.launch(arg)
         elif kind == 'snap':
             core.frame(out / f'{arg}.png')
         else:

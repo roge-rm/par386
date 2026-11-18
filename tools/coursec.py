@@ -121,17 +121,50 @@ def ellipse(where, args, hole):
     return [(round(x * 4), round(y * 4)) for x, y in pts]
 
 
+SINGLE = ("name", "par", "size", "heightmap", "height", "base", "aim")
+SHAPES = ("poly", "rect", "ellipse")
+
+
+def hole_lines(folder, name, depth=0):
+    """A hole file's lines as (where, words). A first line "from FILE" starts
+    from another hole file: a name, par, size, heightmap, height, base or aim
+    line here takes the place of the other's, tee, pin and object lines here
+    take the place of all of its of that kind, and shapes here go after its
+    shapes, so they can paint over them."""
+    path = os.path.join(folder, name)
+    lines = [("%s:%d" % (path, n), w) for n, w in read_lines(path)]
+    if not lines or lines[0][1][0] != "from":
+        return lines
+    where, w = lines[0]
+    if len(w) != 2:
+        fail(where, "from FILE")
+    if depth > 4:
+        fail(where, "from goes round in a loop")
+    base, own = hole_lines(folder, w[1], depth + 1), lines[1:]
+    have = set(l[1][0] for l in own)
+    keep = []
+    for l in base:
+        k = l[1][0]
+        if k in SHAPES or k not in have:
+            keep.append(l)
+    shapes = [l for l in own if l[1][0] in SHAPES]
+    # the base's shapes, then this file's, then everything else
+    out = [l for l in keep if l[1][0] in SHAPES] + shapes
+    out += [l for l in keep if l[1][0] not in SHAPES] + [l for l in own if l[1][0] not in SHAPES]
+    return out
+
+
 def read_hole(folder, number_, course):
     path = os.path.join(folder, "hole-%02d.txt" % number_)
     h = {"name": "", "par": None, "width": None, "length": None, "heightmap": None,
          "base": 0.0, "step": 1 / 16, "surface": 0, "aim": None, "tees": [], "pins": [],
          "shapes": [], "objects": []}
-    lines = read_lines(path)
+    lines = hole_lines(folder, "hole-%02d.txt" % number_)
     # Size first, as points are checked against it.
-    for n, w in lines:
+    for where, w in lines:
         if w[0] == "size":
             if len(w) != 3:
-                fail("%s:%d" % (path, n), "size WIDTH LENGTH")
+                fail(where, "size WIDTH LENGTH")
             h["width"], h["length"] = int(number(path, w[1])), int(number(path, w[2]))
     if h["width"] is None:
         fail(path, "needs a size line")
@@ -142,8 +175,7 @@ def read_hole(folder, number_, course):
     def point(where, xs, ys):
         return (quarter(where, xs, W), quarter(where, ys, L))
 
-    for n, w in lines:
-        where = "%s:%d" % (path, n)
+    for where, w in lines:
         key, args = w[0], w[1:]
         if key == "size":
             continue

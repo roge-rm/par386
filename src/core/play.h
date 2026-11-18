@@ -14,8 +14,10 @@
 #include "render.h"
 #include "front.h"
 #include "ball.h"
+#include "rules.h"
+#include "card.h"
 
-enum { PLAY_SCENE, PLAY_MAP };
+enum { PLAY_SCENE, PLAY_MAP, PLAY_CARD };
 
 /* Where the shot is at. */
 enum { PS_AIM, PS_UP, PS_DOWN, PS_FLY, PS_RESULT, PS_DONE };
@@ -27,6 +29,9 @@ enum { PS_AIM, PS_UP, PS_DOWN, PS_FLY, PS_RESULT, PS_DONE };
 #define PL_BACK   8     /* back to the clubhouse */
 #define PL_DIRTY  16    /* copy the dirty rectangle to the screen */
 #define PL_ANIM   32    /* call play_frame again soon */
+#define PL_CARD   64    /* put back the kept scene and draw the scorecard over it (play_card) */
+#define PL_NEXT   128   /* load the round's hole and play_start it */
+#define PL_TURN   256   /* another player's turn: show play_turn while the scene draws */
 
 #define PLAY_PATCHES 16 /* overlay patches drawn over the scene */
 
@@ -70,11 +75,23 @@ typedef struct {
 	int16_t shown;              /* path point drawn last, -1 for none */
 	uint8_t have_shot;
 	char msg1[21], msg2[21];
+	/* the round, or 0 for a hole played alone */
+	Round *round;
+	uint8_t cur;                /* the player whose shot it is */
+	uint8_t card, page, csel;   /* the scorecard's CARD_* mode, its page and button */
+	uint8_t card_from;          /* the view it was opened from, PLAY_SCENE or PLAY_MAP */
 	Shot shot;
 } Play;
 
-/* seed sets the wind, as from the time the round started. */
+/* A hole on its own with one player, from the tee. seed sets the wind, as
+ * from the time the round started. */
 void SEC_UI play_init(Play *p, const Hole *h, const SurfaceGrid *g, uint32_t seed);
+/* The round's hole h: the player whose turn it is, from where their ball
+ * lies. The round mustn't be over or have everyone holed. */
+void SEC_UI play_start(Play *p, const Hole *h, const SurfaceGrid *g, Round *r);
+/* Before the round is saved and play left: a shot in the air counts where
+ * it ends up, and a finished hole moves the round on to the next. */
+void SEC_UI play_settle(Play *p);
 int SEC_UI play_key(Play *p, uint8_t key, uint32_t now);
 /* x and y in logical units. */
 int SEC_UI play_tap(Play *p, int16_t x, int16_t y, uint32_t now);
@@ -83,8 +100,14 @@ int SEC_UI play_tap(Play *p, int16_t x, int16_t y, uint32_t now);
  * there's none). Call after PL_RENDER or PL_SCENE, and while PL_ANIM is set. */
 int SEC_UI play_frame(Play *p, Surface *s, const Surface *bg, uint32_t now);
 /* The status strip on the map: hole, par and yards, and a second line of
- * text if info isn't 0. */
+ * text if info isn't 0 (the hole's name if it is), with the Card button in
+ * a round. */
 void SEC_UI play_status(Surface *s, const Play *p, const char *info);
+/* The strip while the scene is drawn for a new turn or hole: the hole, and
+ * who plays. */
+void SEC_UI play_turn(Surface *s, const Play *p);
+/* The scorecard, over whatever is on s. */
+void SEC_UI play_card(Surface *s, const Play *p);
 /* The hole map with the yardage by the aim line and the last shot's path. */
 void SEC_UI play_map(Surface *s, const Play *p);
 /* Writes v in decimal at t, returns the length. */

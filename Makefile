@@ -10,6 +10,7 @@
 #   make render-test draws the test hole from 3 places and compares with host/ref/
 #   make render-ref  makes host/ref/ again from the current renderer
 #   make physics-test plays shots on the host and checks carries, wind, lies, water and the meter
+#   make rules-test  turn order, honour, scores, the scorecard and the saved round
 # Both flavours write build/Par386.prc, so build one at a time.
 
 SDK      = ../palm-os-sdk/sdk-5r3
@@ -29,7 +30,7 @@ CFLAGS   = -O2 -Wall -Wno-unknown-pragmas $(DEFS) $(INCLUDES) -Isrc/core -Isrc/p
 LDFLAGS  = -L$(SDK)/lib/m68k-palmos-coff
 
 PALMSRCS = main
-CORESRCS = fixed trig vec hole gfx ui front render play ball
+CORESRCS = fixed trig vec hole gfx ui front render play ball rules card
 OBJS     = $(addprefix $(BUILD)/,$(addsuffix .o,$(PALMSRCS) $(CORESRCS)))
 
 all: build/$(PRC)
@@ -97,6 +98,7 @@ host-test: build/hosttest
 	$(MAKE) ui-test
 	$(MAKE) render-test
 	$(MAKE) physics-test
+	$(MAKE) rules-test
 
 build/hosttest: host/hosttest.c $(HOSTSRC) src/core/*.h | $(BUILD)
 	$(HOSTCC) host/hosttest.c $(HOSTSRC) -lm -o $@
@@ -165,6 +167,17 @@ physics-test: build/physicstest build/courses/Par386-Test.pdb
 	build/physicstest build/courses/Par386-Test.pdb build/physics
 	python3 tools/topng.py build/physics $(DEBUGDIR)/m6 host-
 
+build/rulestest: host/rulestest.c $(HOSTSRC) src/core/*.h | $(BUILD)
+	$(HOSTCC) host/rulestest.c $(HOSTSRC) -lm -o $@
+
+# Turn order, the honour, scores and totals, the saved round's record, two
+# players through play.c on the test course, and the scorecard and players
+# screen at 160 and 320 to $(DEBUGDIR)/m7/host-*.png.
+rules-test: build/rulestest build/courses/Par386-Test.pdb $(ART)/art.rcp
+	rm -rf build/rules && mkdir -p build/rules $(DEBUGDIR)/m7
+	build/rulestest build/courses/Par386-Test.pdb $(ART) build/rules
+	python3 tools/topng.py build/rules $(DEBUGDIR)/m7 host-
+
 tables:
 	python3 tools/mktrig.py
 	python3 tools/mkfont.py
@@ -173,4 +186,4 @@ tables:
 clean:
 	rm -rf build
 
-.PHONY: all release clean host-test course-test ui-test render-test render-ref physics-test courses tables art
+.PHONY: all release clean host-test course-test ui-test render-test render-ref physics-test rules-test courses tables art

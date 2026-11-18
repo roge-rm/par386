@@ -1,0 +1,41 @@
+# A par 5: hole 1 played on past its green to a new one at the far end.
+from hole-01.txt
+name Long Road
+par 5
+size 200 500
+
+pin 150 472
+pin 145 464
+pin 155 480
+pin 147 482
+
+# the old green and fringe mown as fairway on to the new green, its bunkers kept
+ellipse fairway 140 405 19 22 16
+poly fairway 128,368 162,366 160,440 156,452 140,452 132,446
+ellipse bunker 120 391 6 9 10 30
+ellipse bunker 158 420 7 5 10
+rect deep-rough 10 440 24 500
+rect oob 0 440 10 500
+ellipse fringe 150 472 17 20 16
+ellipse green 150 472 13 16 16
+ellipse bunker 172 465 5 8 10
+
+object pine 16 60 0 72
+object pine 18 95 1 64
+object tree 15 130 0 80
+object pine 19 165 2 64
+object tree 16 200 1 70
+object pine 18 270 0 64
+object tree 15 310 2 90
+object pine 20 350 1 64
+object tree 40 380 0 80
+object tree 108 180 0 90
+object tree 118 192 1 80
+object pine 104 205 0 72
+object tree 126 170 2 70
+object bush 112 252 0 64
+object tree 182 430 1 80
+object pine 184 400 0 64
+object rock 160 252 0 48
+object pine 118 490 0 72
+object tree 188 482 1 80
