@@ -18,8 +18,6 @@ FORM ID MainForm AT (0 0 160 160)
 NOFRAME
 USABLE
 BEGIN
-  TITLE "Par 386"
-  LABEL "Par 386" AUTOID AT (CENTER 70) FONT 2
 END
 
 ALERT ID RomIncompatibleAlert
@@ -27,5 +25,13 @@ ERROR
 BEGIN
   TITLE "Par 386"
   MESSAGE "Par 386 needs Palm OS 3.1 or newer."
+  BUTTONS "OK"
+END
+
+ALERT ID ScreenAlert
+ERROR
+BEGIN
+  TITLE "Par 386"
+  MESSAGE "Par 386 couldn't set up the screen. Try closing other apps first."
   BUTTONS "OK"
 END

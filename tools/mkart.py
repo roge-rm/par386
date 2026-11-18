@@ -1,0 +1,327 @@
+#!/usr/bin/env python3
+"""Makes the title and menu pictures and packs them for the Palm.
+
+Draws both screens with the mockup scripts (tools/mockup/mock1b2.py) over the
+rendered course scene (tools/mockup/r/scene_bg_960.png, from render.py) and
+the address frame of the golfer, then writes:
+  OUT/Pic2-ID.bin   160x160, 4 greys: flat greys by region, ordered dither between
+  OUT/Pic8-ID.bin   320x320, 8 bits, Floyd-Steinberg on the game palette
+  OUT/Pal8-1000.bin the 256 colour palette, RGB
+  OUT/art.rcp       PilRC DATA lines for all of them
+and pictures of each to PREVIEW if given. Each picture is split into bands of
+rows (resource ID, ID + 1, ...) packed with PackBits, so no resource gets near
+64 KB. Band layout is in src/core/gfx.h.
+
+Text the game draws itself (PRESS ANY BUTTON, the plate's name, the menu
+lines) isn't in the pictures.
+
+Usage: mkart.py OUT [PREVIEW]
+"""
+import os
+import re
+import struct
+import sys
+from pathlib import Path
+
+from PIL import Image, ImageDraw, ImageFilter
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+MOCK = HERE / 'mockup'
+SCENE = MOCK / 'r/scene_bg_960.png'
+GOLFER = ROOT / 'art/golfer/f01-40.png'   # address pose, from tools/golfer/
+PIC_TITLE, PIC_MENU = 1000, 1100
+BAND_ROWS = {2: 160, 8: 64}
+
+
+def load_mockup():
+    """The drawing functions of mock1b2.py, without its main part."""
+    src = (MOCK / 'mock1b2.py').read_text()
+    src = src.replace("exec(_src[:_src.index('# 16-colour')])", "exec(_src[:_src.index('# 16-colour')], globals())")
+    ns = {'__file__': str(MOCK / 'mock1b2.py'), '__name__': 'mock1b2'}
+    exec(src[:src.index('out = sys.argv[1]')], ns)
+    return ns
+
+
+def ui_colours():
+    """(r, g, b) of each UI colour in src/core/uicol.h, in order."""
+    text = (ROOT / 'src/core/uicol.h').read_text()
+    return [tuple(int(v) for v in m) for m in re.findall(r'X\(UIC_\w+,\s*(\d+),\s*(\d+),\s*(\d+),\s*\d+\)', text)]
+
+
+def title(m, S):
+    c = m['C'](S)
+    scene = Image.open(SCENE).convert('RGB').resize((c.N, c.N), Image.LANCZOS)
+    c.img.paste(scene)
+    # Golfer at address, on the tee at the bottom centre, with a soft shadow; doubled on 320 screens.
+    g = Image.open(GOLFER).convert('RGBA')
+    if S > 1:
+        g = g.resize((g.width * S, g.height * S), Image.NEAREST)
+    feet_x, feet_y = 50 * S, 141 * S
+    sh = Image.new('L', (c.N, c.N))
+    ImageDraw.Draw(sh).ellipse([feet_x - 2 * S, feet_y - 3 * S, feet_x + g.width + 4 * S, feet_y + 2 * S], fill=130)
+    sh = sh.filter(ImageFilter.GaussianBlur(1.2 * S))
+    c.img.paste((10, 30, 10), (0, 0), sh)
+    c.img.paste(g, (feet_x, feet_y - g.height), g)
+    c.px = c.img.load()
+    c.d = ImageDraw.Draw(c.img)
+    yb = m['logo'](c, y=4, size=28)
+    m['ribbon'](c, yb + 1, 'CHAMPIONSHIP GOLF')
+    return c
+
+
+def menu(m, S):
+    """The clubhouse board on the dimmed title: wood frame, felt, a blank brass plate."""
+    c = title(m, S)
+    m['dim'](c)
+    x, y, w, h = 6, 12, 148, 140
+    c.rect(x + 3, y + 3, w, h, (0, 0, 0))
+    m['wood'](c, x, y, w, 7, False)
+    m['wood'](c, x, y + h - 7, w, 7, False)
+    m['wood'](c, x, y, 7, h, True)
+    m['wood'](c, x + w - 7, y, 7, h, True)
+    m['bevel'](c, x, y, w, h, (190, 130, 70), (40, 18, 6))
+    m['bevel'](c, x + 6, y + 6, w - 12, h - 12, (40, 18, 6), (180, 120, 64))
+    m['felt'](c, x + 7, y + 7, w - 14, h - 14)
+    m['plaque'](c, 38, 5, 84, 13, '')
+    return c
+
+
+BAYER = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]]
+MAGENTA = (255, 0, 255)
+BLACK, DARK, LIGHT, WHITE = 3, 2, 1, 0   # Palm 2-bit values
+
+
+# How light each 2-bit value looks on the IIIx (Frond shows the same): the
+# middle greys sit close to white, so anything darker has to dither with black.
+SEEN = [(0.0, BLACK), (0.80, DARK), (0.94, LIGHT), (1.0, WHITE)]
+
+
+def dither(v, x, y):
+    """A level 0 (black) to 1 (white), as it should look, to a 2-bit value.
+    Each step between greys is steepened so most of an area is one flat
+    grey and the dither only shows where it changes."""
+    v = max(0.0, min(1.0, v))
+    k = 0
+    while k < len(SEEN) - 2 and v > SEEN[k + 1][0]:
+        k += 1
+    (a, va), (b, vb) = SEEN[k], SEEN[k + 1]
+    f = max(0.0, min(1.0, ((v - a) / (b - a) - 0.5) * 3.0 + 0.5))
+    return vb if f > (BAYER[y % 4][x % 4] + 0.5) / 16 else va
+
+
+def layer(m, draw):
+    """A 160 canvas filled with magenta, after draw(c)."""
+    c = m['C'](1)
+    c.img.paste(MAGENTA, (0, 0, c.N, c.N))
+    c.px = c.img.load()
+    c.d = ImageDraw.Draw(c.img)
+    draw(c)
+    return c.img
+
+
+def title_grey(m):
+    """The 160x160 title for 4 greys, as rows of 2-bit values. The scene is
+    cut by region: sky, hills and water run from black dither at the top to white
+    at the horizon; greens are stretched so the rough is dark grey, shadows dither to black and the
+    fairway light. The logo, ribbon and golfer go on flat, with no dither."""
+    scene = Image.open(SCENE).convert('RGB').resize((160, 160), Image.LANCZOS)
+    g = Image.open(GOLFER).convert('RGBA')
+    feet_x, feet_y = 50, 141
+    p = scene.load()
+
+    def lum(c):
+        return (c[0] * 30 + c[1] * 59 + c[2] * 11) / 25500
+    blue = [[p[x, y][2] >= p[x, y][1] for x in range(160)] for y in range(160)]
+    def span(vals):
+        vals = sorted(vals)
+        return vals[len(vals) // 50], vals[-len(vals) // 50 - 1]
+    blo, bhi = span([lum(p[x, y]) for y in range(160) for x in range(160) if blue[y][x]])
+    glo, ghi = span([lum(p[x, y]) for y in range(160) for x in range(160) if not blue[y][x]])
+    rows = []
+    for y in range(160):
+        row = []
+        for x in range(160):
+            L = lum(p[x, y])
+            if blue[y][x]:
+                v = 0.0 + 1.05 * (L - blo) / (bhi - blo)
+            else:
+                v = 0.38 + 0.7 * (L - glo) / (ghi - glo)
+            row.append(dither(v, x, y))
+        rows.append(row)
+
+    yb = [0]
+    def logo(c):
+        yb[0] = m['logo'](c, y=4, size=28)
+    lg = layer(m, logo).load()
+    rb = layer(m, lambda c: m['ribbon'](c, yb[0] + 1, 'CHAMPIONSHIP GOLF')).load()
+    for y in range(160):
+        for x in range(160):
+            c = rb[x, y]
+            if c != MAGENTA:
+                rows[y][x] = WHITE if lum(c) > 0.6 else BLACK
+            c = lg[x, y]
+            if c != MAGENTA:
+                rows[y][x] = BLACK if c == (70, 30, 6) else DARK if c == (10, 10, 30) else WHITE
+    # Golfer: a black figure with the cap, glove and shoes light.
+    gp = g.load()
+    for j in range(g.height):
+        for i in range(g.width):
+            r, gg, b, a = gp[i, j]
+            if a < 128:
+                continue
+            L = (r * 50 + gg * 40 + b * 10) / 25500
+            rows[feet_y - g.height + j][feet_x + i] = LIGHT if L > 0.7 else BLACK
+    # A black strip for PRESS ANY BUTTON.
+    for y in range(144, 157):
+        rows[y] = [BLACK] * 160
+    return rows
+
+
+def menu_grey(title):
+    """The menu board for 4 greys: the title one grey darker round it, a
+    black frame with a two-tone bevel, flat dark grey felt and a light grey
+    plate. Text goes on flat greys only."""
+    rows = [[min(BLACK, v + 1) for v in row] for row in title]
+    def rect(x, y, w, h, v):
+        for j in range(max(0, y), min(160, y + h)):
+            for i in range(max(0, x), min(160, x + w)):
+                rows[j][i] = v
+    def bevel(x, y, w, h, lt, dk):
+        rect(x, y, w, 1, lt); rect(x, y, 1, h, lt)
+        rect(x, y + h - 1, w, 1, dk); rect(x + w - 1, y, 1, h, dk)
+    x, y, w, h = 6, 12, 148, 140
+    rect(x + 3, y + 3, w, h, BLACK)
+    rect(x, y, w, h, BLACK)
+    bevel(x, y, w, h, LIGHT, DARK)
+    bevel(x + 6, y + 6, w - 12, h - 12, DARK, LIGHT)
+    rect(x + 7, y + 7, w - 14, h - 14, DARK)
+    rect(39, 6, 84, 13, BLACK)
+    rect(38, 5, 84, 13, LIGHT)
+    bevel(38, 5, 84, 13, WHITE, BLACK)
+    return rows
+
+
+def pack_rows(rows, depth):
+    out = []
+    per = 8 // depth
+    for row in rows:
+        b = bytearray()
+        for i in range(0, len(row), per):
+            v = 0
+            for k in range(per):
+                v = (v << depth) | (row[i + k] if i + k < len(row) else 0)
+            b.append(v)
+        out.append(bytes(b))
+    return out
+
+
+def packbits(data):
+    out = bytearray()
+    i, n = 0, len(data)
+    while i < n:
+        j = i
+        while j < n and j - i < 128 and data[j] == data[i]:
+            j += 1
+        if j - i >= 3:
+            out += bytes([(257 - (j - i)) & 0xFF, data[i]])
+            i = j
+            continue
+        j = i
+        while j < n and j - i < 128:
+            if j + 2 < n and data[j] == data[j + 1] == data[j + 2]:
+                break
+            j += 1
+        out.append(j - i - 1)
+        out += data[i:j]
+        i = j
+    return bytes(out)
+
+
+def unpackbits(data, size):
+    out = bytearray()
+    i = 0
+    while len(out) < size:
+        c = data[i]
+        i += 1
+        if c < 128:
+            out += data[i:i + c + 1]
+            i += c + 1
+        elif c > 128:
+            out += bytes([data[i]]) * (257 - c)
+            i += 1
+    return bytes(out)
+
+
+def bands(rows, depth):
+    """Band resources for packed rows."""
+    res = []
+    step = BAND_ROWS[depth]
+    for y0 in range(0, len(rows), step):
+        part = rows[y0:y0 + step]
+        raw = b''.join(part)
+        body = packbits(raw)
+        assert unpackbits(body, len(raw)) == raw
+        res.append(struct.pack('>HHHBB', y0, len(part), len(part[0]), depth, 0) + body)
+    return res
+
+
+def palette(images):
+    """White, the UI colours, art colours, black: 256 entries."""
+    ui = ui_colours()
+    fixed = [(255, 255, 255)] + ui
+    free = 256 - len(fixed) - 1
+    w = max(i.width for i in images)
+    both = Image.new('RGB', (w, sum(i.height for i in images)))
+    y = 0
+    for i in images:
+        both.paste(i, (0, y))
+        y += i.height
+    q = both.quantize(colors=free, method=Image.Quantize.MEDIANCUT)
+    art = q.getpalette()[:free * 3]
+    pal = [v for c in fixed for v in c] + art + [0, 0, 0]
+    assert len(pal) == 768
+    return pal
+
+
+def to8(img, pal):
+    p = Image.new('P', (1, 1))
+    p.putpalette(pal)
+    q = img.convert('RGB').quantize(palette=p, dither=Image.Dither.FLOYDSTEINBERG)
+    return q
+
+
+def main():
+    out = Path(sys.argv[1])
+    prev = Path(sys.argv[2]) if len(sys.argv) > 2 else None
+    out.mkdir(parents=True, exist_ok=True)
+    m = load_mockup()
+    gt = title_grey(m)
+    grey = {PIC_TITLE: gt, PIC_MENU: menu_grey(gt)}
+    hi = {PIC_TITLE: title(m, 2).img, PIC_MENU: menu(m, 2).img}
+    pal = palette(list(hi.values()))
+    (out / 'Pal8-1000.bin').write_bytes(bytes(pal))
+    rcp = ['/* Made by tools/mkart.py. */', f'DATA "Pal8" ID 1000 "{out / "Pal8-1000.bin"}"']
+    total = 0
+    for pid in (PIC_TITLE, PIC_MENU):
+        g = grey[pid]
+        q = to8(hi[pid], pal)
+        rows8 = [bytes(q.tobytes()[y * 320:(y + 1) * 320]) for y in range(320)]
+        for depth, rows in ((2, pack_rows(g, 2)), (8, rows8)):
+            for k, b in enumerate(bands(rows, depth)):
+                name = f'Pic{depth}-{pid + k}.bin'
+                (out / name).write_bytes(b)
+                rcp.append(f'DATA "Pic{depth}" ID {pid + k} "{out / name}"')
+                total += len(b)
+        if prev:
+            prev.mkdir(parents=True, exist_ok=True)
+            gi = Image.new('L', (160, 160))
+            gi.putdata([(3 - v) * 85 for row in g for v in row])
+            gi.resize((480, 480), Image.NEAREST).save(prev / f'art-{pid}-160-grey.png')
+            q.convert('RGB').save(prev / f'art-{pid}-320.png')
+    (out / 'art.rcp').write_text('\n'.join(rcp) + '\n')
+    print(f'art: {total} bytes in {len(rcp) - 2} bands, palette 768')
+
+
+if __name__ == '__main__':
+    main()

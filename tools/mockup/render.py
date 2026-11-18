@@ -83,12 +83,17 @@ Z = F * CAMH / (gy - YH)                        # depth per row
 Zg = np.repeat(Z[:, None], W, axis=1)
 Xg = (xx[YH + 1:] - CX) * Zg / F + CAMX
 
-def centre(z): return -18 + 0.05 * z
-def halfw(z): return np.where((z > 45) & (z < 112), 14 + 3 * np.sin(z / 9.0), np.where(z < 45, 0, 0))
+# Fairway: starts a short strip of rough past the tee, bends left and back,
+# with round ends and edges pushed about by noise so none run straight.
+FW0, FW1 = 50.0, 124.0
+def centre(z): return -2 + 0.05 * (z - FW0) - 9 * np.sin(np.clip(z - FW0, 0, None) / 40.0)
+def halfw(z):
+    w = 8 + 0.08 * (z - FW0) + 2 * np.sin(z / 9.0)
+    return w * np.sqrt(np.clip((z - FW0) / 9.0, 0, 1) * np.clip((FW1 - z) / 8.0, 0, 1))
 GREEN = (12.0, 176.0)
-d_c = Xg - centre(Zg)
-fair = np.abs(d_c) < halfw(Zg)
-cut = np.abs(d_c) < halfw(Zg) + 3.5
+edge = np.abs(Xg - centre(Zg)) - halfw(Zg) - 2.6 * (fbm(Xg / 7.0, Zg / 7.0, 3) - 0.5) - 0.8 * (vnoise(Xg / 2.0, Zg / 2.0) - 0.5)
+fair = (edge < 0) & (Zg > FW0 - 3)
+cut = (edge < 3.0) & (Zg > FW0 - 5)
 def ell(cx, cz, rx, rz): return ((Xg - cx) / rx) ** 2 + ((Zg - cz) / rz) ** 2
 g_e = ell(GREEN[0], GREEN[1], 15, 12)
 green = g_e < 1; fringe = g_e < 1.35
@@ -98,10 +103,22 @@ for b in bunk:
     sand |= b < 1; lip |= (b < 1.25) & (b >= 1)
 pond_e = ell(22, 140, 40, 17) * (1 + 0.15 * fbm(Xg / 8, Zg / 8, 3))
 pond = pond_e < 1
-tee = ell(0, 40, 9, 6) < 1
+# Tee box: 12 yd wide, 20 yd long, along the line to the green, with the
+# golfer standing on it; the ball sits on the centre line at z 29, where
+# tools/mkart.py puts the golfer's club.
+TEE = (0.0, 31.0)
+_td = np.array([GREEN[0] - TEE[0], GREEN[1] - TEE[1]]); _td /= np.linalg.norm(_td)
+tee_u = (Xg - TEE[0]) * _td[1] - (Zg - TEE[1]) * _td[0]      # across the line
+tee_v = (Xg - TEE[0]) * _td[0] + (Zg - TEE[1]) * _td[1]      # along it
+tee = (np.abs(tee_u) < 6) & (np.abs(tee_v) < 10)
 
 # undulation for shading
-def height(x, z): return 1.6 * fbm(x / 45.0, z / 45.0, 4) + 0.5 * fbm(x / 9.0, z / 9.0, 3)
+def height(x, z):
+    # Rolling ground, with a mound each side of the tee.
+    h = 1.6 * fbm(x / 45.0, z / 45.0, 4) + 0.5 * fbm(x / 9.0, z / 9.0, 3)
+    h += 2.0 * np.exp(-((x + 15) ** 2 + (z - 36) ** 2) / 45.0)
+    h += 1.6 * np.exp(-((x - 17) ** 2 + (z - 48) ** 2) / 60.0)
+    return h
 e = 0.6
 hx = (height(Xg + e, Zg) - height(Xg - e, Zg)) / (2 * e)
 hz = (height(Xg, Zg + e) - height(Xg, Zg - e)) / (2 * e)
@@ -112,11 +129,18 @@ shade = 0.55 + 0.6 * lam
 gn = fbm(Xg / 3.0, Zg / 3.0, 4)          # grass clumps
 gf = vnoise(Xg * 1.7, Zg * 1.7)          # fine grass
 ground = mix(C(34, 84, 30), C(84, 136, 46), gn * 1.3 - 0.15)                  # rough
+# Close up the clumps are too broad to show, so finer grass and blade
+# streaks fade in towards the camera.
+near = np.clip(1.6 - Zg / 40.0, 0, 1)[..., None]
+blades = (vnoise(Xg * 6.0, Zg * 6.0) - 0.5) * 0.22 + (vnoise(Xg * 14.0, Zg * 3.0) - 0.5) * 0.16
+ground = ground * (1 + blades[..., None] * near)
 ground = np.where(cut[..., None], mix(C(70, 128, 44), C(94, 150, 56), gn), ground)
 stripe = (np.floor(Zg / 11.0) % 2)[..., None] * 0.07 - 0.035
 fw = mix(C(96, 170, 62), C(120, 188, 74), gf * 0.6 + gn * 0.4) * (1 + stripe)
 ground = np.where(fair[..., None], fw, ground)
-ground = np.where(tee[..., None], fw * 1.04, ground)
+tstripe = (np.floor((tee_v + 10) / 2.5) % 2)[..., None] * 0.08 - 0.04
+teec = mix(C(56, 108, 38), C(70, 124, 46), gf * 0.6 + gn * 0.4) * (1 + tstripe) * (1 + blades[..., None] * near * 0.4)
+ground = np.where(tee[..., None], teec, ground)
 ground = np.where(fringe[..., None], mix(C(92, 168, 62), C(112, 182, 70), gf), ground)
 gs = (np.floor(Xg / 3.2) % 2)[..., None] * 0.05 - 0.025
 ground = np.where(green[..., None], mix(C(126, 204, 86), C(146, 216, 98), gf) * (1 + gs), ground)
@@ -143,7 +167,8 @@ for i in range(14):
 # tree shadows on the ground
 sh_dir = -np.array([SUN[0], SUN[2]]) / SUN[1]
 shadow = np.zeros(Zg.shape)
-for (tx, tz, th, pine) in trees:
+# Trees just out of view behind the tee, seen only by their shadows.
+for (tx, tz, th, pine) in trees + [(-27.0, 27.0, 14.0, False), (13.0, 22.0, 12.0, False)]:
     cxs = tx + sh_dir[0] * th * 0.6; czs = tz + sh_dir[1] * th * 0.6
     r = th * (0.3 if pine else 0.45)
     dd = ((Xg - cxs) / (r * 1.1)) ** 2 + ((Zg - czs) / (r * 0.9)) ** 2
@@ -217,6 +242,20 @@ top = py - 2.6 * s
 dr.line([(px, py), (px, top)], fill=(245, 245, 240), width=max(1, int(0.06 * s)))
 dr.polygon([(px, top), (px + 1.3 * s, top + 0.35 * s), (px + 1.2 * s, top + 0.5 * s), (px, top + 0.75 * s)], fill=(214, 30, 34))
 dr.ellipse([px - 0.18 * s, py - 0.06 * s, px + 0.18 * s, py + 0.06 * s], fill=(20, 30, 20))
+
+# ---------------- tee markers and ball ----------------
+def ball_at(x, z, rad, lo, hi):
+    px, py = proj(x, rad, z)
+    r = rad * F / z
+    dr.ellipse([px - r, py - r, px + r, py + r], fill=lo)
+    dr.ellipse([px - r * 0.8, py - r * 0.9, px + r * 0.4, py + r * 0.3], fill=hi)
+
+for mx in (-5.0, 5.0):
+    sx, sy = proj(mx, 0, 30.0)
+    sr = 0.5 * F / 30.0
+    dr.ellipse([sx - sr, sy - sr * 0.3, sx + sr * 1.2, sy + sr * 0.35], fill=(36, 70, 30))
+    ball_at(mx, 30.0, 0.35, (150, 20, 24), (226, 52, 52))
+ball_at(0.4, 29.0, 0.12, (196, 196, 204), (252, 252, 252))
 
 pil.save(f'{OUT}/scene_bg_{R}.png')
 img = np.asarray(pil).astype(np.float64) / 255

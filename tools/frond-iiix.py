@@ -4,9 +4,10 @@
 Boots the ROM through setup once and keeps that launcher session in
 build/iiix/ (it holds the ROM, so it stays out of the repo). Each run starts
 from the session, installs the PRC, launches Par 386, waits and saves a
-screenshot as OUTDIR/end.png.
+screenshot as OUTDIR/end.png. Steps after that (tools/frondsteps.py) press
+keys, tap and save more screenshots.
 
-Usage: frond-iiix.py OUTDIR [--seconds N] [--rom ROM] [--prc PRC] [--speed original|uncapped]
+Usage: frond-iiix.py OUTDIR [--seconds N] [--rom ROM] [--prc PRC] [--speed original|uncapped] [STEP ...]
 """
 import argparse
 import sys
@@ -17,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 FROND = Path.home() / 'Projects/palm/frond'
 sys.path.insert(0, str(FROND / 'tools'))
 import palm_boot  # noqa: E402
+import frondsteps  # noqa: E402
 
 ROM = Path('build/firmware/palm/Palm/IIIx/Palm-IIIx-3.1-en.rom')
 
@@ -44,6 +46,7 @@ def main():
     p.add_argument('--speed', default='original', choices=['original', 'uncapped'])
     p.add_argument('--rom', type=Path, default=ROM)
     p.add_argument('--prc', type=Path, default=ROOT / 'build/Par386.prc')
+    p.add_argument('steps', nargs='*')
     a = p.parse_args()
     out = a.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -57,6 +60,7 @@ def main():
         core.launch('Par 386')
         time.sleep(a.seconds)
         core.frame(out / 'end.png')
+        frondsteps.run(core, out, a.steps)
     finally:
         core.close()
         for f in out.glob('console-*.replay'):
