@@ -17,12 +17,17 @@
 #      be in a code section.
 # Symbols defined in no object come from libgcc or libc, which are in .text.
 #
+# It also adds up each code segment over the objects and fails if one is
+# over SEG_LIMIT, which leaves room under 32 KB for what the linker adds to
+# .text (start-up code and libgcc).
+#
 # Usage: segcheck.py OBJ.o ...
 import re
 import subprocess
 import sys
 
 OBJDUMP = "m68k-palmos-objdump"
+SEG_LIMIT = 30 * 1024
 
 
 def run(*args):
@@ -30,17 +35,19 @@ def run(*args):
                           capture_output=True, text=True).stdout
 
 
-def sections(obj):
-    """Returns ([names by 1-based index], {name: is_code})."""
+def sections(obj, sizes=None):
+    """Returns ([names by 1-based index], {name: is_code}), adding code section sizes to sizes."""
     names, code = [None], {}
     lines = run("-h", obj).splitlines()
     for i, line in enumerate(lines):
-        m = re.match(r"\s*(\d+)\s+(\S+)\s+[0-9a-f]+", line)
+        m = re.match(r"\s*(\d+)\s+(\S+)\s+([0-9a-f]+)", line)
         if m:
             name = m.group(2)
             flags = lines[i + 1] if i + 1 < len(lines) else ""
             names.append(name)
             code[name] = "CODE" in flags
+            if code[name] and sizes is not None:
+                sizes[name] = sizes.get(name, 0) + int(m.group(3), 16)
     return names, code
 
 
@@ -76,9 +83,9 @@ def relocs(obj):
 def main():
     objs = sys.argv[1:]
     info = {}
-    global_sec, code_secs = {}, set([".text"])
+    global_sec, code_secs, sizes = {}, set([".text"]), {}
     for obj in objs:
-        names, code = sections(obj)
+        names, code = sections(obj, sizes)
         syms = symbols(obj, names)
         info[obj] = (names, code, syms)
         code_secs.update(n for n, c in code.items() if c)
@@ -107,8 +114,13 @@ def main():
                 errors.append("%s: %s to %s in %s from %s" % (where, typ, target, tsec, sec))
             elif typ == "32" and not tcode:
                 errors.append("%s: absolute %s to %s in %s" % (where, typ, target, tsec))
-    for e in errors:
+    big = ["segment %s is %d bytes, over %d" % (n, sz, SEG_LIMIT)
+           for n, sz in sorted(sizes.items()) if sz > SEG_LIMIT]
+    print("segcheck: " + ", ".join("%s %d" % kv for kv in sorted(sizes.items())))
+    for e in errors + big:
         print("segcheck:", e)
+    if big and not errors:
+        return 1
     if errors:
         print("segcheck: %d bad references. Const tables must be static to their file, "
               "and calls into another segment need that segment's attribute on the declaration."

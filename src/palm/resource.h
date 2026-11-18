@@ -1,7 +1,7 @@
 #ifndef RESOURCE_H
 #define RESOURCE_H
 
-#define kAppVersion         "0.0.2"
+#define kAppVersion         "0.0.3"
 
 #define MainForm            1000
 #define RomIncompatibleAlert 1100

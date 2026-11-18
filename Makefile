@@ -4,9 +4,11 @@
 #   make host-test   builds and runs the core tests on the host, then course-test
 #   make course-test compiles the test course, round-trips it and checks it loads
 #   make courses     compiles every course in courses/ to build/courses/
-#   make tables      makes src/core/trigtab.h and fonttab.h again (the output is committed)
-#   make art         makes the title and menu pictures in build/art/ (also part of the PRC)
+#   make tables      makes src/core/trigtab.h, fonttab.h, pal.h and paltab.h again (the output is committed)
+#   make art         makes the title and menu pictures and the renderer's sprites in build/art/ (part of the PRC)
 #   make ui-test     draws the title and menu with the core UI kit on the host, to PNGs
+#   make render-test draws the test hole from 3 places and compares with host/ref/
+#   make render-ref  makes host/ref/ again from the current renderer
 # Both flavours write build/Par386.prc, so build one at a time.
 
 SDK      = ../palm-os-sdk/sdk-5r3
@@ -26,7 +28,7 @@ CFLAGS   = -O2 -Wall -Wno-unknown-pragmas $(DEFS) $(INCLUDES) -Isrc/core -Isrc/p
 LDFLAGS  = -L$(SDK)/lib/m68k-palmos-coff
 
 PALMSRCS = main
-CORESRCS = fixed trig vec hole gfx ui front
+CORESRCS = fixed trig vec hole gfx ui front render
 OBJS     = $(addprefix $(BUILD)/,$(addsuffix .o,$(PALMSRCS) $(CORESRCS)))
 
 all: build/$(PRC)
@@ -66,16 +68,23 @@ ART      = build/art
 $(SCENE): tools/mockup/render.py
 	python3 tools/mockup/render.py tools/mockup/r 960
 
-$(ART)/art.rcp: tools/mkart.py tools/mockup/mock1b.py tools/mockup/mock1b2.py src/core/uicol.h art/golfer/f01-40.png $(SCENE)
+$(ART)/art.rcp: tools/mkart.py tools/mkpal.py tools/mockup/mock1b.py tools/mockup/mock1b2.py src/core/uicol.h art/golfer/f01-40.png $(SCENE)
 	python3 tools/mkart.py $(ART)
 
 $(ART)/art.ro: $(ART)/art.rcp
 	pilrc -q -ro $(ART)/art.rcp $@
 
-art: $(ART)/art.rcp
+# The renderer's sprites, golfer and backdrop, cut to the master palette.
+$(ART)/obj.rcp: tools/mkobj.py tools/mkpal.py tools/mkart.py src/core/uicol.h art/golfer/*.png
+	python3 tools/mkobj.py $(ART) $(DEBUGDIR)/m3/art
 
-build/$(PRC): src/par386.def $(BUILD)/par386 $(BUILD)/par386.ro $(ART)/art.ro
-	build-prc -o $@ src/par386.def $(BUILD)/par386 $(BUILD)/par386.ro $(ART)/art.ro
+$(ART)/obj.ro: $(ART)/obj.rcp
+	pilrc -q -ro $(ART)/obj.rcp $@
+
+art: $(ART)/art.rcp $(ART)/obj.rcp
+
+build/$(PRC): src/par386.def $(BUILD)/par386 $(BUILD)/par386.ro $(ART)/art.ro $(ART)/obj.ro
+	build-prc -o $@ src/par386.def $(BUILD)/par386 $(BUILD)/par386.ro $(ART)/art.ro $(ART)/obj.ro
 
 HOSTSRC  = $(addprefix src/core/,$(addsuffix .c,$(CORESRCS)))
 HOSTCC   = gcc -Wall -Wextra -O2 -Isrc/core -fsanitize=address,undefined -fno-sanitize-recover=all
@@ -85,6 +94,7 @@ host-test: build/hosttest
 	build/hosttest
 	$(MAKE) course-test
 	$(MAKE) ui-test
+	$(MAKE) render-test
 
 build/hosttest: host/hosttest.c $(HOSTSRC) src/core/*.h | $(BUILD)
 	$(HOSTCC) host/hosttest.c $(HOSTSRC) -lm -o $@
@@ -122,11 +132,30 @@ ui-test: build/uitest $(ART)/art.rcp
 	build/uitest $(ART) build/ui
 	python3 tools/topng.py build/ui $(DEBUGDIR)/m1b host-
 
+build/rendertest: host/rendertest.c $(HOSTSRC) src/core/*.h | $(BUILD)
+	$(HOSTCC) host/rendertest.c $(HOSTSRC) -lm -o $@
+
+# Draws the test hole from the tee, mid-fairway and near the green at
+# 160x160 2-bit and 320x320 8-bit, writes PNGs to $(DEBUGDIR)/m3 and
+# compares them with host/ref/. render-ref stores the current ones there.
+REFS     = tee-160 tee-320 fairway-160 fairway-320 approach-160 approach-320
+
+render-test: build/rendertest build/courses/Par386-Test.pdb $(ART)/obj.rcp
+	rm -rf build/render && mkdir -p build/render
+	build/rendertest build/courses/Par386-Test.pdb $(ART) build/render
+	python3 tools/refcmp.py build/render $(DEBUGDIR)/m3 host/ref $(REFS)
+
+render-ref: build/rendertest build/courses/Par386-Test.pdb $(ART)/obj.rcp
+	rm -rf build/render && mkdir -p build/render
+	build/rendertest build/courses/Par386-Test.pdb $(ART) build/render
+	python3 tools/refcmp.py build/render $(DEBUGDIR)/m3 host/ref --update $(REFS)
+
 tables:
 	python3 tools/mktrig.py
 	python3 tools/mkfont.py
+	python3 tools/mkpal.py
 
 clean:
 	rm -rf build
 
-.PHONY: all release clean host-test course-test ui-test courses tables art
+.PHONY: all release clean host-test course-test ui-test render-test render-ref courses tables art

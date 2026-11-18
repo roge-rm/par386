@@ -5,8 +5,8 @@ Draws both screens with the mockup scripts (tools/mockup/mock1b2.py) over the
 rendered course scene (tools/mockup/r/scene_bg_960.png, from render.py) and
 the address frame of the golfer, then writes:
   OUT/Pic2-ID.bin   160x160, 4 greys: flat greys by region, ordered dither between
-  OUT/Pic8-ID.bin   320x320, 8 bits, Floyd-Steinberg on the game palette
-  OUT/Pal8-1000.bin the 256 colour palette, RGB
+  OUT/Pic8-ID.bin   320x320, 8 bits, Floyd-Steinberg on the master palette
+  OUT/Pal8-1000.bin the master palette (tools/mkpal.py), RGB
   OUT/art.rcp       PilRC DATA lines for all of them
 and pictures of each to PREVIEW if given. Each picture is split into bands of
 rows (resource ID, ID + 1, ...) packed with PackBits, so no resource gets near
@@ -24,6 +24,9 @@ import sys
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import mkpal   # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -266,22 +269,10 @@ def bands(rows, depth):
     return res
 
 
-def palette(images):
-    """White, the UI colours, art colours, black: 256 entries."""
-    ui = ui_colours()
-    fixed = [(255, 255, 255)] + ui
-    free = 256 - len(fixed) - 1
-    w = max(i.width for i in images)
-    both = Image.new('RGB', (w, sum(i.height for i in images)))
-    y = 0
-    for i in images:
-        both.paste(i, (0, y))
-        y += i.height
-    q = both.quantize(colors=free, method=Image.Quantize.MEDIANCUT)
-    art = q.getpalette()[:free * 3]
-    pal = [v for c in fixed for v in c] + art + [0, 0, 0]
-    assert len(pal) == 768
-    return pal
+def palette():
+    """The master palette from tools/mkpal.py, 768 RGB bytes."""
+    rgb, _, _, _ = mkpal.build()
+    return [v for c in rgb for v in c]
 
 
 def to8(img, pal):
@@ -299,7 +290,7 @@ def main():
     gt = title_grey(m)
     grey = {PIC_TITLE: gt, PIC_MENU: menu_grey(gt)}
     hi = {PIC_TITLE: title(m, 2).img, PIC_MENU: menu(m, 2).img}
-    pal = palette(list(hi.values()))
+    pal = palette()
     (out / 'Pal8-1000.bin').write_bytes(bytes(pal))
     rcp = ['/* Made by tools/mkart.py. */', f'DATA "Pal8" ID 1000 "{out / "Pal8-1000.bin"}"']
     total = 0
