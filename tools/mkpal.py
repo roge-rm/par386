@@ -15,8 +15,11 @@ Palm wants white at 0 and black at 255.
 94% and 80%), so mid tones are made by mixing in black. Each index gets a
 4x4 pattern, one byte (4 pixels, Palm order, 0 white) per row. Terrain ramps
 get their own textures so the surfaces stay apart: fairway is dark grey with
-a few black dots, rough has more black, green has none, sand is near white,
-water is in lines.
+a few black dots (more in the dark mowing bands), first cut more, rough and
+deep rough over half black, fringe fewer,
+green is grey with one black dot in 16, sand is near white and water is in
+lines. The golfer is a black silhouette with a light cap and shoes, and
+the flag is white so it shows against the trees.
 """
 import os
 import re
@@ -32,17 +35,17 @@ RAMP_N = 8    # levels in each terrain ramp
 
 # Terrain ramps in surface order (src/core/hole.h): name, dark, middle, light, 2-bit style.
 TERRAIN = [
-    ('rough',      (26, 52, 18),   (62, 98, 32),   (114, 146, 58),  ('dots', D, 8, 12)),
-    ('first_cut',  (32, 70, 24),   (72, 126, 42),  (128, 178, 72),  ('dots', D, 5, 12)),
-    ('fairway',    (44, 96, 30),   (100, 164, 58), (166, 216, 100), ('dots', D, 3, 12)),
-    ('deep_rough', (22, 38, 14),   (50, 70, 26),   (96, 112, 48),   ('dots', D, 12, 8)),
+    ('rough',      (26, 52, 18),   (62, 98, 32),   (114, 146, 58),  ('dots', D, 10, 6)),
+    ('first_cut',  (32, 70, 24),   (72, 126, 42),  (128, 178, 72),  ('dots', D, 6, 8)),
+    ('fairway',    (44, 96, 30),   (100, 164, 58), (166, 216, 100), ('dots', D, 3, 8)),
+    ('deep_rough', (22, 38, 14),   (50, 70, 26),   (96, 112, 48),   ('dots', D, 13, 6)),
     ('green',      (48, 112, 52),  (110, 184, 92), (180, 232, 140), ('smooth', D, 0, 0)),
-    ('fringe',     (44, 104, 40),  (98, 170, 70),  (164, 220, 112), ('dots', D, 2, 8)),
+    ('fringe',     (44, 104, 40),  (98, 170, 70),  (164, 220, 112), ('dots', D, 2, 4)),
     ('sand',       (150, 124, 80), (214, 192, 142), (250, 238, 204), ('sand', L, 0, 0)),
     ('water',      (18, 38, 76),   (52, 88, 140),  (130, 166, 210), ('lines', D, 0, 0)),
     ('path',       (100, 94, 86),  (162, 154, 140), (214, 208, 194), ('dots', L, 4, 8)),
     ('oob',        (56, 60, 32),   (104, 100, 58), (160, 150, 104), ('dots', D, 10, 8)),
-    ('tee',        (40, 90, 28),   (92, 156, 54),  (156, 208, 94),  ('dots', D, 3, 12)),
+    ('tee',        (40, 90, 28),   (92, 156, 54),  (156, 208, 94),  ('dots', D, 3, 8)),
 ]
 
 HAZE_RGB = (178, 190, 212)
@@ -57,13 +60,13 @@ OTHER = [
     ('bark',     6, [(36, 26, 18), (82, 62, 44), (146, 116, 84)], ('luma', 0, 0, 0)),
     ('rock',     8, [(46, 46, 44), (110, 108, 100), (206, 202, 190)], ('luma', 0, 0, 0)),
     ('wall',     8, [(58, 52, 44), (122, 112, 96), (200, 188, 164)], ('luma', 0, 0, 0)),
-    ('skin',     6, [(60, 42, 34), (160, 100, 80), (244, 186, 142)], ('flat', 0, 0, 0)),
-    ('shirt',    6, [(96, 48, 42), (170, 88, 80), (230, 124, 112)], ('flat', 0, 0, 0)),
-    ('trousers', 5, [(20, 24, 24), (46, 56, 55), (104, 112, 110)], ('flat', 0, 0, 0)),
+    ('skin',     6, [(60, 42, 34), (160, 100, 80), (244, 186, 142)], ('sil', 0, 0, 0)),
+    ('shirt',    6, [(96, 48, 42), (170, 88, 80), (230, 124, 112)], ('sil', 0, 0, 0)),
+    ('trousers', 5, [(20, 24, 24), (46, 56, 55), (104, 112, 110)], ('sil', 0, 0, 0)),
     ('cap',      4, [(150, 156, 150), (210, 214, 206), (255, 255, 252)], ('flat', 0, 0, 0)),
     ('shoes',    3, [(92, 92, 90), (170, 170, 166), (232, 232, 228)], ('flat', 0, 0, 0)),
-    ('club',     4, [(40, 40, 42), (110, 112, 112), (196, 198, 196)], ('flat', 0, 0, 0)),
-    ('flag',     4, [(110, 10, 10), (190, 30, 24), (244, 70, 54)], ('flat', 0, 0, 0)),
+    ('club',     4, [(40, 40, 42), (110, 112, 112), (196, 198, 196)], ('sil', 0, 0, 0)),
+    ('flag',     4, [(110, 10, 10), (190, 30, 24), (244, 70, 54)], ('flag', 0, 0, 0)),
     ('grey',     8, [(28, 28, 28), (128, 128, 128), (236, 236, 236)], ('luma', 0, 0, 0)),
     # for the title and menu art
     ('wood',     6, [(56, 26, 8), (130, 74, 32), (206, 148, 88)], ('luma', 0, 0, 0)),
@@ -150,14 +153,20 @@ def pattern(c, st, lvl):
                 if base == D and n == 0 and t >= 14 and lvl > 0.8:
                     v = L
             elif kind == 'smooth':
-                # greens: dark grey with light grey coming in, never black
-                n = round(lvl * 10) - 2
+                # greens: dark and light grey mixed, lighter as the level rises,
+                # with one black dot in 16 so they read apart from sand
+                n = 3 + round(lvl * 8)
                 v = L if t < n else D
-                if lvl < 0.1 and t < 2:
+                if t == 15 and lvl < 0.9:
+                    v = B
+                if lvl < 0.1 and t < 4:
                     v = B
             elif kind == 'sand':
+                # near white; the darkest levels (the near lip's shadow) get black
                 n = round((1 - lvl) * 6)
                 v = D if t < n else (W if t >= 13 and lvl > 0.5 else L)
+                if lvl < 0.2 and t < 8:
+                    v = B
             elif kind == 'lines':
                 # water: black lines, the rows between dark or light grey
                 if y in (0, 2):
@@ -171,6 +180,12 @@ def pattern(c, st, lvl):
                 v = W if t < n else L
                 if lvl < 0.25 and t >= 12:
                     v = D
+            elif kind == 'flag':
+                # white with a black lower edge, to show against the trees behind
+                v = B if lvl < 0.4 else W
+            elif kind == 'sil':
+                # the golfer's body: a black silhouette, only the lightest parts light
+                v = B if luma(c) < 0.75 else L
             elif kind == 'flat':
                 y_ = luma(c)
                 v = B if y_ < 0.42 else D if y_ < 0.7 else L if y_ < 0.9 else W

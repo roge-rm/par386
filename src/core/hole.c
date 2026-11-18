@@ -199,7 +199,7 @@ static uint16_t SEC_CORE grid_pos(fixed g, uint8_t cells, uint16_t *frac)
 
 fixed hole_height(const Hole *h, fixed x, fixed y)
 {
-	uint16_t fx, fy, i, j, i1, j1;
+	uint16_t fx, fy, i, j, i1, j1, hw = h->hm_w;    /* 16 bits, or MULU16 isn't one mulu.w */
 	const uint8_t *r0, *r1;
 	int32_t t, b, v;
 
@@ -207,8 +207,8 @@ fixed hole_height(const Hole *h, fixed x, fixed y)
 	j = grid_pos(y >> h->hm_shift, h->hm_h, &fy);
 	i1 = i + 1 < h->hm_w ? i + 1 : i;
 	j1 = j + 1 < h->hm_h ? j + 1 : j;
-	r0 = h->heights + (uint16_t)(j * h->hm_w);
-	r1 = h->heights + (uint16_t)(j1 * h->hm_w);
+	r0 = h->heights + MULU16(j, hw);
+	r1 = h->heights + MULU16(j1, hw);
 	/* Bytes are 0..255, so t and b are 8.8 and v is 8.16. */
 	t = ((int32_t)r0[i] << 8) + MULS16(r0[i1] - r0[i], fx);
 	b = ((int32_t)r1[i] << 8) + MULS16(r1[i1] - r1[i], fx);

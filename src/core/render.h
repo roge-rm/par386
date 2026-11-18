@@ -36,6 +36,9 @@ typedef struct {
 	uint8_t pin;                /* which of the hole's pins has the flag */
 } RenderView;
 
+/* Stages timed in RenderStats.ticks. */
+enum { RS_GATHER, RS_TERRAIN, RS_SKY, RS_OBJECTS, RS_GOLFER, RS_COUNT };
+
 /* Counts for working out the time on a slow CPU. */
 typedef struct {
 	uint32_t steps;             /* depth steps marched */
@@ -47,7 +50,16 @@ typedef struct {
 	uint32_t sprite_px;         /* sprite pixels looked at */
 	uint32_t divides;
 	uint32_t dropped;           /* objects left out: clip pool or object list full */
+	uint32_t ticks[RS_COUNT];          /* clock ticks per stage (RS_*), if render_clock was given one */
 } RenderStats;
+
+typedef uint32_t (*RenderClock)(void);
+
+/* Where render_map put things, in pixels, and the ball to pin distance. */
+typedef struct {
+	int16_t bx, by, px, py;
+	uint16_t yards;
+} RenderMap;
 
 /* Bytes of work memory render_scene needs for this surface. */
 uint32_t SEC_RENDER render_work_size(const Surface *s);
@@ -55,5 +67,12 @@ uint32_t SEC_RENDER render_work_size(const Surface *s);
  * Returns 0, or -1 if the surface isn't 160 or 320 wide. */
 int SEC_RENDER render_scene(Surface *s, const RenderView *v, const RenderArt *a,
                             void *work, RenderStats *stats);
+/* Sets the clock render_scene times its stages with, or 0 for none. */
+void SEC_RENDER render_clock(RenderClock fn);
+/* Draws the whole hole from above into the view area, scaled to fit with
+ * the tee at the bottom: surfaces, trees as dots, the tee, the pin, the
+ * ball and a line from the ball to the pin. Text is left to the caller.
+ * Returns 0, or -1 if the surface isn't 160 or 320 wide. */
+int SEC_RENDER render_map(Surface *s, const RenderView *v, RenderMap *out);
 
 #endif

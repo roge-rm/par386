@@ -5,9 +5,7 @@
 #include <PalmOS.h>
 #include "resource.h"
 #include "front.h"
-#ifdef DEBUG
-#include "hole.h"
-#endif
+#include "play.h"
 
 #define kMinRomVersion sysMakeROMVersion(3, 1, 0, sysROMStageRelease, 0)
 #define kRom35 sysMakeROMVersion(3, 5, 0, sysROMStageRelease, 0)
@@ -31,6 +29,25 @@ static Surface gS;
 static Front gFront;
 static Boolean gHiRes, gDepthSet, gPalSet;
 static UInt32 gOldDepth;
+static UInt32 gHeapStart;      /* free dynamic heap at launch */
+
+/* Playing a hole. The hole record stays locked in the course database and
+ * the surface grid sits in a record of a scratch database, both out of the
+ * dynamic heap. */
+#define kScratchName "Par386 Scratch"
+#define kCreator     'P386'
+#define PIC_SCENE    0xFFFF     /* gBgPic when gBg holds the scene */
+static Boolean gPlaying;
+static Play gPlay;
+static Hole gHole;
+static SurfaceGrid gGrid;
+static DmOpenRef gCourseDb, gScratchDb;
+static MemHandle gHoleH, gGridH;
+static UInt32 gMinFree;        /* least free heap while the scene was drawn */
+#ifdef DEBUG
+static RenderStats gStats;
+static UInt32 gDrawTicks, gMapTicks;
+#endif
 
 #ifdef DEBUG
 static char debugLine[48];
@@ -286,8 +303,192 @@ static Boolean RedrawLines(void)
 	return true;
 }
 
+#ifdef DEBUG
+static UInt32 Ticks(void)
+{
+	return TimGetTicks();
+}
+#endif
+
+static UInt32 FreeHeap(void)
+{
+	UInt32 fr = 0, mx = 0;
+	MemHeapFreeBytes(0, &fr, &mx);
+	return fr;
+}
+
+/* surface_raster's row writer: rows go straight into the locked grid record. */
+static void GridRow(void *ctx, uint16_t row, const uint8_t *bytes, uint16_t len)
+{
+	DmWrite(ctx, (UInt32)row * gGrid.stride, bytes, len);
+}
+
+static void PlayEnd(void)
+{
+	LocalID id;
+
+	if (gGridH) MemHandleUnlock(gGridH);
+	if (gHoleH) MemHandleUnlock(gHoleH);
+	gGridH = gHoleH = NULL;
+	if (gScratchDb) DmCloseDatabase(gScratchDb);
+	if (gCourseDb) DmCloseDatabase(gCourseDb);
+	gScratchDb = gCourseDb = 0;
+	if ((id = DmFindDatabase(0, kScratchName)) != 0) DmDeleteDatabase(0, id);
+	gPlaying = false;
+}
+
+/* Opens hole 1 of the test course and draws its surface grid into the scratch record. */
+static Boolean PlayStart(void)
+{
+	LocalID id = DmFindDatabase(0, "Par386 Test");
+	MemHandle h;
+	UInt16 at = 0;
+	UInt8 row[SURF_ROW_MAX];
+
+	if (!id || (gCourseDb = DmOpenDatabase(0, id, dmModeReadOnly)) == 0) return false;
+	if ((h = DmQueryRecord(gCourseDb, 1)) == NULL) return false;
+	gHoleH = h;
+	if (hole_parse(&gHole, MemHandleLock(h), MemHandleSize(h)) != HOLE_OK) return false;
+	surface_size(&gHole, &gGrid);
+	if ((id = DmFindDatabase(0, kScratchName)) != 0) DmDeleteDatabase(0, id);
+	if (DmCreateDatabase(0, kScratchName, kCreator, 'Tmp ', false) != errNone) return false;
+	if ((id = DmFindDatabase(0, kScratchName)) == 0) return false;
+	if ((gScratchDb = DmOpenDatabase(0, id, dmModeReadWrite)) == 0) return false;
+	if ((h = DmNewRecord(gScratchDb, &at, (UInt32)gGrid.stride * gGrid.h)) == NULL) return false;
+	surface_raster(&gHole, row, GridRow, MemHandleLock(h));
+	MemHandleUnlock(h);
+	DmReleaseRecord(gScratchDb, at, true);
+	gGridH = h;
+	gGrid.cells = MemHandleLock(h);
+	play_init(&gPlay, &gHole, &gGrid);
+	gPlaying = true;
+	return true;
+}
+
+/* Locks a resource for render_scene and keeps its handle in hs to let go of after. */
+static void LockArt(RenderData *d, UInt32 type, UInt16 id, MemHandle *hs, UInt16 *n)
+{
+	MemHandle h = DmGetResource(type, id);
+	if (!h) return;
+	d->p = MemHandleLock(h);
+	d->len = MemHandleSize(h);
+	hs[(*n)++] = h;
+}
+
+static void KeepScene(void)
+{
+	RectangleType r = { { 0, 0 }, { 160, 160 } };
+	UInt16 err;
+
+	if (!gBg) gBg = WinCreateOffscreenWindow(160, 160, gHiRes ? nativeFormat : screenFormat, &err);
+	if (gBg) {
+		WinCopyRectangle(gOff, gBg, &r, 0, 0, winPaint);
+		gBgPic = PIC_SCENE;
+	}
+}
+
+static void PlayStatus(Boolean map)
+{
+#ifdef DEBUG
+	/* Scene: draw time in ms, free heap at its lowest while drawing and what
+	 * the game uses of it. Map: its draw time, then the scene's stages in
+	 * ticks (gather, terrain, sky, objects, golfer). */
+	char t[32];
+	UInt32 tps = SysTicksPerSecond();
+	if (map)
+		StrPrintF(t, "M%lu %lu/%lu/%lu/%lu/%lu", gMapTicks * 1000 / tps, gStats.ticks[RS_GATHER],
+		          gStats.ticks[RS_TERRAIN], gStats.ticks[RS_SKY], gStats.ticks[RS_OBJECTS], gStats.ticks[RS_GOLFER]);
+	else
+		StrPrintF(t, "%lums %luK u%luK", gDrawTicks * 1000 / tps, gMinFree >> 10,
+		          gHeapStart > gMinFree ? (gHeapStart - gMinFree) >> 10 : 0);
+	play_status(&gS, &gPlay, t);
+#else
+	(void)map;
+	play_status(&gS, &gPlay, NULL);
+#endif
+}
+
+/* Draws the scene with the art resources locked and the work memory borrowed for the draw. */
+static void SceneRender(void)
+{
+	RenderArt art;
+	MemHandle hs[RENDER_TYPES * RENDER_SIZES + 2];
+	UInt16 n = 0, t, k;
+	void *work;
+	UInt32 fr;
+#ifdef DEBUG
+	UInt32 t0;
+#endif
+
+	MemSet(&art, sizeof(art), 0);
+	for (t = 0; t < RENDER_TYPES; t++)
+		for (k = 0; k < RENDER_SIZES; k++)
+			LockArt(&art.spr[t][k], 'Spr8', 1000 + t * 10 + k, hs, &n);
+	LockArt(&art.golfer, 'Spr8', 2000 + gS.scale - 1, hs, &n);
+	LockArt(&art.backdrop, 'Bkd8', 1000 + gS.scale - 1, hs, &n);
+	work = MemPtrNew(render_work_size(&gS));
+	fr = FreeHeap();
+	if (fr < gMinFree || !gMinFree) gMinFree = fr;
+	if (work) {
+#ifdef DEBUG
+		render_clock(Ticks);
+		t0 = TimGetTicks();
+		render_scene(&gS, &gPlay.rv, &art, work, &gStats);
+		gDrawTicks = TimGetTicks() - t0;
+#else
+		render_scene(&gS, &gPlay.rv, &art, work, NULL);
+#endif
+		MemPtrFree(work);
+	} else {
+		gfx_fill(&gS, 0, 0, gS.w, gS.h, UIC_BLACK);
+	}
+	for (k = 0; k < n; k++) {
+		MemHandleUnlock(hs[k]);
+		DmReleaseResource(hs[k]);
+	}
+	PlayStatus(false);
+	KeepScene();
+	Show();
+}
+
+static void PlayAct(int f)
+{
+	RectangleType r = { { 0, 0 }, { 160, 160 } };
+
+	if (f & PL_BACK) {
+		PlayEnd();
+		gFront.screen = SCR_MENU;
+		Redraw();
+	} else if (f & PL_MAP) {
+#ifdef DEBUG
+		UInt32 t0 = TimGetTicks();
+#endif
+		play_map(&gS, &gPlay);
+#ifdef DEBUG
+		gMapTicks = TimGetTicks() - t0;
+#endif
+		PlayStatus(true);
+		Show();
+	} else if ((f & PL_SCENE) && gBg && gBgPic == PIC_SCENE) {
+		WinCopyRectangle(gBg, gOff, &r, 0, 0, winPaint);
+		Show();
+	} else if (f & (PL_SCENE | PL_RENDER)) {
+		SceneRender();
+	}
+}
+
 static void Act(int r)
 {
+	if (r & FR_PLAY) {
+		if (PlayStart()) {
+			SceneRender();
+		} else {
+			PlayEnd();
+			front_message(&gFront, "No course", "Install\nPar386-Test.pdb\nand try again.");
+			Redraw();
+		}
+		return;
+	}
 	if (r & FR_QUIT) Quit();
 	else if ((r & FR_LINES) && RedrawLines()) return;
 	else if (r & FR_REDRAW) Redraw();
@@ -304,7 +505,8 @@ static Boolean MainFormHandleEvent(EventType *e)
 		Show();
 		return true;
 	case penDownEvent:
-		Act(front_tap(&gFront, e->screenX, e->screenY));
+		if (gPlaying) PlayAct(play_tap(&gPlay, e->screenX, e->screenY));
+		else Act(front_tap(&gFront, e->screenX, e->screenY));
 		return true;
 	default:
 		return false;
@@ -331,6 +533,17 @@ static void EventLoop(void)
 
 	do {
 		EvtGetEvent(&e, evtWaitForever);
+		if (e.eType == keyDownEvent && gPlaying) {
+			/* the Menu button and backspace go back to the clubhouse */
+			WChar c = e.data.keyDown.chr;
+			/* a held key would queue up toggles during the draw */
+			if (e.data.keyDown.modifiers & autoRepeatKeyMask) continue;
+			key = (c == vchrMenu || c == chrBackspace || c == chrEscape) ? KEY_BACK : MapKey(&e);
+			if (key != KEY_NONE) {
+				PlayAct(play_key(&gPlay, key));
+				continue;
+			}
+		}
 		if (e.eType == keyDownEvent && (key = MapKey(&e)) != KEY_NONE) {
 			Act(front_key(&gFront, key));
 			continue;
@@ -353,6 +566,7 @@ UInt32 PilotMain(UInt16 cmd, void *cmdPBP, UInt16 launchFlags)
 		FrmAlert(RomIncompatibleAlert);
 		return sysErrRomIncompatible;
 	}
+	gHeapStart = FreeHeap();
 	if (ScreenOpen() != errNone) {
 		ScreenClose();
 		FrmAlert(ScreenAlert);
@@ -365,6 +579,7 @@ UInt32 PilotMain(UInt16 cmd, void *cmdPBP, UInt16 launchFlags)
 	FrmGotoForm(MainForm);
 	EventLoop();
 	FrmCloseAllForms();
+	if (gPlaying) PlayEnd();
 	ScreenClose();
 	return 0;
 }

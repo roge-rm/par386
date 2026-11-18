@@ -11,6 +11,7 @@
 #include <string.h>
 #include "render.h"
 #include "pal.h"
+#include "play.h"
 
 static int fails, checks;
 
@@ -165,6 +166,25 @@ static void depth160(const RenderView *v, const RenderArt *a, int depth)
 	surface_d(&s, 1, depth);
 	CHECK(draw(&s, v, a, NULL) == 0);
 	free(s.bits);
+}
+
+/* Draws the hole map twice onto different fill values; any pixel that differs was never written. */
+static int draw_map(Surface *s, const Play *p, int *unwritten)
+{
+	Surface t = *s;
+	RenderMap m;
+	size_t n = (size_t)s->rowBytes * s->h, i;
+	int r;
+
+	t.bits = malloc(n);
+	memset(s->bits, 0x00, n);
+	memset(t.bits, 0xFF, n);
+	r = render_map(s, &p->rv, &m);
+	render_map(&t, &p->rv, &m);
+	*unwritten = 0;
+	for (i = 0; i < n; i++) *unwritten += s->bits[i] != t.bits[i];
+	free(t.bits);
+	return r;
 }
 
 /* A copy of the first len bytes in a malloc of exactly len bytes. */
@@ -325,6 +345,31 @@ int main(int argc, char **argv)
 		surface(&s, 1);
 		s.w = 100;
 		CHECK(render_scene(&s, &v, &art[0], NULL, NULL) == -1);
+		free(s.bits);
+	}
+
+	/* The hole map at 160 2-bit and 320 8-bit, then the status strip and the map labels. */
+	{
+		Play pl;
+		Surface s;
+		int unwritten;
+		play_init(&pl, &h, &g);
+		for (scale = 1; scale <= 2; scale++) {
+			surface(&s, scale);
+			CHECK(draw_map(&s, &pl, &unwritten) == 0);
+			CHECK(unwritten == 0);
+			if (unwritten) printf("  map %d: %d bytes left unwritten\n", s.w, unwritten);
+			if (scale == 1) {
+				play_status(&s, &pl, NULL);
+				play_status(&s, &pl, "Info text");
+				play_map(&s, &pl);
+			}
+			save(&s, "map");
+			free(s.bits);
+		}
+		surface(&s, 2);
+		play_status(&s, &pl, NULL);
+		play_map(&s, &pl);
 		free(s.bits);
 	}
 

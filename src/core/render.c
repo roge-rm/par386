@@ -42,6 +42,9 @@ static const uint16_t obj_h16[RENDER_TYPES] = {
 	0, 192, 224, 208, 35, 21, 128, 80, 24
 };
 
+/* The ball's second pixel and its black edge on 4 greys, from the ball point. */
+static const int8_t ball_dx[5] = { 1, -1, 2, 0, 1 }, ball_dy[5] = { 0, 0, 0, 1, 1 };
+
 static const uint8_t bayer[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
 
 typedef struct {
@@ -66,6 +69,9 @@ typedef struct {
 	int32_t camb;               /* camera height in heightmap byte steps, 8.8 */
 	int16_t fx, fy, rx, ry;     /* forward and right, 2.14 */
 	uint32_t stepf;             /* yards per byte step (16.16) times the focal length */
+	fixed mx, my;               /* heightmap's last cell, 16.16 cells */
+	uint16_t hw, hh;            /* heightmap size; 16 bits, or MULU16 isn't one mulu.w */
+	int16_t ak, bk;             /* slope light per gradient step across and along */
 	int16_t *ybuf;
 	uint8_t *prev;              /* surface of the last sample in each column */
 	RObj *obj;
@@ -357,16 +363,91 @@ static fixed SEC_RENDER near_start(const R *r)
 	return z;
 }
 
-/* The terrain, front to back. */
+/* Height and light at a point, for the terrain march: the row the ground
+ * projects to in 1/16 pixels (clamped to 16 bits) and its slope light in
+ * ramp steps of 16. m and sh project at this step's depth (kz). */
+static void SEC_RENDER sample(const R *r, fixed px, fixed py, int16_t m, uint8_t sh, int16_t *y16, int16_t *lv)
+{
+	const Hole *h = r->h;
+	fixed gx = px >> h->hm_shift, gy = py >> h->hm_shift;
+	uint16_t i, j, i1, j1, fx, fy, hw = r->hw;
+	const uint8_t *r0, *r1;
+	int32_t t, b, hb, y;
+	int16_t sx0, sx1, gxs, gys;
+
+	if (gx < 0) gx = 0;
+	if (gx > r->mx) gx = r->mx;
+	if (gy < 0) gy = 0;
+	if (gy > r->my) gy = r->my;
+	i = (uint16_t)(gx >> 16); fx = (uint16_t)((gx >> 8) & 255);
+	j = (uint16_t)(gy >> 16); fy = (uint16_t)((gy >> 8) & 255);
+	i1 = i + 1 < hw ? i + 1 : i;
+	j1 = j + 1 < r->hh ? j + 1 : j;
+	r0 = h->heights + MULU16(j, hw);
+	r1 = h->heights + MULU16(j1, hw);
+	sx0 = r0[i1] - r0[i];
+	sx1 = r1[i1] - r1[i];
+	t = ((int32_t)r0[i] << 8) + MULS16(sx0, fx);
+	b = ((int32_t)r1[i] << 8) + MULS16(sx1, fx);
+	hb = t + (MULS16((b - t) >> 1, fy) >> 7);
+
+	/* gradients in 1/16 byte steps per heightmap cell */
+	gxs = (int16_t)(sx0 * 16 + (MULS16(sx1 - sx0, fy) >> 4));
+	gys = (int16_t)((b - t) >> 4);
+	*lv = (int16_t)(LIGHT_FLAT + ((MULS16(gxs, r->ak) + MULS16(gys, r->bk)) >> 12));
+
+	y = MULS16(dz6(r->camb, hb), m);
+	if (sh >= 4) y >>= sh - 4;
+	else if (y > 0x3FFFFFL) y = 0x3FFFFFFL;
+	else if (y < -0x3FFFFFL) y = -0x3FFFFFFL;
+	else y <<= 4 - sh;
+	y += (int32_t)r->yh << 4;
+	if (y > 16000) y = 16000;
+	if (y < -16000) y = -16000;
+	*y16 = (int16_t)y;
+}
+
+/* Work counts for the host tests; left out on the Palm, where they'd cost time in the inner loops. */
+#ifdef __palmos__
+#define COUNT(e)
+#else
+#define COUNT(e) (e)
+#endif
+
+/* One column's span of ground from row y down to row yb - 1, shaded from
+ * level lv (ramp steps of 16) on ramp base. */
+#define SHADE(c, xx) do { \
+	uint8_t tb = bayer[((yy & 3) << 2) | (xx & 3)]; \
+	int16_t l = lv + (dith ? tb : 8); \
+	if (ns < 8) { \
+		int16_t nz = pal_noise[((yy & 15) << 4) | (xx & 15)]; \
+		l += (dith ? nz * 3 : nz) >> ns; \
+	} \
+	l >>= 4; \
+	if (l < 0) l = 0; \
+	if (l > PAL_RAMP_N - 1) l = PAL_RAMP_N - 1; \
+	c = (hz > ((tb * 7 + 3) & 15)) ? (uint8_t)(PAL_HAZE + l) : (uint8_t)(base + l); \
+} while (0)
+
+/* The terrain, front to back. At each depth step the heights and slope light
+ * are worked out every 4 columns (8 on 320 screens), twice that from LONG_Z,
+ * and drawn in between from straight lines. The surface is looked up in every column near the camera and every
+ * other column from HALF_Z on, where spans are a pixel or two tall. */
+#define SEG_SHIFT 2
+#define HALF_Z    32       /* yards */
+#define LONG_Z    64
+
 static void SEC_RENDER terrain(R *r)
 {
 	const Hole *h = r->h;
 	const SurfaceGrid *g = r->g;
-	fixed z = near_start(r), mx = (fixed)(h->hm_w - 1) << 16, my = (fixed)(h->hm_h - 1) << 16;
-	uint8_t on = 0, dith = r->lg == 3;
-	uint16_t hw = h->hm_w, hh = h->hm_h;    /* 16 bits, or MULU16 isn't one mulu.w */
-	int16_t ak, bk, sand_drop, water_drop, stripe = dith ? 12 : 18;
-	uint16_t step = 0;
+	fixed z = near_start(r);
+	uint8_t on = 0, dith = r->lg == 3, ks = (uint8_t)(SEG_SHIFT + (r->scale > 1));
+	int16_t sand_drop, water_drop, stripe = dith ? 12 : 18, seg;
+	uint16_t step = 0, rb = r->rb, gw = g->w, gh = g->h, gs = g->stride;
+	int16_t *ybuf = r->ybuf;
+	uint8_t *prevs = r->prev;
+	const uint8_t *cells = g->cells;
 
 	/* Slope light: sun from the left, up and behind the camera, (-0.55, 0.62, -0.56)
 	 * in (right, up, forward). Light = 0.62 + 0.55 * rise to the right + 0.56 * rise
@@ -378,8 +459,8 @@ static void SEC_RENDER terrain(R *r)
 		/* 2.14 times 140 levels per unit light times 4 times 256 / 16384 */
 		ca = fix_mul((fixed)((ca * 35) >> 2), h->step) >> h->hm_shift;
 		cb = fix_mul((fixed)((cb * 35) >> 2), h->step) >> h->hm_shift;
-		ak = (int16_t)(ca > 32767 ? 32767 : ca < -32767 ? -32767 : ca);
-		bk = (int16_t)(cb > 32767 ? 32767 : cb < -32767 ? -32767 : cb);
+		r->ak = (int16_t)(ca > 32767 ? 32767 : ca < -32767 ? -32767 : ca);
+		r->bk = (int16_t)(cb > 32767 ? 32767 : cb < -32767 ? -32767 : cb);
 		/* bunkers sit 0.4 yards down and water 0.25, for their lips */
 		ca = fix_div(26214, h->step) >> 8;
 		cb = fix_div(16384, h->step) >> 8;
@@ -388,9 +469,9 @@ static void SEC_RENDER terrain(R *r)
 	}
 
 	while (z < Z_FAR) {
-		fixed zr, dpx, dpy, px, py, fz;
-		int16_t m, x, hz, ns, ymax;
-		uint8_t sh;
+		fixed zr, dpx, dpy, px, py, spx, spy, dpxs, dpys, dpxc, dpyc, fz;
+		int16_t m, x, xe, hz, ns, ymax, ya, la, yn, ln, sand_px, water_px, cw;
+		uint8_t sh, kss;
 
 		while (on < r->nobj && r->obj[on].depth <= z) snap(r, &r->obj[on++]);
 
@@ -402,146 +483,183 @@ static void SEC_RENDER terrain(R *r)
 		px = r->camx + mulq(z, r->fx) - dpx * r->cx + (dpx >> 1);
 		py = r->camy + mulq(z, r->fy) - dpy * r->cx + (dpy >> 1);
 		fz = z >> 16;
+		cw = fz < HALF_Z ? 1 : 2;
+		/* segments twice as wide from LONG_Z, still about a heightmap cell to 200 yards */
+		kss = (uint8_t)(ks + (fz >= LONG_Z));
+		seg = (int16_t)(1 << kss);
+		dpxs = dpx * seg;
+		dpys = dpy * seg;
+		spx = px;
+		spy = py;
+		dpxc = dpx * cw;
+		dpyc = dpy * cw;
 		hz = fz < 140 ? 0 : fz > 620 ? 12 : (int16_t)((fz - 140) / 40);
 		ns = fz < 10 ? 0 : fz < 24 ? 1 : fz < 48 ? 2 : 8;
+		{
+			int32_t d = MULS16(sand_drop >> 2, m) >> sh, e = MULS16(water_drop >> 2, m) >> sh;
+			sand_px = (int16_t)(d > 1000 ? 1000 : d);
+			water_px = (int16_t)(e > 1000 ? 1000 : e);
+		}
 		ymax = 0;
 		r->st->steps++;
-		r->st->samples += r->w;
+		r->st->samples += (r->w >> kss) + 1;
 
-		for (x = 0; x < r->w; x++, px += dpx, py += dpy) {
-			fixed gx = px >> h->hm_shift, gy = py >> h->hm_shift;
-			uint16_t i, j, i1, j1, fx, fy;
-			const uint8_t *r0, *r1;
-			int32_t t, b, hb, y;
-			uint8_t surf, prev;
-			int16_t yb = r->ybuf[x];
+		sample(r, spx, spy, m, sh, &ya, &la);
+		for (x = 0; x < r->w; ya = yn, la = ln) {
+			int16_t yd, ld;
+			spx += dpxs;
+			spy += dpys;
+			sample(r, spx, spy, m, sh, &yn, &ln);
+			yd = (int16_t)(((yn - ya) >> kss) * cw);
+			ld = (int16_t)(((ln - la) >> kss) * cw);
+			for (xe = x + seg; x < xe; x += cw, px += dpxc, py += dpyc, ya += yd, la += ld) {
+				int16_t yb = ybuf[x], y = ya >> 4, k;
+				uint8_t surf, prev;
 
-			if (yb > ymax) ymax = yb;
-			if (gx < 0) gx = 0;
-			if (gx > mx) gx = mx;
-			if (gy < 0) gy = 0;
-			if (gy > my) gy = my;
-			i = (uint16_t)(gx >> 16); fx = (uint16_t)((gx >> 8) & 255);
-			j = (uint16_t)(gy >> 16); fy = (uint16_t)((gy >> 8) & 255);
-			i1 = i + 1 < hw ? i + 1 : i;
-			j1 = j + 1 < hh ? j + 1 : j;
-			r0 = h->heights + MULU16(j, hw);
-			r1 = h->heights + MULU16(j1, hw);
-			t = ((int32_t)r0[i] << 8) + MULS16(r0[i1] - r0[i], fx);
-			b = ((int32_t)r1[i] << 8) + MULS16(r1[i1] - r1[i], fx);
-			hb = t + (MULS16((b - t) >> 1, fy) >> 7);
+				if (cw > 1 && ybuf[x + 1] > yb) yb = ybuf[x + 1];
+				if (yb > ymax) ymax = yb;
+				/* lowered ground (sand, water) only goes further down, so this hides it too */
+				if (y >= yb) continue;
 
-			/* Surface, with the lookup shaken by up to half a yard near the camera so cell edges break up. */
-			{
-				fixed sx = px, sy = py;
-				int32_t cx, cy;
-				if (fz < 48) {
-					sx += (fixed)pal_noise[(x * 7 + step * 13) & 255] * 4096;
-					sy += (fixed)pal_noise[(x * 11 + step * 5 + 101) & 255] * 4096;
-				}
-				cx = sx >> (16 + SURF_CELL_SHIFT);
-				cy = sy >> (16 + SURF_CELL_SHIFT);
-				if (sx < 0 || sy < 0 || cx >= g->w || cy >= g->h) {
-					surf = SURF_OOB;
-				} else {
-					uint8_t c = g->cells[MULU16(cy, g->stride) + (cx >> 1)];
-					surf = (cx & 1) ? (c & 15) : (c >> 4);
-					if (surf >= SURF_COUNT) surf = SURF_OOB;
-				}
-			}
-			prev = r->prev[x];
-			r->prev[x] = surf;
-			if (surf == SURF_BUNKER) hb -= sand_drop;
-			else if (surf == SURF_WATER) hb -= water_drop;
-
-			y = r->yh + (MULS16(dz6(r->camb, hb), m) >> sh);
-			if (y >= yb) continue;
-			if (y < 0) y = 0;
-
-			{
-				int16_t lv, gxs, gys, yy;
-				uint8_t base = (uint8_t)(PAL_TERRAIN + surf * PAL_RAMP_N), *p;
-				int16_t sx0 = r0[i1] - r0[i], sx1 = r1[i1] - r1[i];
-
-				gxs = (int16_t)(sx0 * 16 + (MULS16(sx1 - sx0, fy) >> 4));
-				gys = (int16_t)((b - t) >> 4);
-				lv = LIGHT_FLAT + (int16_t)((MULS16(gxs, ak) + MULS16(gys, bk)) >> 12);
-				switch (surf) {
-				case SURF_FAIRWAY:
-					lv += ((py >> 19) & 1) ? stripe : -stripe;    /* 8 yard mowing bands */
-					break;
-				case SURF_GREEN:
-					lv += ((py >> 18) & 1) ? stripe : -stripe;    /* 4 yard bands */
-					break;
-				case SURF_TEE:
-					lv += ((py >> 17) & 1) ? stripe : -stripe;
-					break;
-				case SURF_BUNKER:
-					lv += 16;
-					if (prev != SURF_BUNKER) lv = 4;      /* the near lip's shadow */
-					break;
-				case SURF_WATER:
-					/* darker near, lighter far where it shows the sky */
-					lv = 24 + (fz > 96 ? 96 : (int16_t)fz) * 2 / 3;
-					if (prev != SURF_WATER) lv = 0;       /* the near bank */
-					break;
-				default:
-					if (prev == SURF_BUNKER) lv += 24;   /* the far lip faces the camera */
-					break;
-				}
-				r->st->spans++;
-				p = pixp(r, x, (int16_t)y);
-				/* The shade of each pixel: the level dithered (8 bits only), grass
-				 * noise near the camera, and haze dithered in with distance. */
-#define SHADE(c) do { \
-					uint8_t tb = bayer[((yy & 3) << 2) | (x & 3)]; \
-					int16_t l = lv + (dith ? tb : 8); \
-					if (ns < 8) { \
-						int16_t nz = pal_noise[((yy & 15) << 4) | (x & 15)]; \
-						l += (dith ? nz * 3 : nz) >> ns; \
-					} \
-					l >>= 4; \
-					if (l < 0) l = 0; \
-					if (l > PAL_RAMP_N - 1) l = PAL_RAMP_N - 1; \
-					c = (hz > ((tb * 7 + 3) & 15)) ? (uint8_t)(PAL_HAZE + l) : (uint8_t)(base + l); \
-				} while (0)
-				/* 8 and 2 bits get their own loops so the write is inline */
-				if (r->lg == 3) {
-					for (yy = (int16_t)y; yy < yb; yy++, p += r->rb) {
-						uint8_t c;
-						SHADE(c);
-						*p = c;
+				/* Surface, with the lookup shaken by up to half a yard near the camera so cell edges break up. */
+				{
+					fixed sx = px, sy = py;
+					int16_t cx, cy;
+					if (ns < 8) {
+						sx += (fixed)pal_noise[(x * 7 + step * 13) & 255] * 4096;
+						sy += (fixed)pal_noise[(x * 11 + step * 5 + 101) & 255] * 4096;
 					}
-				} else if (r->lg == 1) {
-					uint8_t m = (uint8_t)(0xC0 >> ((x & 3) << 1)), nm = (uint8_t)~m;
-					for (yy = (int16_t)y; yy < yb; yy++, p += r->rb) {
-						uint8_t c;
-						SHADE(c);
-						*p = (uint8_t)((*p & nm) | (pal_pat2[((uint16_t)c << 2) | (yy & 3)] & m));
-					}
-				} else {
-					for (yy = (int16_t)y; yy < yb; yy++, p += r->rb) {
-						uint8_t c;
-						SHADE(c);
-						put(r, p, x, yy, c);
+					cx = (int16_t)(sx >> (16 + SURF_CELL_SHIFT));
+					cy = (int16_t)(sy >> (16 + SURF_CELL_SHIFT));
+					if (sx < 0 || sy < 0 || (uint16_t)cx >= gw || (uint16_t)cy >= gh) {
+						surf = SURF_OOB;
+					} else {
+						uint8_t c = cells[MULU16(cy, gs) + ((uint16_t)cx >> 1)];
+						surf = (cx & 1) ? (c & 15) : (c >> 4);
+						if (surf >= SURF_COUNT) surf = SURF_OOB;
 					}
 				}
-#undef SHADE
-				r->st->pixels += yb - y;
-				r->ybuf[x] = (int16_t)y;
+				prev = prevs[x];
+				prevs[x] = surf;
+				if (surf == SURF_BUNKER) {
+					y += sand_px;
+					if (y >= yb) continue;
+				} else if (surf == SURF_WATER) {
+					y += water_px;
+					if (y >= yb) continue;
+				}
+				if (y < 0) y = 0;
+
+				{
+					int16_t lv = la, yy;
+					uint8_t base = (uint8_t)(PAL_TERRAIN + surf * PAL_RAMP_N);
+
+					switch (surf) {
+					case SURF_FAIRWAY:
+						lv += ((py >> 19) & 1) ? stripe : -stripe;    /* 8 yard mowing bands */
+						break;
+					case SURF_GREEN:
+						lv += ((py >> 18) & 1) ? stripe : -stripe;    /* 4 yard bands */
+						break;
+					case SURF_TEE:
+						lv += ((py >> 17) & 1) ? stripe : -stripe;
+						break;
+					case SURF_BUNKER:
+						lv += 16;
+						if (prev != SURF_BUNKER) lv = 4;      /* the near lip's shadow */
+						break;
+					case SURF_WATER:
+						/* darker near, lighter far where it shows the sky */
+						lv = 24 + (fz > 96 ? 96 : (int16_t)fz) * 2 / 3;
+						if (prev != SURF_WATER) lv = 0;       /* the near bank */
+						break;
+					default:
+						if (prev == SURF_BUNKER) lv += 24;   /* the far lip faces the camera */
+						break;
+					}
+					if (cw > 1) prevs[x + 1] = surf;
+
+					/* the span in each column this sample covers */
+					for (k = 0; k < cw; k++) {
+						int16_t xx = x + k, ye = ybuf[xx];
+						uint8_t *p, pair = 0;
+						if (y >= ye) continue;
+						COUNT(r->st->spans++);
+						COUNT(r->st->pixels += ye - y);
+						ybuf[xx] = y;
+						/* at 2 bits a pair of columns with the same span is one byte's job */
+						if (!k && cw > 1 && r->lg == 1 && ybuf[xx + 1] == ye) {
+							pair = 1;
+							k++;
+							ybuf[xx + 1] = y;
+							COUNT(r->st->pixels += ye - y);
+						}
+						p = r->bits + MULU16(y, rb) + ((uint16_t)xx >> (3 - r->lg));
+						if (r->lg == 3) {
+							for (yy = y; yy < ye; yy++, p += rb) {
+								uint8_t c;
+								SHADE(c, xx);
+								*p = c;
+							}
+						} else if (r->lg == 1) {
+							/* 2 bits: the level isn't dithered, so a span is one colour
+							 * a row of the pattern, but for noise near and haze far */
+							uint8_t mk = (uint8_t)((pair ? 0xF0 : 0xC0) >> ((xx & 3) << 1)), nm = (uint8_t)~mk;
+							if (ns < 8) {
+								const int8_t *nzc = pal_noise + (xx & 15);
+								const uint8_t *pat = pal_pat2 + ((uint16_t)base << 2);
+								int16_t l0 = lv + 8;
+								for (yy = y; yy < ye; yy++, p += rb) {
+									int16_t l = (l0 + (nzc[(yy & 15) << 4] >> ns)) >> 4;
+									if (l < 0) l = 0;
+									if (l > PAL_RAMP_N - 1) l = PAL_RAMP_N - 1;
+									*p = (uint8_t)((*p & nm) | (pat[(l << 2) | (yy & 3)] & mk));
+								}
+							} else if (!hz) {
+								const uint8_t *pat;
+								int16_t l = (lv + 8) >> 4;
+								if (l < 0) l = 0;
+								if (l > PAL_RAMP_N - 1) l = PAL_RAMP_N - 1;
+								pat = pal_pat2 + ((uint16_t)(base + l) << 2);
+								for (yy = y; yy < ye; yy++, p += rb)
+									*p = (uint8_t)((*p & nm) | (pat[yy & 3] & mk));
+							} else {
+								uint8_t pat[4], q;
+								int16_t l = (lv + 8) >> 4;
+								if (l < 0) l = 0;
+								if (l > PAL_RAMP_N - 1) l = PAL_RAMP_N - 1;
+								for (q = 0; q < 4; q++) {
+									uint8_t tb = bayer[(q << 2) | (xx & 3)];
+									uint8_t c = (uint8_t)(hz > ((tb * 7 + 3) & 15) ? PAL_HAZE + l : base + l);
+									pat[q] = (uint8_t)(pal_pat2[((uint16_t)c << 2) | q] & mk);
+								}
+								for (yy = y; yy < ye; yy++, p += rb)
+									*p = (uint8_t)((*p & nm) | pat[yy & 3]);
+							}
+						} else {
+							for (yy = y; yy < ye; yy++, p += rb) {
+								uint8_t c;
+								SHADE(c, xx);
+								put(r, p, xx, yy, c);
+							}
+						}
+					}
+				}
 			}
 		}
 
 		/* Stop once nothing further can show: everything is filled up to where the highest ground could reach. */
 		if (ymax <= 0) break;
 		step++;
-		/* About z / 32 near (z / 26 on 160 wide screens, about 1.5 rows a step),
-		 * z / 21 from 32 yards and z / 11 from 160. */
-		if (z < (32L << 16)) z += r->scale > 1 ? (z >> 5) : (z >> 5) + (z >> 7);
+		/* z / 16 near (z / 24 on 320 screens), 3 to 6 rows a step from the
+		 * bottom of the view to 14 yards, then z / 21 from 32 yards and z / 11
+		 * from 160, where a step is under a row. */
+		if (z < (32L << 16)) z += r->scale > 1 ? (z >> 5) + (z >> 7) : (z >> 4);
 		else z += z < (160L << 16) ? (z >> 5) + (z >> 6) : (z >> 4) + (z >> 5);
 	}
 	while (on < r->nobj) snap(r, &r->obj[on++]);
 }
+#undef SHADE
 
 /* One PackBits row of n bytes from d at *pos into out. Returns -1 if cut short. */
 static int SEC_RENDER unpack_row(const uint8_t *d, uint32_t len, uint32_t *pos, uint8_t *out, uint16_t n)
@@ -598,6 +716,36 @@ static void SEC_RENDER sky(R *r, const RenderData *bk, angle aim)
 		}
 		p = pixp(r, 0, y);
 		sx = off;
+		if (r->lg == 1) {
+			/* 2 bits: the sky is one colour a row, so its pattern byte goes in
+			 * whole where all 4 pixels are sky and there's no backdrop */
+			uint8_t c = y <= r->yh ? (uint8_t)(PAL_SKY + ((sv + 8) >> 4)) : (uint8_t)(PAL_HAZE + 4);
+			const uint8_t *pat = pal_pat2 + (y & 3);
+			uint8_t b = pat[(uint16_t)c << 2];
+			const int16_t *yb = r->ybuf;
+			for (x = 0; x < r->w; x += 4, yb += 4, p++) {
+				if (!row && y < yb[0] && y < yb[1] && y < yb[2] && y < yb[3]) {
+					*p = b;
+					COUNT(r->st->sky += 4);
+				} else {
+					uint8_t k, v = *p, mk = 0xC0;
+					for (k = 0; k < 4; k++, mk >>= 2) {
+						if (y < yb[k]) {
+							uint8_t pc = b;
+							if (row && row[sx]) pc = pat[(uint16_t)row[sx] << 2];
+							v = (uint8_t)((v & ~mk) | (pc & mk));
+							COUNT(r->st->sky++);
+						}
+						if (++sx >= bw) sx = 0;
+					}
+					*p = v;
+					continue;
+				}
+				sx += 4;
+				while (sx >= bw && bw) sx -= bw;
+			}
+			continue;
+		}
 		for (x = 0; x < r->w; x++) {
 			uint8_t c = 0;
 			if (y < r->ybuf[x]) {
@@ -610,8 +758,9 @@ static void SEC_RENDER sky(R *r, const RenderData *bk, angle aim)
 						c = PAL_HAZE + 4;
 					}
 				}
-				put(r, p + ((uint16_t)x >> (3 - r->lg)), x, y, c);
-				r->st->sky++;
+				if (r->lg == 3) p[x] = c;
+				else put(r, p + ((uint16_t)x >> (3 - r->lg)), x, y, c);
+				COUNT(r->st->sky++);
 			}
 			if (++sx >= bw) sx = 0;
 		}
@@ -694,6 +843,31 @@ static void SEC_RENDER golfer(R *r, const RenderData *gd, int16_t bx, int16_t by
 		}
 	if (r->scale == 1 && by + 1 < r->vh && by + 1 >= 0 && bx >= 0 && bx < r->w)
 		put(r, pixp(r, bx, by + 1), bx, by + 1, PAL_GREY + 1);
+	/* On 4 greys only black stands out: the ball is 2 pixels wide with black
+	 * either side and under it. */
+	if (r->lg == 1 && r->scale == 1 && by >= 0 && by < r->vh) {
+		for (i = 0; i < 5; i++) {
+			int16_t x = bx + ball_dx[i], y = by + ball_dy[i];
+			if (x >= 0 && x < r->w && y < r->vh) put(r, pixp(r, x, y), x, y, i ? PAL_BLACK : PAL_WHITE);
+		}
+	}
+}
+
+static RenderClock clock_fn;
+
+void render_clock(RenderClock fn)
+{
+	clock_fn = fn;
+}
+
+/* Adds the ticks since t to stage k and returns the clock now. */
+static uint32_t SEC_RENDER lap(RenderStats *st, uint8_t k, uint32_t t)
+{
+	uint32_t now;
+	if (!clock_fn) return 0;
+	now = clock_fn();
+	if (t) st->ticks[k] += now - t;
+	return now;
 }
 
 uint32_t render_work_size(const Surface *s)
@@ -710,11 +884,12 @@ int render_scene(Surface *s, const RenderView *v, const RenderArt *a, void *work
 	int16_t x, y, bx, by;
 	fixed groundz;
 	int32_t bh;
+	uint32_t t;
 
 	if (s->scale < 1 || s->scale > 2 || s->w != 160 * s->scale || s->h < 160 * s->scale) return -1;
 	r.st = stats ? stats : &local;
 	{
-		RenderStats z = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+		RenderStats z = { 0, 0, 0, 0, 0, 0, 0, 0, 0, { 0, 0, 0, 0, 0 } };
 		*r.st = z;
 	}
 	r.bits = s->bits;
@@ -728,6 +903,10 @@ int render_scene(Surface *s, const RenderView *v, const RenderArt *a, void *work
 	r.lg = (uint8_t)(s->depth == 8 ? 3 : s->depth == 4 ? 2 : s->depth == 2 ? 1 : 0);
 	r.h = v->hole;
 	r.g = v->grid;
+	r.hw = r.h->hm_w;
+	r.hh = r.h->hm_h;
+	r.mx = (fixed)(r.hw - 1) << 16;
+	r.my = (fixed)(r.hh - 1) << 16;
 
 	/* work: y-buffer, last surfaces, objects, clip pool, a backdrop row; ints first for alignment */
 	r.ybuf = (int16_t *)wp;
@@ -759,10 +938,15 @@ int render_scene(Surface *s, const RenderView *v, const RenderArt *a, void *work
 	r.camb = fix_div(groundz + CAM_UP - r.h->base, r.h->step) >> 8;
 	r.stepf = (uint32_t)r.h->step * (uint32_t)r.f;
 
+	t = lap(r.st, 0, 0);
 	gather(&r, v, a);
+	t = lap(r.st, RS_GATHER, t);
 	terrain(&r);
+	t = lap(r.st, RS_TERRAIN, t);
 	sky(&r, &a->backdrop, v->aim);
+	t = lap(r.st, RS_SKY, t);
 	for (x = r.nobj; x > 0; x--) draw_obj(&r, &r.obj[x - 1]);
+	t = lap(r.st, RS_OBJECTS, t);
 
 	{
 		int16_t m;
@@ -772,8 +956,165 @@ int render_scene(Surface *s, const RenderView *v, const RenderArt *a, void *work
 		by = (int16_t)(r.yh + (MULS16(dz6(r.camb, bh), m) >> sh));
 	}
 	golfer(&r, &a->golfer, bx, by);
+	lap(r.st, RS_GOLFER, t);
 
 	/* the status strip, black for now */
+	for (y = r.vh; y < s->h; y++) {
+		uint8_t *p = r.bits + MULU16(y, r.rb);
+		for (x = 0; x < (int16_t)r.rb; x++) p[x] = 0xFF;
+	}
+	return 0;
+}
+
+/* A filled square of n pixels, clipped to the view. */
+static void SEC_RENDER dot(const R *r, int16_t x, int16_t y, int16_t n, uint8_t c)
+{
+	int16_t i, j;
+	for (j = 0; j < n; j++)
+		for (i = 0; i < n; i++) {
+			int16_t px = x + i, py = y + j;
+			if (px >= 0 && px < r->w && py >= 0 && py < r->vh) put(r, pixp(r, px, py), px, py, c);
+		}
+}
+
+int render_map(Surface *s, const RenderView *v, RenderMap *out)
+{
+	R r;
+	const Hole *h = v->hole;
+	const SurfaceGrid *g = v->grid;
+	fixed ypp, a, b, x0, wy;
+	int16_t x, y, left, top, mw, mh, sc;
+	uint16_t i;
+	HoleObject o;
+	uint8_t col[SURF_COUNT], xcell[320];
+
+	if (s->scale < 1 || s->scale > 2 || s->w != 160 * s->scale || s->h < 160 * s->scale) return -1;
+	r.bits = s->bits;
+	r.rb = s->rowBytes;
+	r.w = s->w;
+	sc = s->scale;
+	r.vh = (int16_t)((160 - RENDER_STATUS) * sc);
+	r.lg = (uint8_t)(s->depth == 8 ? 3 : s->depth == 4 ? 2 : s->depth == 2 ? 1 : 0);
+
+	/* yards per pixel, so the whole hole fits with a 2 pixel margin */
+	a = ((fixed)h->width << 16) / (r.w - 4 * sc);
+	b = ((fixed)h->length << 16) / (r.vh - 4 * sc);
+	ypp = a > b ? a : b;
+	if (ypp < 1) ypp = 1;
+	mw = (int16_t)(((fixed)h->width << 16) / ypp);
+	mh = (int16_t)(((fixed)h->length << 16) / ypp);
+	left = (r.w - mw) / 2;
+	top = (r.vh - mh) / 2;
+
+	/* surfaces at the middle of their ramps, out of bounds dark; off the hole is black (0xFF at every depth) */
+	for (i = 0; i < SURF_COUNT; i++)
+		col[i] = (uint8_t)(PAL_TERRAIN + i * PAL_RAMP_N + PAL_RAMP_N / 2);
+	col[SURF_OOB] = PAL_TERRAIN + SURF_OOB * PAL_RAMP_N + 1;
+	/* the grid column under each screen column, 0xFF off the hole */
+	x0 = ypp >> 1;
+	for (x = 0; x < r.w; x++) {
+		xcell[x] = 0xFF;
+		if (x >= left && x < left + mw) {
+			int32_t cx = x0 >> (16 + SURF_CELL_SHIFT);
+			xcell[x] = (uint8_t)(cx >= g->w ? g->w - 1 : cx);
+			x0 += ypp;
+		}
+	}
+	for (y = 0; y < r.vh; y++) {
+		uint8_t *p = pixp(&r, 0, y);
+		int32_t cy;
+		const uint8_t *cells;
+		if (y < top || y >= top + mh) {
+			for (x = 0; x < (int16_t)r.rb; x++) p[x] = 0xFF;
+			continue;
+		}
+		/* the far end at the top; sample each pixel's centre */
+		wy = ((fixed)h->length << 16) - (fixed)(y - top) * ypp - (ypp >> 1);
+		cy = wy >> (16 + SURF_CELL_SHIFT);
+		if (cy < 0) cy = 0;
+		if (cy >= g->h) cy = g->h - 1;
+		cells = g->cells + MULU16(cy, g->stride);
+		if (r.lg == 1) {
+			/* 2 bits: this row of each surface's pattern, a byte at a time */
+			uint8_t pr[SURF_COUNT + 1];
+			for (i = 0; i < SURF_COUNT; i++) pr[i] = pal_pat2[((uint16_t)col[i] << 2) | (y & 3)];
+			pr[SURF_COUNT] = 0xFF;
+			for (x = 0; x < r.w; x += 4, p++) {
+				uint8_t k, v = 0;
+				if (xcell[x] == 0xFF && xcell[x + 3] == 0xFF) {
+					*p = 0xFF;
+					continue;
+				}
+				for (k = 0; k < 4; k++) {
+					uint8_t cx = xcell[x + k], t = SURF_COUNT;
+					if (cx != 0xFF) {
+						t = cells[cx >> 1];
+						t = (cx & 1) ? (t & 15) : (t >> 4);
+						if (t >= SURF_COUNT) t = SURF_OOB;
+					}
+					v |= (uint8_t)(pr[t] & (0xC0 >> (k << 1)));
+				}
+				*p = v;
+			}
+			continue;
+		}
+		for (x = 0; x < r.w; x++) {
+			uint8_t c = PAL_BLACK, cx = xcell[x];
+			if (cx != 0xFF) {
+				uint8_t t = cells[cx >> 1];
+				t = (cx & 1) ? (t & 15) : (t >> 4);
+				c = col[t < SURF_COUNT ? t : SURF_OOB];
+			}
+			if (r.lg == 3) p[x] = c;
+			else put(&r, p + ((uint16_t)x >> (3 - r.lg)), x, y, c);
+		}
+	}
+
+#define MX(wx) ((int16_t)(left + (wx) / ypp))
+#define MY(wy) ((int16_t)(top + (((fixed)h->length << 16) - (wy)) / ypp))
+	/* trees and bushes as dark dots, rocks grey */
+	for (i = 0; i < h->object_count; i++) {
+		hole_object(h, i, &o);
+		if (o.type == OBJ_ROCK) dot(&r, MX(o.pos.x), MY(o.pos.y), sc, PAL_ROCK + 3);
+		else if (o.type >= OBJ_TREE && o.type <= OBJ_BUSH) dot(&r, MX(o.pos.x) - (sc >> 1), MY(o.pos.y) - (sc >> 1), sc + 1, PAL_TREE + 1);
+	}
+	/* the tee: a white square with a black edge */
+	x = MX(h->tees[0].pos.x);
+	y = MY(h->tees[0].pos.y);
+	dot(&r, x - sc, y - sc, 3 * sc, PAL_BLACK);
+	dot(&r, x, y, sc, PAL_WHITE);
+
+	/* the aim line from the ball to the pin, dashed black and white */
+	out->bx = MX(v->ball.x);
+	out->by = MY(v->ball.y);
+	out->px = MX(h->pins[v->pin & 3].x);
+	out->py = MY(h->pins[v->pin & 3].y);
+	out->yards = (uint16_t)((vec2_len(vec2_sub(h->pins[v->pin & 3], v->ball)) + FIX_HALF) >> 16);
+	{
+		int16_t dx = out->px - out->bx, dy = out->py - out->by;
+		int16_t ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
+		int16_t n = ax > ay ? ax : ay, k;
+		for (k = 2 * sc; k < n; k++) {
+			x = (int16_t)(out->bx + (int16_t)((int32_t)dx * k / n));
+			y = (int16_t)(out->by + (int16_t)((int32_t)dy * k / n));
+			dot(&r, x, y, 1, ((k / (2 * sc)) & 1) ? PAL_WHITE : PAL_BLACK);
+		}
+	}
+	/* the pin: a pole with a flag to its right */
+	x = out->px;
+	y = out->py;
+	for (i = 0; i <= (uint16_t)(5 * sc); i++) dot(&r, x, y - (int16_t)i, 1, PAL_BLACK);
+	for (i = 1; i <= (uint16_t)(3 * sc); i++) {
+		int16_t j;
+		for (j = 0; j < 2 * sc; j++) dot(&r, x + (int16_t)i, y - 5 * sc + j, 1, PAL_FLAG + 1);
+	}
+	/* the ball: white with a black ring */
+	dot(&r, out->bx - sc, out->by - sc, 3 * sc, PAL_BLACK);
+	dot(&r, out->bx, out->by, sc, PAL_WHITE);
+#undef MX
+#undef MY
+
+	/* the status strip, black */
 	for (y = r.vh; y < s->h; y++) {
 		uint8_t *p = r.bits + MULU16(y, r.rb);
 		for (x = 0; x < (int16_t)r.rb; x++) p[x] = 0xFF;

@@ -7,7 +7,7 @@ starts from the session, installs the PRC, launches Par 386, waits, saves
 OUTDIR/end.png and then runs the steps (tools/frondsteps.py; taps are in
 160x160 units and doubled here).
 
-Usage: frond-z72.py OUTDIR [--seconds N] [--nor NOR] [--prc PRC] [STEP ...]
+Usage: frond-z72.py OUTDIR [--seconds N] [--nor NOR] [--prc PRC] [--install PDB ...] [STEP ...]
 """
 import argparse
 import sys
@@ -51,6 +51,8 @@ def main():
     p.add_argument('--seconds', type=float, default=5)
     p.add_argument('--nor', type=Path, default=NOR)
     p.add_argument('--prc', type=Path, default=ROOT / 'build/Par386.prc')
+    p.add_argument('--install', type=Path, action='append', default=[],
+                   help='another PRC or PDB to install first, such as a course')
     p.add_argument('steps', nargs='*')
     a = p.parse_args()
     out = a.out.resolve()
@@ -67,6 +69,10 @@ def main():
             if time.monotonic() > end:
                 raise SystemExit(f'install: {reply.strip()}')
             time.sleep(2)
+        for f in a.install:
+            reply = core.send(f'install "{f.resolve()}"', 'installation', 60)
+            if 'successful' not in reply:
+                raise SystemExit(f'install {f}: {reply.strip()}')
         core.launch('Par 386')
         time.sleep(a.seconds)
         core.frame(out / 'end.png')

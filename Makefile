@@ -28,7 +28,7 @@ CFLAGS   = -O2 -Wall -Wno-unknown-pragmas $(DEFS) $(INCLUDES) -Isrc/core -Isrc/p
 LDFLAGS  = -L$(SDK)/lib/m68k-palmos-coff
 
 PALMSRCS = main
-CORESRCS = fixed trig vec hole gfx ui front render
+CORESRCS = fixed trig vec hole gfx ui front render play
 OBJS     = $(addprefix $(BUILD)/,$(addsuffix .o,$(PALMSRCS) $(CORESRCS)))
 
 all: build/$(PRC)

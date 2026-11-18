@@ -33,14 +33,21 @@ void front_draw(const Front *f, Surface *s)
 static int open_item(Front *f, uint8_t i)
 {
 	if (i == MAIN_QUIT) return FR_QUIT;
+	if (i == MAIN_PLAY) return FR_PLAY;
 	switch (i) {
-	case MAIN_PLAY: ui_dialog_init(&f->dlg, "Play a round", "Rounds come in a\nlater version.", "OK"); break;
 	case MAIN_PRACTICE: ui_dialog_init(&f->dlg, "Practice", "The range and the\ngreen come later.", "OK"); break;
 	case MAIN_COURSES: ui_dialog_init(&f->dlg, "Courses", "No courses yet.", "OK"); break;
 	default: ui_dialog_init(&f->dlg, "Settings", "Nothing to set yet.", "OK"); break;
 	}
 	f->dialog = 1;
 	return FR_REDRAW;
+}
+
+void front_message(Front *f, const char *title, const char *text)
+{
+	f->screen = SCR_MENU;
+	ui_dialog_init(&f->dlg, title, text, "OK");
+	f->dialog = 1;
 }
 
 int front_key(Front *f, uint8_t key)
