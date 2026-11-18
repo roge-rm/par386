@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include "ball.h"
 #include "play.h"
 
@@ -20,7 +21,7 @@ static int fails, checks;
 #define TOYD(v) ((v) / 65536.0)
 
 /* The stored checksum over the run of shots in checksum_run. */
-#define CHECKSUM 0x9f820dbcUL
+#define CHECKSUM 0x9577d95bUL
 
 /* Carry ranges in yards, longest first, rising down the bag with no overlaps. */
 static const int range_lo[CLUB_COUNT - 1] = { 230, 212, 198, 186, 176, 166, 155, 144, 132, 120, 108, 95, 80, 60 };
@@ -166,7 +167,7 @@ static void carry_table(void)
 		s = play(&in);
 		printf("Pt    %5d  %5d  on a flat green\n", (int)TOYD(s->carry), (int)(TOYD(s->total) + 0.5));
 		CHECK(s->carry == 0 && s->fly_n <= 1);
-		CHECK(s->total > YD(15) && s->total < YD(40));
+		CHECK(s->total > YD(BALL_PUTT_MAX - 2) && s->total < YD(BALL_PUTT_MAX + 2));
 		flat_make(0, SURF_FAIRWAY);
 	}
 }
@@ -362,6 +363,106 @@ static void slope_tests(void)
 	flat_make(0, SURF_FAIRWAY);
 }
 
+/* A putt on the made-up hole from (128, 20) toward the pin at (px, py),
+ * aimed off by off (binary angle units), rolling d yards on a flat green. */
+static Shot *putt(double px, double py, double d, int off)
+{
+	ShotIn in = shot_in(CLUB_PT);
+	in.lie = LIE_GREEN;
+	in.pin = vec2_make(YD(px), YD(py));
+	in.aim = (angle)(vec2_angle(vec2_sub(in.pin, in.pos)) + off);
+	in.range = YD(BALL_PUTT_MAX);
+	in.power = YD(d / BALL_PUTT_MAX);
+	return play(&in);
+}
+
+static double dist_to(const Shot *s, double px, double py)
+{
+	double dx = TOYD(s->stop.x) - px, dy = TOYD(s->stop.y) - py;
+	return sqrt(dx * dx + dy * dy);
+}
+
+static void putt_tests(void)
+{
+	static const double lens[4] = { 2, 6, 15, 30 };
+	int i, k, holed, best;
+	Shot *s;
+
+	/* on a flat green the putt rolls power times the range */
+	flat_make(0, SURF_GREEN);
+	for (i = 0; i < 4; i++) {
+		s = putt(200, 600, lens[i], 0);
+		printf("flat putt of %.0f yd: rolled %.2f in %.1f s, %d points\n", lens[i], TOYD(s->total), s->steps / 32.0, s->n);
+		CHECK(s->result == SHOT_OK && s->lie == LIE_GREEN && !s->lip);
+		CHECK(fabs(TOYD(s->total) - lens[i]) < 0.03 * lens[i] + 0.1);
+	}
+	/* the range sets the scale: half power of 10 yd is 5 */
+	{
+		ShotIn in = shot_in(CLUB_PT);
+		in.lie = LIE_GREEN;
+		in.range = YD(10);
+		in.power = YD(0.5);
+		s = play(&in);
+		CHECK(fabs(TOYD(s->total) - 5) < 0.2);
+	}
+
+	/* holing out: rolled to stop a foot past, dead straight or a little off */
+	s = putt(128, 26, 6.33, 0);
+	printf("6 yd putt, a foot past: %s, path %d points, last z %.2f\n", s->result == SHOT_HOLED ? "holed" : "missed", s->n, s->path[s->n - 1].z / 16.0);
+	CHECK(s->result == SHOT_HOLED && s->stop.x == YD(128) && s->stop.y == YD(26));
+	CHECK(s->path[s->n - 1].z < s->path[s->n - 2].z);
+	CHECK(s->lie == LIE_GREEN);
+	/* 0.04 yd off at the cup (0.4 degrees over 6 yd) still drops, 0.1 yd off misses by */
+	s = putt(128, 26, 6.33, 70);
+	CHECK(s->result == SHOT_HOLED);
+	s = putt(128, 26, 6.33, 175);
+	CHECK(s->result == SHOT_OK && !s->lip);
+	/* a putt that stops on the lip, short by under the cup's radius, drops */
+	s = putt(128, 26, 5.99, 0);
+	printf("dying at the lip: %s, %.3f yd from the cup\n", s->result == SHOT_HOLED ? "holed" : "missed", dist_to(s, 128, 26));
+	CHECK(s->result == SHOT_HOLED);
+	/* short by an inch more than that stays out */
+	s = putt(128, 26, 5.85, 0);
+	CHECK(s->result == SHOT_OK && dist_to(s, 128, 26) > 0.05);
+
+	/* too fast: a lip-out off the edge, turned aside, and over the middle when far too fast */
+	s = putt(128, 26, 12, 95);
+	printf("hit 6 yd past, off the edge: %s, lip %d, stopped %.2f yd aside\n", s->result == SHOT_HOLED ? "holed" : "missed", s->lip, fabs(TOYD(s->stop.x) - 128));
+	CHECK(s->result == SHOT_OK && s->lip);
+	CHECK(fabs(TOYD(s->stop.x) - 128) > 0.5);
+	s = putt(128, 26, 30, 0);
+	CHECK(s->result == SHOT_OK && s->lip);
+	CHECK(TOYD(s->stop.y) > 40);
+	/* firm through the middle (2 yd past) drops, 4 yd past lips out */
+	s = putt(128, 26, 7.2, 0);
+	CHECK(s->result == SHOT_HOLED);
+	s = putt(128, 26, 10.5, 0);
+	CHECK(s->result == SHOT_OK && s->lip);
+
+	/* a 3% slope down to the left: the straight putt breaks low and misses, one aimed up the hill drops */
+	flat_make(4, SURF_GREEN);
+	s = putt(128, 30, 10.4, 0);
+	printf("10 yd across a 3%% slope aimed straight: missed %.2f yd low\n", 128 - TOYD(s->stop.x));
+	CHECK(s->result == SHOT_OK && TOYD(s->stop.x) < 127.8);
+	holed = 0;
+	best = 0;
+	for (k = 0; k <= 3000 && !holed; k += 40) {
+		s = putt(128, 30, 10.4, -k);
+		if (s->result == SHOT_HOLED) { holed = 1; best = k; }
+	}
+	printf("  holed aimed %.1f degrees up the hill\n", best * 360.0 / 65536);
+	CHECK(holed && best > 0);
+	/* up and down the hill with the flat strength: short going up, long coming down */
+	s = putt(140, 20, 10, 0);
+	{
+		double up = TOYD(s->total);
+		s = putt(116, 20, 10, 0);
+		printf("10 yd strength up a 3%% slope: %.1f, down it: %.1f\n", up, TOYD(s->total));
+		CHECK(up < 9.5 && TOYD(s->total) > 10.5);
+	}
+	flat_make(0, SURF_FAIRWAY);
+}
+
 static uint32_t mix(uint32_t h, uint32_t v)
 {
 	return (h ^ v) * 16777619UL;
@@ -551,6 +652,194 @@ static void meter_tests(const Hole *h, const SurfaceGrid *g)
 	free(bg.bits);
 }
 
+/* Puts the ball where a shot stopped and lets play move on to the next one, as after a result. */
+static int place(Play *p, Surface *s, Surface *bg, vec2 at, uint8_t lie, uint32_t t)
+{
+	p->have_shot = 1;
+	memset(&p->shot, 0, sizeof p->shot);
+	p->shot.result = SHOT_OK;
+	p->shot.start = p->shot.stop = at;
+	p->shot.lie = lie;
+	p->shot.n = 1;
+	p->shown = 0;
+	p->state = PS_RESULT;
+	p->t0 = t;
+	return play_frame(p, s, bg, t + 1600);
+}
+
+/* Draws the green view into s and keeps it in bg, as the platform does. */
+static void green_view(Play *p, Surface *s, Surface *bg)
+{
+	CHECK(render_green(s, &p->rv) == 0);
+	memcpy(bg->bits, s->bits, (size_t)s->rowBytes * s->h);
+}
+
+/* A putt through play.c: the power click when the marker reaches the cup's tick, plus late ms. */
+static void putt_play(Play *p, Surface *s, Surface *bg, uint32_t t, int32_t late, const char *name)
+{
+	fixed d = vec2_len(vec2_sub(p->rv.hole->pins[p->rv.pin & 3], p->rv.ball));
+	uint32_t ms = (uint32_t)((double)d / p->range * MTR_UP_MS) + late;
+	int f, k = 0;
+	CHECK(play_key(p, KEY_SELECT, t) & PL_ANIM);
+	CHECK(p->state == PS_UP);
+	play_frame(p, s, bg, t + ms / 2);
+	if (name) save(s, "putt-meter");
+	play_tap(p, 80, 60, t + ms);
+	CHECK(p->state == PS_FLY && p->snap == 0);
+	for (t += ms; t < 200000; t += 30) {
+		f = play_frame(p, s, bg, t);
+		if (name && ++k == 20) save(s, name);
+		if (p->state == PS_DONE || (f & PL_RENDER)) break;
+	}
+}
+
+/* Putting on the test hole through play.c: the green view, the meter, holing out and gimmies. */
+static void green_tests(const Hole *h, const SurfaceGrid *g)
+{
+	Play p;
+	Surface s, bg;
+	vec2 pin = h->pins[0];
+	int f, n;
+	uint32_t t;
+
+	surface2(&s);
+	surface2(&bg);
+
+	/* onto the green 7 yd short of the pin: the putter and the green view */
+	play_init(&p, h, g, 7);
+	f = place(&p, &s, &bg, vec2_make(pin.x - YD(2), pin.y - YD(7)), LIE_GREEN, 1000);
+	CHECK(f & PL_RENDER);
+	CHECK(p.club == CLUB_PT && p.rv.green && p.stroke == 2 && p.state == PS_AIM);
+	CHECK(p.range == YD(11));
+	/* a putt that ends in the water or out of bounds shows the penalty, not the green */
+	{
+		static const uint8_t res[2] = { SHOT_WATER, SHOT_OOB };
+		int k;
+		for (k = 0; k < 2; k++) {
+			Play q = p;
+			memset(&q.shot, 0, sizeof q.shot);
+			q.club = CLUB_PT;
+			q.shot.result = res[k];
+			q.shot.lie = LIE_GREEN;
+			q.shot.start = q.shot.stop = q.rv.ball;
+			q.shot.n = 1;
+			q.shown = -1;
+			q.tf = 0;
+			q.state = PS_FLY;
+			play_frame(&q, &s, &bg, 10);
+			CHECK(q.state == PS_RESULT);
+			CHECK(strcmp(q.msg1, k == 0 ? "In the water" : "Out of bounds") == 0);
+		}
+	}
+	/* the putter only on the green */
+	CHECK(play_key(&p, KEY_UP, 3000) == 0 && p.club == CLUB_PT);
+	green_view(&p, &s, &bg);
+	play_frame(&p, &s, &bg, 3100);
+	/* the ball shows low in the middle and the cup about a third of the way down */
+	{
+		int16_t sx, sy;
+		fixed depth;
+		CHECK(render_point(&p.cam, p.rv.ball.x, p.rv.ball.y, hole_height(h, p.rv.ball.x, p.rv.ball.y), &sx, &sy, &depth));
+		printf("green view: ball at %d,%d, ", sx, sy);
+		CHECK(sx == 80 && sy > 100 && sy < 135);
+		CHECK(render_point(&p.cam, pin.x, pin.y, hole_height(h, pin.x, pin.y), &sx, &sy, &depth));
+		printf("cup at %d,%d\n", sx, sy);
+		CHECK(sx > 60 && sx < 100 && sy > 30 && sy < 70);
+	}
+	save(&s, "green-aim");
+	/* aim with the keys and a tap, and the view stays */
+	play_key(&p, KEY_LEFT, 3200);
+	CHECK(!(play_frame(&p, &s, &bg, 3300) & PL_RENDER));
+	play_tap(&p, 90, 50, 3400);
+	CHECK(!(play_frame(&p, &s, &bg, 3500) & PL_RENDER));
+	CHECK((int16_t)(p.aim - p.rv.aim) < 0);
+	play_init(&p, h, g, 7);
+	place(&p, &s, &bg, vec2_make(pin.x - YD(2), pin.y - YD(7)), LIE_GREEN, 1000);
+	green_view(&p, &s, &bg);
+	play_frame(&p, &s, &bg, 3100);
+
+	/* putts at the cup's tick until it's holed or given */
+	t = 10000;
+	for (n = 0; n < 4 && p.state != PS_DONE; n++) {
+		putt_play(&p, &s, &bg, t, 0, n ? NULL : "putt-roll");
+		printf("putt %d: %s, %s\n", n + 1, p.msg1, p.msg2);
+		if (p.state != PS_DONE) {
+			CHECK(p.rv.green);
+			green_view(&p, &s, &bg);
+			play_frame(&p, &s, &bg, t + 20000);
+		}
+		t += 30000;
+	}
+	save(&s, "putt-done");
+	CHECK(p.state == PS_DONE && n <= 3);
+	CHECK(strncmp(p.msg1, "In the cup", 10) == 0 || strncmp(p.msg1, "Gimme", 5) == 0);
+	CHECK(p.score == p.stroke);
+	CHECK(play_key(&p, KEY_SELECT, t) == PL_BACK);
+	CHECK(play_tap(&p, 80, 60, t) == PL_BACK);
+
+	/* holed through play.c, straight up the slope from 3 yd below the pin, a
+	 * little firmer each time: the score on the strip */
+	{
+		fixed gx = hole_height(h, pin.x + YD(1), pin.y) - hole_height(h, pin.x - YD(1), pin.y);
+		fixed gy = hole_height(h, pin.x, pin.y + YD(1)) - hole_height(h, pin.x, pin.y - YD(1));
+		double gl = sqrt((double)gx * gx + (double)gy * gy);
+		vec2 at = pin;
+		int late;
+		if (gl > 0) at = vec2_make(pin.x - (fixed)(3 * 65536.0 * gx / gl), pin.y - (fixed)(3 * 65536.0 * gy / gl));
+		for (late = 0; late < 400; late += 20) {
+			play_init(&p, h, g, 7);
+			place(&p, &s, &bg, at, LIE_GREEN, 1000);
+			green_view(&p, &s, &bg);
+			play_frame(&p, &s, &bg, 3000);
+			putt_play(&p, &s, &bg, 5000, late, NULL);
+			if (p.shot.result == SHOT_HOLED) break;
+		}
+		printf("3 yd putt up the slope (%.1f%%): %s, %s, %d ms late\n", gl / 65536.0 / 2 * 100, p.msg1, p.msg2, late);
+	}
+	CHECK(p.state == PS_DONE && p.shot.result == SHOT_HOLED);
+	CHECK(strcmp(p.msg1, "In the cup, 2 shots") == 0 && strcmp(p.msg2, "Eagle") == 0 && p.score == 2);
+	save(&s, "putt-holed");
+
+	/* left 1.5 ft away: given, one stroke more */
+	play_init(&p, h, g, 7);
+	p.stroke = 3;
+	f = place(&p, &s, &bg, vec2_make(pin.x + YD(0.5), pin.y), LIE_GREEN, 1000);
+	printf("gimme: %s, %s\n", p.msg1, p.msg2);
+	CHECK(!(f & PL_RENDER) && p.state == PS_DONE && p.score == 4);
+	CHECK(strcmp(p.msg1, "Gimme, 4 shots") == 0 && strcmp(p.msg2, "Par") == 0);
+	/* 2.5 ft isn't */
+	play_init(&p, h, g, 7);
+	f = place(&p, &s, &bg, vec2_make(pin.x + YD(0.84), pin.y), LIE_GREEN, 1000);
+	CHECK((f & PL_RENDER) && p.state == PS_AIM);
+	/* not on the fringe either, where the putter is picked and the other clubs can be */
+	play_init(&p, h, g, 7);
+	f = place(&p, &s, &bg, vec2_make(pin.x, pin.y - YD(19)), LIE_FRINGE, 1000);
+	CHECK((f & PL_RENDER) && p.club == CLUB_PT && p.rv.green);
+	CHECK(play_key(&p, KEY_UP, 3000) == PL_RENDER && p.club == CLUB_LW && !p.rv.green);
+	CHECK(play_key(&p, KEY_DOWN, 3100) == PL_RENDER && p.club == CLUB_PT && p.rv.green);
+	/* the putter runs out of meter: a full putt, no mis-hit */
+	play_frame(&p, &s, &bg, 3200);
+	play_key(&p, KEY_SELECT, 4000);
+	for (t = 4000; t < 7000 && p.state == PS_UP; t += 20) play_frame(&p, &s, &bg, t);
+	CHECK(p.state == PS_FLY && p.power == FIX_ONE && !p.mishit);
+	/* score names */
+	{
+		static const struct { int strokes; const char *name; } sc[] = {
+			{ 1, "Hole in one!" }, { 3, "Birdie" }, { 5, "Bogey" }, { 6, "Double bogey" }, { 7, "Triple bogey" }, { 9, "5 over par" }
+		};
+		unsigned k;
+		for (k = 0; k < sizeof sc / sizeof sc[0]; k++) {
+			play_init(&p, h, g, 7);
+			p.stroke = (uint8_t)(sc[k].strokes - 1);
+			place(&p, &s, &bg, vec2_make(pin.x + YD(0.3), pin.y), LIE_GREEN, 1000);
+			CHECK(strcmp(p.msg2, sc[k].name) == 0);
+			CHECK(strlen(p.msg1) <= 20 && strlen(p.msg2) <= 20);
+		}
+	}
+	free(s.bits);
+	free(bg.bits);
+}
+
 int main(int argc, char **argv)
 {
 	uint8_t *pdb, *hrec;
@@ -582,8 +871,10 @@ int main(int argc, char **argv)
 	lie_tests();
 	water_oob_tests();
 	slope_tests();
+	putt_tests();
 	test_hole(&h, &g);
 	meter_tests(&h, &g);
+	green_tests(&h, &g);
 
 	a = checksum_run(&h, &g);
 	b = checksum_run(&h, &g);

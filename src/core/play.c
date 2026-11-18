@@ -39,16 +39,36 @@ static uint16_t SEC_UI pin_yards(const Play *p)
 	return (uint16_t)((vec2_len(vec2_sub(pin(p), p->rv.ball)) + FIX_HALF) >> 16);
 }
 
-/* Yards to the aim marker: the club's carry, or for the putter the pin up to 30. */
+static uint16_t SEC_UI pin_feet(const Play *p)
+{
+	return (uint16_t)((vec2_len(vec2_sub(pin(p), p->rv.ball)) * 3 + FIX_HALF) >> 16);
+}
+
+/* Yards to the aim marker: the club's carry, or for the putter the pin. */
 static uint16_t SEC_UI mark_yards(const Play *p)
 {
 	uint16_t d;
 	if (p->club != CLUB_PT) return ball_carry(p->club, p->lie);
 	d = pin_yards(p);
-	return d > 30 ? 30 : d < 2 ? 2 : d;
+	return d > BALL_PUTT_MAX ? BALL_PUTT_MAX : d < 1 ? 1 : d;
 }
 
-/* Gets ready for the next shot from rv.ball: aim, club and state. */
+/* Sets the club; the putter goes with the green view and a meter scaled
+ * to half as far again as the cup, 3 to BALL_PUTT_MAX yards. */
+static void SEC_UI set_club(Play *p, uint8_t club)
+{
+	fixed r;
+	p->club = club;
+	p->rv.green = club == CLUB_PT;
+	r = vec2_len(vec2_sub(pin(p), p->rv.ball));
+	r = ((r + (r >> 1) + FIX_ONE - 1) >> 16) << 16;
+	if (r < (3L << 16)) r = 3L << 16;
+	if (r > ((fixed)BALL_PUTT_MAX << 16)) r = (fixed)BALL_PUTT_MAX << 16;
+	p->range = r;
+}
+
+/* Gets ready for the next shot from rv.ball: aim, club and state. On the
+ * green and the fringe it's the putter. */
 static void SEC_UI setup(Play *p)
 {
 	const Hole *h = p->rv.hole;
@@ -57,8 +77,8 @@ static void SEC_UI setup(Play *p)
 	if (p->rv.ball.x == h->tees[0].pos.x && p->rv.ball.y == h->tees[0].pos.y) to = h->aim;
 	p->rv.aim = vec2_angle(vec2_sub(to, p->rv.ball));
 	p->aim = p->rv.aim;
-	p->club = ball_pick(pin_yards(p), p->lie);
-	p->state = p->lie == LIE_GREEN ? PS_GREEN : PS_AIM;
+	set_club(p, p->lie == LIE_GREEN || p->lie == LIE_FRINGE ? CLUB_PT : ball_pick(pin_yards(p), p->lie));
+	p->state = PS_AIM;
 	p->cam_ok = 0;
 	p->redraw = R_ALL;
 	p->shown = -2;
@@ -110,6 +130,7 @@ static void SEC_UI launch(Play *p)
 	in.power = p->power;
 	in.snap = p->snap;
 	in.club = p->club;
+	in.range = p->range;
 	in.lie = p->lie;
 	in.mishit = p->mishit;
 	ball_shot(&in, &p->shot);
@@ -142,8 +163,13 @@ static int SEC_UI click(Play *p, uint32_t now)
 		p->t1 = now;
 		p->power = ((fixed)(pos - S16) << 16) / (W16 - S16);
 		if (p->power < 0) p->power = 0;
-		p->state = PS_DOWN;
 		p->redraw |= R_METER;
+		if (p->club == CLUB_PT) {
+			/* a putt has no snap: it goes on the power click */
+			launch(p);
+			return PL_ANIM;
+		}
+		p->state = PS_DOWN;
 		return PL_ANIM;
 	case PS_DOWN: {
 		/* when the marker crossed (or will cross) the snap line, and how far off the click was */
@@ -161,6 +187,8 @@ static int SEC_UI click(Play *p, uint32_t now)
 	case PS_RESULT:
 		p->t0 = now - RESULT_MS;
 		return PL_ANIM;
+	case PS_DONE:
+		return PL_BACK;
 	}
 	return 0;
 }
@@ -173,15 +201,13 @@ int play_key(Play *p, uint8_t key, uint32_t now)
 		p->redraw = R_ALL;
 		return PL_SCENE;
 	}
+	if (p->state == PS_DONE) return PL_BACK;
 	if (key == KEY_SELECT) return click(p, now);
-	if (p->state != PS_AIM && p->state != PS_GREEN) return 0;
+	if (p->state != PS_AIM) return 0;
 	switch (key) {
 	case KEY_OTHER:
 		p->view = PLAY_MAP;
 		return PL_MAP;
-	}
-	if (p->state != PS_AIM) return 0;
-	switch (key) {
 	case KEY_LEFT:
 		p->aim = (angle)(p->aim + AIM_STEP);
 		p->redraw |= R_OVER;
@@ -191,13 +217,22 @@ int play_key(Play *p, uint8_t key, uint32_t now)
 		p->redraw |= R_OVER;
 		break;
 	case KEY_UP:
-		if (p->club > CLUB_DR) p->club--;
+	case KEY_DOWN: {
+		/* on the green it's the putter only; to or from the putter changes the view */
+		uint8_t c = p->club, g = p->rv.green;
+		if (p->lie == LIE_GREEN) break;
+		if (key == KEY_UP && c > CLUB_DR) c--;
+		if (key == KEY_DOWN && c < CLUB_PT) c++;
+		set_club(p, c);
 		p->redraw |= R_OVER | R_STRIP;
+		if (p->rv.green != g) {
+			p->rv.aim = p->aim;
+			p->cam_ok = 0;
+			p->redraw = R_ALL;
+			return PL_RENDER;
+		}
 		break;
-	case KEY_DOWN:
-		if (p->club < CLUB_PT) p->club++;
-		p->redraw |= R_OVER | R_STRIP;
-		break;
+	}
 	}
 	return 0;
 }
@@ -229,7 +264,7 @@ static void SEC_UI aim_at(Play *p, int16_t tx)
 		if (!mark_at(p, a, &mx, &my)) break;
 		e = tx - mx;
 		if (e > -1 && e < 1) break;
-		a = (angle)(a - iatan2(e * (d + 14) / d, p->cam.f));
+		a = (angle)(a - iatan2(e * (d + p->cam.back) / d, p->cam.f));
 	}
 	p->aim = a;
 	p->redraw |= R_OVER;
@@ -238,6 +273,7 @@ static void SEC_UI aim_at(Play *p, int16_t tx)
 int play_tap(Play *p, int16_t x, int16_t y, uint32_t now)
 {
 	if (p->view == PLAY_MAP) return play_key(p, KEY_SELECT, now);
+	if (p->state == PS_DONE) return PL_BACK;
 	if (p->state == PS_UP || p->state == PS_DOWN || p->state == PS_RESULT) return click(p, now);
 	if (y >= STRIP_Y) {
 		if (x >= MAP_X && y >= STRIP_Y + UI_CHAR) return play_key(p, KEY_OTHER, now);
@@ -297,6 +333,22 @@ static void SEC_UI draw_mark(Play *p, Surface *s, int16_t x, int16_t y)
 	patch(p, x - 4 * u, y - 4 * u, 9 * u, 9 * u);
 }
 
+/* The green view's aim: dots from the ball out to the cup's distance, white
+ * with a black edge. */
+static void SEC_UI aim_dots(Play *p, Surface *s)
+{
+	fixed d = (fixed)mark_yards(p) << 16, depth;
+	int16_t k, x, y, u = s->scale;
+	for (k = 1; k <= 8; k++) {
+		fixed t = d / 8 * k;
+		vec2 m = vec2_make(p->rv.ball.x + fix_mulq14(t, icos(p->aim)), p->rv.ball.y + fix_mulq14(t, isin(p->aim)));
+		if (!render_point(&p->cam, m.x, m.y, hole_height(p->rv.hole, m.x, m.y), &x, &y, &depth)) continue;
+		over(s, x - u, y - u, 3 * u, 3 * u, UIC_BLACK);
+		over(s, x, y, u, u, UIC_WHITE);
+		patch(p, x - u, y - u, 3 * u, 3 * u);
+	}
+}
+
 static void SEC_UI path_pt(const Play *p, int16_t k, fixed *x, fixed *y, fixed *z)
 {
 	const BallPt *b = &p->shot.path[k];
@@ -305,29 +357,39 @@ static void SEC_UI path_pt(const Play *p, int16_t k, fixed *x, fixed *y, fixed *
 	*z = (fixed)b->z * 4096;
 }
 
+/* The ball at (x, y, z), bigger near the camera and always big in the
+ * green view. White with a dark ring so it shows on the sky and on grass. */
+static void SEC_UI ball_at(Play *p, Surface *s, fixed x, fixed y, fixed z)
+{
+	int16_t sx, sy, u = s->scale, n;
+	fixed depth;
+
+	if (!render_point(&p->cam, x, y, z, &sx, &sy, &depth)) return;
+	n = depth < (50L << 16) || p->rv.green ? 2 * u : u;
+	over(s, sx - 1, sy - 1, n + 2, n + 2, s->depth >= 8 ? UIC_BALL_DK : UIC_BLACK);
+	over(s, sx, sy, n, n, UIC_WHITE);
+	patch(p, sx - 1, sy - 1, n + 2, n + 2);
+}
+
 /* The ball at path point shown, with a trail of the points before it in
- * the air, smaller with distance. White with a dark ring so it shows on
- * the sky and on grass. */
+ * the air, smaller with distance. Once it's holed it's gone. */
 static void SEC_UI draw_ball(Play *p, Surface *s)
 {
-	int16_t k = p->shown, j, sx, sy, u = s->scale, n;
+	int16_t k = p->shown, j, sx, sy, u = s->scale;
 	uint8_t grey = s->depth >= 8;
 	fixed x, y, z, depth;
 
 	for (j = k - 8; j < k; j += 2) {
-		if (j < 0 || j >= p->shot.fly_n) continue;
+		if (j < 0 || j >= p->shot.fly_n || p->club == CLUB_PT) continue;
 		path_pt(p, j, &x, &y, &z);
 		if (render_point(&p->cam, x, y, z, &sx, &sy, &depth)) {
 			over(s, sx, sy, u, u, grey ? UIC_BALL_LT : UIC_BLACK);
 			patch(p, sx, sy, u, u);
 		}
 	}
+	if (p->shot.result == SHOT_HOLED && k == p->shot.n - 1) return;
 	path_pt(p, k, &x, &y, &z);
-	if (!render_point(&p->cam, x, y, z, &sx, &sy, &depth)) return;
-	n = depth < (50L << 16) ? 2 * u : u;
-	over(s, sx - 1, sy - 1, n + 2, n + 2, grey ? UIC_BALL_DK : UIC_BLACK);
-	over(s, sx, sy, n, n, UIC_WHITE);
-	patch(p, sx - 1, sy - 1, n + 2, n + 2);
+	ball_at(p, s, x, y, z);
 }
 
 /* Appends s to t at *n. */
@@ -356,9 +418,21 @@ static void SEC_UI draw_strip(Play *p, Surface *s)
 	int16_t n = 0;
 
 	ui_fill(s, 0, STRIP_Y, 160, RENDER_STATUS, UIC_BLACK);
-	if (p->state == PS_RESULT || p->state == PS_GREEN) {
+	if (p->state == PS_RESULT || p->state == PS_DONE) {
 		line(s, 0, p->msg1);
 		line(s, 1, p->msg2);
+	} else if (p->club == CLUB_PT) {
+		/* the putter and the cup in feet, no wind on the green */
+		add(t, &n, "Putter  Cup ");
+		n += play_num(t + n, pin_feet(p));
+		add(t, &n, " ft");
+		line(s, 0, t);
+		n = 0;
+		add(t, &n, ball_lie_name(p->lie));
+		pad(t, &n, 9);
+		add(t, &n, "Shot ");
+		n += play_num(t + n, p->stroke);
+		line(s, 1, t);
 	} else {
 		/* club and carry, the pin, the wind */
 		add(t, &n, ball_club_name(p->club));
@@ -388,7 +462,7 @@ static void SEC_UI draw_strip(Play *p, Surface *s)
 		n += play_num(t + n, p->stroke);
 		line(s, 1, t);
 	}
-	if (p->state == PS_AIM || p->state == PS_GREEN) {
+	if (p->state == PS_AIM) {
 		ui_fill(s, MAP_X, STRIP_Y + UI_CHAR, 160 - MAP_X, UI_CHAR, UIC_WHITE);
 		ui_text(s, MAP_X, STRIP_Y + UI_CHAR, "Map", 3, UIC_BLACK, -1);
 	}
@@ -416,12 +490,49 @@ static void SEC_UI draw_meter(Play *p, Surface *s, int16_t x0, int16_t x1)
 	if (top > S16) mfill(s, x0, x1, MTR_X + MTR_SNAP, y + 2, (top - S16) >> 4, 4, UIC_BALL_LT);
 	for (k = 1; k < 4; k++) mfill(s, x0, x1, MTR_X + MTR_SNAP + (MTR_W - MTR_SNAP) * k / 4, y + 6, 1, 2, UIC_WHITE);
 	mfill(s, x0, x1, MTR_X + MTR_SNAP, y, 1, UI_CHAR, UIC_WHITE);
+	if (p->club == CLUB_PT) {
+		/* the putt that rolls to the cup on a flat green */
+		fixed d = vec2_len(vec2_sub(pin(p), p->rv.ball));
+		k = (int16_t)(MTR_X + MTR_SNAP + (int32_t)(MTR_W - MTR_SNAP) * (d >> 8) / (p->range >> 8));
+		if (k > MTR_X + MTR_W - 1) k = MTR_X + MTR_W - 1;
+		mfill(s, x0, x1, k - 1, y, 3, 1, UIC_WHITE);
+		mfill(s, x0, x1, k, y, 1, UI_CHAR, UIC_WHITE);
+	}
 	if (p->mpos >= 0) {
 		mfill(s, x0, x1, m - 2, y, 3, UI_CHAR, UIC_WHITE);
 		mfill(s, x0, x1, m - 1, y + 1, 1, UI_CHAR - 2, UIC_BLACK);
 	}
 	p->mshown = m;
 	dirty(p, (int16_t)(x0 * s->scale), (int16_t)(y * s->scale), (int16_t)((x1 - x0) * s->scale), (int16_t)(UI_CHAR * s->scale));
+}
+
+/* The hole's done in strokes: the score on the strip, holed or given. */
+static void SEC_UI done(Play *p, uint8_t strokes, uint8_t gimme)
+{
+	int16_t n = 0, d = (int16_t)strokes - p->rv.hole->par;
+	char *a = p->msg1, *b = p->msg2;
+
+	add(a, &n, gimme ? "Gimme, " : "In the cup, ");
+	/* msg1 holds 20 characters: the count shown stops at 99 */
+	n += play_num(a + n, strokes > 99 ? 99 : strokes);
+	add(a, &n, strokes == 1 ? " shot" : " shots");
+	n = 0;
+	b[0] = 0;
+	if (strokes == 1) add(b, &n, "Hole in one!");
+	else if (d <= -3) add(b, &n, "Albatross");
+	else if (d == -2) add(b, &n, "Eagle");
+	else if (d == -1) add(b, &n, "Birdie");
+	else if (d == 0) add(b, &n, "Par");
+	else if (d == 1) add(b, &n, "Bogey");
+	else if (d == 2) add(b, &n, "Double bogey");
+	else if (d == 3) add(b, &n, "Triple bogey");
+	else {
+		n += play_num(b, (uint32_t)d);
+		add(b, &n, " over par");
+	}
+	p->score = strokes;
+	p->state = PS_DONE;
+	p->redraw |= R_STRIP | R_OVER;
 }
 
 /* The result line when the ball has stopped. */
@@ -432,7 +543,15 @@ static void SEC_UI result(Play *p)
 	char *a = p->msg1, *b = p->msg2;
 
 	a[0] = b[0] = 0;
-	if (sh->result == SHOT_WATER) {
+	if (sh->result == SHOT_HOLED) {
+		add(a, &n, "In the cup!");
+	} else if (sh->lip || (sh->result == SHOT_OK && p->club == CLUB_PT && (sh->lie == LIE_GREEN || sh->lie == LIE_FRINGE))) {
+		/* a putt: how far it's left in feet */
+		vec2 d = vec2_sub(pin(p), sh->stop);
+		add(a, &n, sh->lip ? "Lip out" : ball_lie_name(sh->lie));
+		n = play_num(b, (uint32_t)((vec2_len(d) * 3 + FIX_HALF) >> 16));
+		add(b, &n, " ft to the cup");
+	} else if (sh->result == SHOT_WATER) {
 		add(a, &n, "In the water");
 		n = 0;
 		add(b, &n, "1 stroke penalty");
@@ -461,22 +580,25 @@ static void SEC_UI result(Play *p)
 	}
 }
 
-/* After the result: the ball where the shot left it, penalties, the next club. */
-static void SEC_UI next(Play *p)
+/* After the result: the hole is done if it's holed or given, or the ball
+ * is where the shot left it, with any penalty, and the next club. Returns
+ * 1 if the view is to be drawn again. */
+static int SEC_UI next(Play *p)
 {
 	const Shot *sh = &p->shot;
+	if (sh->result == SHOT_HOLED) {
+		done(p, p->stroke, 0);
+		return 0;
+	}
 	p->stroke = (uint8_t)(p->stroke + (sh->result == SHOT_OK ? 1 : 2));
 	p->rv.ball = sh->stop;
 	p->lie = sh->lie;
-	setup(p);
-	if (p->state == PS_GREEN) {
-		/* keep "On the green" and the distance on the strip */
-		int16_t n = 0;
-		p->msg1[0] = 0;
-		add(p->msg1, &n, "On the green");
-		n = play_num(p->msg2, pin_yards(p));
-		add(p->msg2, &n, "y to pin");
+	if (p->lie == LIE_GREEN && pin_feet(p) <= PLAY_GIMME_FT) {
+		done(p, p->stroke, 1);
+		return 0;
 	}
+	setup(p);
+	return 1;
 }
 
 int play_frame(Play *p, Surface *s, const Surface *bg, uint32_t now)
@@ -497,11 +619,12 @@ int play_frame(Play *p, Surface *s, const Surface *bg, uint32_t now)
 	case PS_UP:
 		p->mpos = meter_pos(p, now);
 		if (p->mpos >= W16) {
-			/* no second click: full power, and it starts back down */
+			/* no second click: full power, and it starts back down (a putt goes) */
 			p->mpos = p->turn = W16;
 			p->t1 = p->t0 + MTR_UP_MS;
 			p->power = FIX_ONE;
-			p->state = PS_DOWN;
+			if (p->club == CLUB_PT) launch(p);
+			else p->state = PS_DOWN;
 		}
 		p->redraw |= R_METER;
 		flags |= PL_ANIM;
@@ -547,8 +670,8 @@ int play_frame(Play *p, Surface *s, const Surface *bg, uint32_t now)
 	}
 	case PS_RESULT:
 		if ((int32_t)(now - p->t0) >= RESULT_MS) {
-			next(p);
-			return PL_RENDER;
+			if (next(p)) return PL_RENDER;
+			break;
 		}
 		flags |= PL_ANIM;
 		break;
@@ -572,8 +695,14 @@ int play_frame(Play *p, Surface *s, const Surface *bg, uint32_t now)
 			dirty(p, r->x, r->y, r->w, r->h);
 		}
 		p->npatch = 0;
-		if (ok) draw_mark(p, s, mx, my);
-		if ((p->state == PS_FLY || p->state == PS_RESULT) && p->shown >= 0) draw_ball(p, s);
+		if (ok && p->rv.green) aim_dots(p, s);
+		else if (ok) draw_mark(p, s, mx, my);
+		if (p->state >= PS_FLY && p->shown >= 0) {
+			draw_ball(p, s);
+		} else if (p->rv.green) {
+			/* the green view leaves the ball to us */
+			ball_at(p, s, p->rv.ball.x, p->rv.ball.y, hole_height(p->rv.hole, p->rv.ball.x, p->rv.ball.y));
+		}
 	}
 	if (p->redraw & R_STRIP) draw_strip(p, s);
 	if ((p->redraw & R_STRIP) && (p->state == PS_UP || p->state == PS_DOWN)) {

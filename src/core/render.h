@@ -34,6 +34,7 @@ typedef struct {
 	vec2 ball;                  /* the camera stands behind this point */
 	angle aim;                  /* looking this way */
 	uint8_t pin;                /* which of the hole's pins has the flag */
+	uint8_t green;              /* 1 for the green view (render_green) */
 } RenderView;
 
 /* Stages timed in RenderStats.ticks. */
@@ -65,11 +66,17 @@ typedef struct {
 	fixed length;               /* the hole's length in yards */
 } RenderMap;
 
-/* The camera render_scene uses for a view, for putting things over the scene. */
+/* The camera render_scene or render_green uses for a view, for putting
+ * things over it. The green view looks down at pc, ps and shows heights zk
+ * times as steep around zref. */
 typedef struct {
 	fixed camx, camy, camz;     /* yards */
+	fixed zref;                 /* yards */
 	int16_t fx, fy, rx, ry;     /* forward and right, 2.14 */
-	int16_t f, cx, yh;          /* focal length, centre column and horizon row in pixels */
+	int16_t pc, ps;             /* cosine and sine of the look down, 2.14 */
+	int16_t f, cx, yh;          /* focal length, centre column and the row straight ahead in pixels */
+	int16_t zk;                 /* height scale */
+	int16_t back;               /* yards from the camera back to the ball, along the ground */
 } RenderCam;
 
 /* Bytes of work memory render_scene needs for this surface. */
@@ -85,7 +92,14 @@ void SEC_RENDER render_clock(RenderClock fn);
  * ball and a line from the ball to the pin. Text is left to the caller.
  * Returns 0, or -1 if the surface isn't 160 or 320 wide. */
 int SEC_RENDER render_map(Surface *s, const RenderView *v, RenderMap *out);
-/* The camera for the view on surface s. */
+/* The green view for putting: the ground around the ball and the pin seen
+ * from above and behind the ball, looking along v->aim, as a grid of
+ * shaded cells with lines across the green, heights shown 6 times as
+ * steep so the slope reads, the cup and the flag. The ball is left to the
+ * caller. Returns 0, or -1 if the surface isn't 160 or 320 wide. */
+int SEC_RENDER render_green(Surface *s, const RenderView *v);
+/* The camera for the view on surface s: render_scene's, or render_green's
+ * if v->green is set. */
 void SEC_RENDER render_camera(const Surface *s, const RenderView *v, RenderCam *c);
 /* The pixel the point (x, y) at height z (yards) shows at, and its depth.
  * Returns 0 if it's nearer than 1 yard or behind the camera. */

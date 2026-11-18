@@ -20,6 +20,7 @@
 #define BALL_FLY_EVERY   2      /* a path point every 2 steps in the air (1/16 s) */
 #define BALL_ROLL_EVERY  4      /* and every 4 on the ground (1/8 s) */
 #define BALL_PATH_MAX    192
+#define BALL_PUTT_MAX    45     /* yards, the putter's longest range */
 
 enum {
 	CLUB_DR, CLUB_3W, CLUB_5W, CLUB_3I, CLUB_4I, CLUB_5I, CLUB_6I, CLUB_7I,
@@ -32,7 +33,9 @@ enum {
 };
 
 /* How a shot ended. */
-enum { SHOT_OK, SHOT_WATER, SHOT_OOB };
+enum { SHOT_OK, SHOT_WATER, SHOT_OOB, SHOT_HOLED };
+
+#define BALL_CUP_R  3867        /* the cup's radius, 2.125 inches, in 16.16 yards */
 
 /* A point on the ball's path, in 1/16 yards. */
 typedef struct { int16_t x, y, z; } BallPt;
@@ -46,6 +49,7 @@ typedef struct {
 	angle aim;
 	fixed power;       /* 0 to 1.0 */
 	fixed snap;        /* -1.0 to 1.0: above 0 early (a slice, curving right), below 0 late (a hook) */
+	fixed range;       /* putter: yards it rolls at full power on a flat green, 0 for BALL_PUTT_MAX */
 	uint8_t club, lie;
 	uint8_t mishit;    /* the meter ran out */
 } ShotIn;
@@ -56,12 +60,16 @@ typedef struct {
 	uint8_t result;            /* SHOT_* */
 	uint8_t lie;               /* the lie at stop */
 	uint8_t land_surf;         /* surface at the first landing */
+	uint8_t lip;               /* it rolled over the cup too fast and lipped out */
 	uint16_t steps;            /* how long it moved, in steps */
 	uint8_t n, fly_n;          /* path points, and how many of them are in the air */
 	BallPt path[BALL_PATH_MAX];
 } Shot;
 
-/* Plays a shot from in to the end. */
+/* Plays a shot from in to the end. The putter only rolls, at a speed that
+ * takes it in->power times in->range on a flat green. A ball rolling over
+ * the cup drops if it's slow enough for how near the middle it goes, or
+ * lips out; one that stops over the cup drops. */
 void SEC_BALL ball_shot(const ShotIn *in, Shot *out);
 
 /* The lie for a surface the ball stopped on (bunkers give LIE_BUNKER). */

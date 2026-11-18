@@ -366,7 +366,12 @@ static Boolean PlayStart(void)
 	DmReleaseRecord(gScratchDb, at, true);
 	gGridH = h;
 	gGrid.cells = MemHandleLock(h);
+#ifdef PLAY_SEED
+	/* a fixed wind, for Frond replays that play the hole through */
+	play_init(&gPlay, &gHole, &gGrid, PLAY_SEED);
+#else
 	play_init(&gPlay, &gHole, &gGrid, TimGetSeconds());
+#endif
 	gPlaying = true;
 	return true;
 }
@@ -426,10 +431,10 @@ static void ShowRect(const URect *d)
 static void SceneRender(void);
 
 #ifdef DEBUG
-/* Notes the physics time when a click (or the meter running out) started the flight. */
+/* Notes the physics time when a click (or the meter running out) started the flight or putt. */
 static void SimTime(UInt8 before, UInt32 t0)
 {
-	if (before == PS_DOWN && gPlay.state == PS_FLY) gSimTicks = TimGetTicks() - t0;
+	if ((before == PS_DOWN || before == PS_UP) && gPlay.state == PS_FLY) gSimTicks = TimGetTicks() - t0;
 }
 #endif
 
@@ -488,7 +493,8 @@ static void PlayStatus(void)
 #endif
 }
 
-/* Draws the scene with the art resources locked and the work memory borrowed for the draw. */
+/* Draws the scene with the art resources locked and the work memory
+ * borrowed for the draw, or the green view, which needs neither. */
 static void SceneRender(void)
 {
 	RenderArt art;
@@ -500,6 +506,21 @@ static void SceneRender(void)
 	UInt32 t0;
 #endif
 
+	if (gPlay.rv.green) {
+#ifdef DEBUG
+		t0 = TimGetTicks();
+#endif
+		render_green(&gS, &gPlay.rv);
+#ifdef DEBUG
+		gDrawTicks = TimGetTicks() - t0;
+		MemSet(&gStats, sizeof(gStats), 0);
+#endif
+		KeepScene();
+		EvtFlushPenQueue();
+		EvtFlushKeyQueue();
+		PlayFrame();
+		return;
+	}
 	MemSet(&art, sizeof(art), 0);
 	for (t = 0; t < RENDER_TYPES; t++)
 		for (k = 0; k < RENDER_SIZES; k++)

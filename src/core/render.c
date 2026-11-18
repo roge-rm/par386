@@ -1126,7 +1126,303 @@ int render_map(Surface *s, const RenderView *v, RenderMap *out)
 	return 0;
 }
 
-void render_camera(const Surface *s, const RenderView *v, RenderCam *c)
+/* a * b as fix_mulf, here so the green view doesn't call out of its segment. */
+static fixed SEC_RENDER mulf(fixed a, fixed b)
+{
+	uint32_t ua, ub, r;
+	int neg = 0;
+
+	if (a < 0) { ua = 0u - (uint32_t)a; neg = 1; } else ua = (uint32_t)a;
+	if (b < 0) { ub = 0u - (uint32_t)b; neg ^= 1; } else ub = (uint32_t)b;
+	r = (MULU16(ua >> 16, ub >> 16) << 16)
+	    + MULU16(ua >> 16, ub) + MULU16(ua, ub >> 16)
+	    + (MULU16(ua, ub) >> 16);
+	return neg ? -(fixed)r : (fixed)r;
+}
+
+/* Ground height in yards. */
+static fixed SEC_RENDER ground_z(const Hole *h, fixed x, fixed y)
+{
+	return h->base + mulf(hb_at(h, x, y) * 256, h->step);
+}
+
+/* The green view's camera. Everything scales with the putt's length (at
+ * least 4 and at most 40 yards), so the ball always shows low in the middle
+ * and the pin a third of the way down: GREEN_BACK of it behind the ball,
+ * GREEN_UP of it above, looking down by GREEN_PITCH. */
+#define GREEN_PITCH 6300         /* 34.6 degrees */
+#define GREEN_BACK  14746        /* 0.9, 2.14 */
+#define GREEN_ZK    6            /* heights shown this many times as steep */
+#define GREEN_FOCAL 200
+#define GREEN_ROW   72           /* the row straight ahead on 160 wide screens */
+#define GREEN_NEAR  (4L << 16)
+#define GREEN_FAR   (40L << 16)
+
+static fixed SEC_RENDER green_cam(const Surface *s, const RenderView *v, RenderCam *c)
+{
+	const Hole *h = v->hole;
+	vec2 pin = h->pins[v->pin & 3];
+	fixed len = vec2_len(vec2_sub(pin, v->ball)), back, zb;
+
+	if (len < GREEN_NEAR) len = GREEN_NEAR;
+	if (len > GREEN_FAR) len = GREEN_FAR;
+	back = mulq(len, GREEN_BACK);
+	c->fx = icos(v->aim);
+	c->fy = isin(v->aim);
+	c->rx = c->fy;
+	c->ry = (int16_t)-c->fx;
+	c->pc = icos(GREEN_PITCH);
+	c->ps = isin(GREEN_PITCH);
+	c->camx = v->ball.x - mulq(back, c->fx);
+	c->camy = v->ball.y - mulq(back, c->fy);
+	c->zref = ground_z(h, pin.x, pin.y);
+	zb = ground_z(h, v->ball.x, v->ball.y);
+	c->zk = GREEN_ZK;
+	c->camz = c->zref + (zb - c->zref) * GREEN_ZK + len;
+	c->f = (int16_t)(GREEN_FOCAL * s->scale);
+	c->cx = s->w / 2;
+	c->yh = (int16_t)(GREEN_ROW * s->scale);
+	c->back = (int16_t)(back >> 16);
+	return len;
+}
+
+static int16_t SEC_RENDER persp(fixed v, int16_t f, fixed d);
+
+/* One row of grid points: screen position (x is NO_PT if it's behind the
+ * camera) and ground height in heightmap byte steps, 8.8. */
+#define NO_PT  (-32768)
+#define GRID_N 17
+typedef struct {
+	int16_t x, y;
+	uint16_t hb;
+} GPt;
+
+/* Fills a triangle with surface ramp base at slope light lv, dithered. */
+static void SEC_RENDER tri(const R *r, const GPt *a, const GPt *b, const GPt *c, uint8_t base, int16_t lv)
+{
+	const GPt *t;
+	int32_t xl, xr, dl, dr, d2;
+	int16_t y, y0, ym, y1, x, xa, xb;
+
+	/* a at the top, c at the bottom */
+	if (b->y < a->y) { t = a; a = b; b = t; }
+	if (c->y < a->y) { t = a; a = c; c = t; }
+	if (c->y < b->y) { t = b; b = c; c = t; }
+	y0 = a->y; ym = b->y; y1 = c->y;
+	if (y1 <= y0 || y1 < 0 || y0 >= r->vh) return;
+	d2 = ((int32_t)(c->x - a->x) * 65536L) / (y1 - y0);
+	xl = (int32_t)a->x * 65536L;
+	xr = xl;
+	dl = ym > y0 ? ((int32_t)(b->x - a->x) * 65536L) / (ym - y0) : 0;
+	dr = d2;
+	/* rows above the view only move the edges on */
+	y = y0;
+	if (y < 0) {
+		int16_t k = (int16_t)-y0, ks = k < ym - y0 ? k : (int16_t)(ym - y0);
+		xl += dl * ks;
+		xr += dr * k;
+		if (ym < 0 && c->y > ym) {
+			dl = ((int32_t)(c->x - b->x) * 65536L) / (c->y - ym);
+			xl = (int32_t)b->x * 65536L + dl * (-ym);
+		}
+		y = 0;
+	}
+	if (y1 > r->vh) y1 = r->vh;
+	for (; y < y1; y++) {
+		if (y == ym) {
+			/* the short side turns at b */
+			xl = (int32_t)b->x * 65536L;
+			dl = ((int32_t)(c->x - b->x) * 65536L) / (c->y - ym);
+		}
+		if (y >= 0 && y < r->vh) {
+			uint8_t *row = r->bits + MULU16(y, r->rb);
+			xa = (int16_t)((xl + 32768L) >> 16);
+			xb = (int16_t)((xr + 32768L) >> 16);
+			if (xa > xb) { x = xa; xa = xb; xb = x; }
+			if (xa < 0) xa = 0;
+			if (xb > r->w - 1) xb = (int16_t)(r->w - 1);
+			if (r->lg == 1 && xa <= xb) {
+				/* 2 bits: the level's pattern row, whole bytes in the middle */
+				uint8_t pat = pal_pat2[((uint16_t)(base + ((lv + 8) >> 4)) << 2) | (y & 3)], m;
+				uint8_t *p = row + (xa >> 2), *pe = row + (xb >> 2);
+				m = (uint8_t)(0xFF >> ((xa & 3) << 1));
+				if (p == pe) m &= (uint8_t)(0xFF << ((3 - (xb & 3)) << 1));
+				*p = (uint8_t)((*p & ~m) | (pat & m));
+				if (p != pe) {
+					for (p++; p < pe; p++) *p = pat;
+					m = (uint8_t)(0xFF << ((3 - (xb & 3)) << 1));
+					*p = (uint8_t)((*p & ~m) | (pat & m));
+				}
+			} else {
+				for (x = xa; x <= xb; x++) {
+					int16_t l = (int16_t)((lv + bayer[((y & 3) << 2) | (x & 3)]) >> 4);
+					if (l > PAL_RAMP_N - 1) l = PAL_RAMP_N - 1;
+					put(r, row + ((uint16_t)x >> (3 - r->lg)), x, y, (uint8_t)(base + l));
+				}
+			}
+		}
+		xl += dl;
+		xr += dr;
+	}
+}
+
+/* A one pixel line, clipped to the view. */
+static void SEC_RENDER gline(const R *r, int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint8_t c)
+{
+	int16_t dx = x1 > x0 ? x1 - x0 : x0 - x1, dy = y1 > y0 ? y1 - y0 : y0 - y1;
+	int16_t sx = x1 > x0 ? 1 : -1, sy = y1 > y0 ? 1 : -1, e = dx - dy, e2, n;
+
+	uint8_t fast = r->lg == 1 && c == PAL_BLACK;
+
+	if ((x0 < 0 && x1 < 0) || (y0 < 0 && y1 < 0) || (x0 >= r->w && x1 >= r->w) || (y0 >= r->vh && y1 >= r->vh)) return;
+	for (n = dx + dy + 1; n > 0; n--) {
+		if (x0 >= 0 && x0 < r->w && y0 >= 0 && y0 < r->vh) {
+			/* black on 2 bits is both bits set */
+			if (fast) *(r->bits + MULU16(y0, r->rb) + (x0 >> 2)) |= (uint8_t)(0xC0 >> ((x0 & 3) << 1));
+			else put(r, pixp(r, x0, y0), x0, y0, c);
+		}
+		if (x0 == x1 && y0 == y1) break;
+		e2 = (int16_t)(2 * e);
+		if (e2 > -dy) { e -= dy; x0 += sx; }
+		if (e2 < dx) { e += dx; y0 += sy; }
+	}
+}
+
+int render_green(Surface *s, const RenderView *v)
+{
+	R r;
+	RenderCam c;
+	const Hole *h = v->hole;
+	GPt rows[2][GRID_N], *far, *near, *t;
+	fixed len, sp, a, up, depth, down;
+	vec2 pin = h->pins[v->pin & 3];
+	int16_t k, k0, k1, i, n, x, y, px, py;
+	int32_t hbb;
+	uint32_t lined, past = 0;     /* cells with lines in this row of cells and the one past it */
+	uint8_t line = s->depth == 8 ? PAL_GREEN : PAL_BLACK;
+
+	if (s->scale < 1 || s->scale > 2 || s->w != 160 * s->scale || s->h < 160 * s->scale) return -1;
+	r.bits = s->bits;
+	r.rb = s->rowBytes;
+	r.w = s->w;
+	r.vh = (int16_t)((160 - RENDER_STATUS) * s->scale);
+	r.lg = (uint8_t)(s->depth == 8 ? 3 : s->depth == 4 ? 2 : s->depth == 2 ? 1 : 0);
+	len = green_cam(s, v, &c);
+	hbb = hb_at(h, v->ball.x, v->ball.y);
+
+	/* black, then the grid over it */
+	for (y = 0; y < s->h; y++) {
+		uint8_t *p = r.bits + MULU16(y, r.rb);
+		for (x = 0; x < (int16_t)r.rb; x++) p[x] = 0xFF;
+	}
+
+	/* cells of half a yard, 1, 2, 4 or 8, so there are at most 16 along, from
+	 * 0.4 of the length behind the ball to 2.6 past it, and as many across;
+	 * the ball and the pin's line sit in the middle of a cell */
+	sp = FIX_HALF;
+	while (len * 3 > sp * 16) sp <<= 1;
+	k0 = (int16_t)-((len * 2 / 5 + sp - 1) / sp);
+	k1 = (int16_t)((len * 13 / 5 + sp - 1) / sp);
+	n = (int16_t)((len * 7 / 5 + sp - 1) / sp);
+	if (n > GRID_N / 2) n = GRID_N / 2;
+
+	far = rows[0];
+	near = rows[1];
+	for (k = k1; k >= k0; k--) {
+		/* the points of row k, along the aim from the ball */
+		a = (fixed)k * sp;
+		for (i = -n; i <= n; i++) {
+			GPt *g = &near[i + n];
+			fixed cx = (fixed)i * sp + sp / 2;
+			fixed wx = v->ball.x + mulq(a, c.fx) + mulq(cx, c.rx), wy = v->ball.y + mulq(a, c.fy) + mulq(cx, c.ry);
+			int32_t hb = hb_at(h, wx, wy);
+			fixed along = a + ((fixed)c.back << 16);
+			g->hb = (uint16_t)hb;
+			up = mulf((hb - hbb) * 256, h->step) * GREEN_ZK - len;
+			depth = mulq(along, c.pc) - mulq(up, c.ps);
+			down = -(mulq(along, c.ps) + mulq(up, c.pc));
+			if (depth < FIX_HALF) {
+				g->x = NO_PT;
+				continue;
+			}
+			g->x = persp(cx, c.f, depth);
+			g->y = persp(down, c.f, depth);
+			if (g->x > 4000) g->x = 4000;
+			if (g->x < -4000) g->x = -4000;
+			if (g->y > 4000) g->y = 4000;
+			if (g->y < -4000) g->y = -4000;
+			g->x += c.cx;
+			g->y += c.yh;
+		}
+		if (k < k1) {
+			/* the cells between this row and the one past it, left to right, then
+			 * the lines round the ones on the green or fringe, so no fill covers them */
+			lined = 0;
+			for (i = 0; i < 2 * n; i++) {
+				GPt *f0 = &far[i], *f1 = &far[i + 1], *n0 = &near[i], *n1 = &near[i + 1];
+				fixed ca = a + sp / 2, cc = (fixed)(i - n) * sp + sp, rise;
+				uint8_t sf;
+				int16_t lv;
+				if (f0->x == NO_PT || f1->x == NO_PT || n0->x == NO_PT || n1->x == NO_PT) continue;
+				sf = surface_at(v->grid, v->ball.x + mulq(ca, c.fx) + mulq(cc, c.rx), v->ball.y + mulq(ca, c.fy) + mulq(cc, c.ry));
+				if (sf >= SURF_COUNT) sf = SURF_OOB;
+				/* lit from the left and behind: the rise to the right and half the rise away, per cell */
+				rise = mulf((((int32_t)f1->hb + n1->hb - f0->hb - n0->hb) + (((int32_t)f0->hb + f1->hb - n0->hb - n1->hb) >> 1)) * 128, h->step);
+				lv = (int16_t)(LIGHT_FLAT + ((((rise * 256) / (sp >> 8)) >> 4) * 64 >> 8));
+				if (lv < 0) lv = 0;
+				if (lv > PAL_RAMP_N * 16 - 16) lv = PAL_RAMP_N * 16 - 16;
+				tri(&r, f0, f1, n1, (uint8_t)(PAL_TERRAIN + sf * PAL_RAMP_N), lv);
+				tri(&r, f0, n1, n0, (uint8_t)(PAL_TERRAIN + sf * PAL_RAMP_N), lv);
+				if (sf == SURF_GREEN || sf == SURF_FRINGE) lined |= 1UL << i;
+			}
+			/* each edge once: across the far side if this cell or the one past it
+			 * is lined (the fill just covered it), along the sides, and the near
+			 * side on the nearest row */
+			for (i = 0; i <= 2 * n; i++) {
+				uint32_t here = lined | (lined << 1);
+				if (i < 2 * n && ((lined | past) & (1UL << i)) && far[i].x != NO_PT && far[i + 1].x != NO_PT)
+					gline(&r, far[i].x, far[i].y, far[i + 1].x, far[i + 1].y, line);
+				if ((here & (1UL << i)) && far[i].x != NO_PT && near[i].x != NO_PT)
+					gline(&r, far[i].x, far[i].y, near[i].x, near[i].y, line);
+				if (k == k0 && i < 2 * n && (lined & (1UL << i)))
+					gline(&r, near[i].x, near[i].y, near[i + 1].x, near[i + 1].y, line);
+			}
+			past = lined;
+		}
+		t = far;
+		far = near;
+		near = t;
+	}
+
+	/* the cup, black in a white lip, and the pin in it: a pole with the flag to its right */
+	if (render_point(&c, pin.x, pin.y, ground_z(h, pin.x, pin.y), &px, &py, &depth)) {
+		int16_t u = s->scale, top, tx, j;
+		/* 2.4 yards, or less on a short putt so the flag stays in view; heights show GREEN_ZK times */
+		fixed pole = len / 3 < (fixed)(FIX_ONE * 12 / 5) ? len / 3 : (fixed)(FIX_ONE * 12 / 5);
+		pole /= GREEN_ZK;
+		for (j = -2 * u; j < 2 * u; j++)
+			for (i = -4 * u; i < 4 * u; i++) {
+				int16_t ax = i < 0 ? -i - 1 : i, ay = j < 0 ? -j - 1 : j;
+				/* an ellipse twice as wide as tall: the lip, then the hole a pixel in */
+				int32_t q = MULS16(ax, ax) + 4 * MULS16(ay, ay), rr = 16L * u * u;
+				if (q >= rr || px + i < 0 || px + i >= r.w || py + j < 0 || py + j >= r.vh) continue;
+				put(&r, pixp(&r, px + i, py + j), px + i, py + j,
+				    MULS16(ax + u, ax + u) + 4 * MULS16(ay + u, ay + u) < rr ? PAL_BLACK : PAL_WHITE);
+			}
+		if (render_point(&c, pin.x, pin.y, ground_z(h, pin.x, pin.y) + pole, &tx, &top, &depth)) {
+			gline(&r, px, py - u, tx, top, s->depth == 8 ? PAL_GREY + 7 : PAL_BLACK);
+			for (j = 0; j < 4 * u; j++)
+				for (i = 1; i <= 6 * u; i++)
+					if (tx + i >= 0 && tx + i < r.w && top + j >= 0 && top + j < r.vh)
+						put(&r, pixp(&r, tx + i, top + j), tx + i, top + j,
+						    (uint8_t)(j >= 3 * u || i == 6 * u ? PAL_FLAG : PAL_FLAG + 2));
+		}
+	}
+	return 0;
+}
+
+static void SEC_RENDER scene_cam(const Surface *s, const RenderView *v, RenderCam *c)
+
 {
 	int32_t bh = hb_at(v->hole, v->ball.x, v->ball.y);
 
@@ -1140,6 +1436,17 @@ void render_camera(const Surface *s, const RenderView *v, RenderCam *c)
 	c->f = (int16_t)(FOCAL * s->scale);
 	c->cx = s->w / 2;
 	c->yh = (int16_t)(HORIZON * s->scale);
+	c->pc = 16384;
+	c->ps = 0;
+	c->zref = 0;
+	c->zk = 1;
+	c->back = (int16_t)(CAM_BACK >> 16);
+}
+
+void render_camera(const Surface *s, const RenderView *v, RenderCam *c)
+{
+	if (v->green) green_cam(s, v, c);
+	else scene_cam(s, v, c);
 }
 
 /* v * f / d for d over 1 yard, clamped to the int16 range. */
@@ -1153,15 +1460,19 @@ static int16_t SEC_RENDER persp(fixed v, int16_t f, fixed d)
 
 int render_point(const RenderCam *c, fixed x, fixed y, fixed z, int16_t *sx, int16_t *sy, fixed *depth)
 {
-	fixed dx = x - c->camx, dy = y - c->camy, side;
+	fixed dx = x - c->camx, dy = y - c->camy, side, along, up, down;
 	int32_t px, py;
 
-	*depth = mulq(dx, c->fx) + mulq(dy, c->fy);
+	/* along the ground and up, then turned by the look down */
+	along = mulq(dx, c->fx) + mulq(dy, c->fy);
+	up = c->zref + (z - c->zref) * c->zk - c->camz;
+	*depth = mulq(along, c->pc) - mulq(up, c->ps);
+	down = -(mulq(along, c->ps) + mulq(up, c->pc));
 	if (*depth < FIX_ONE) return 0;
 	side = mulq(dx, c->rx) + mulq(dy, c->ry);
 	if (side > (fixed)(4000L << 16) || side < -(fixed)(4000L << 16)) return 0;
 	px = (int32_t)c->cx + persp(side, c->f, *depth);
-	py = (int32_t)c->yh + persp(c->camz - z, c->f, *depth);
+	py = (int32_t)c->yh + persp(down, c->f, *depth);
 	/* clamped so callers can add sizes without overflowing 16 bits */
 	*sx = (int16_t)(px > 1000 ? 1000 : px < -1000 ? -1000 : px);
 	*sy = (int16_t)(py > 1000 ? 1000 : py < -1000 ? -1000 : py);

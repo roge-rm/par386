@@ -13,6 +13,11 @@
  * slowed by the surface and pulled down the slope of the heightmap, until
  * it's too slow to move and the slope can't start it again.
  *
+ * The putter starts the ball rolling at the speed that takes it the asked
+ * distance on a flat green. A rolling ball is checked against the cup each
+ * step along the line it moved: it drops if it's slow enough for how near
+ * the middle it passes, otherwise it lips out, turned aside and slowed.
+ *
  * Every product is 16x16 multiplies only, square roots are whole-number
  * ones on 8.8, there's one 32-bit divide a step and the ground is only
  * looked at once the ball is below the hole's highest point. */
@@ -30,6 +35,10 @@
 #define STOP_V   (YD(1) / 8)      /* below this along the ground it may stop */
 #define MAX_STEPS (32 * 40)
 #define PUSH     364              /* 2 degrees of push or pull at full snap error */
+#define CUP_R    (BALL_CUP_R >> 6) /* the cup's radius in 1/1024 yards */
+#define VCAP     YD(1.6)          /* fastest a ball drops through the middle of the cup */
+#define VSLOW    YD(0.3)          /* slow enough to drop off the very edge */
+#define DROP_Z   YD(0.08)         /* how far it shows down in the cup */
 
 /* Clubs: ball speed in 1/8 yards a second, launch in 1/4 degrees, backspin
  * and side spin at full snap error in 1/16 thousands of rpm, and the
@@ -245,6 +254,34 @@ static vec2 SEC_BALL drop(const ShotIn *in, vec2 wet, vec2 dry)
 	return in->pos;
 }
 
+/* Whether the ball moving from (x0, y0) to (x1, y1) passes within the cup's
+ * radius of the pin, nearest to it on the way. If it does, q is the pin less the nearest point and e
+ * how far that is, both in 1/1024 yards, and side is above 0 if the pin is
+ * on the left of the line. */
+static uint8_t SEC_BALL cup(vec2 pin, fixed x0, fixed y0, fixed x1, fixed y1, int16_t *qx, int16_t *qy, int16_t *e, int32_t *side)
+{
+	int16_t cx, cy, dx, dy, t;
+	int32_t dd, dot, e2;
+
+	if (x1 - pin.x > YD(1) || pin.x - x1 > YD(1) || y1 - pin.y > YD(1) || pin.y - y1 > YD(1)) return 0;
+	cx = (int16_t)((pin.x - x0) >> 6);
+	cy = (int16_t)((pin.y - y0) >> 6);
+	dx = (int16_t)((x1 - x0) >> 6);
+	dy = (int16_t)((y1 - y0) >> 6);
+	dd = MULS16(dx, dx) + MULS16(dy, dy);
+	dot = MULS16(cx, dx) + MULS16(cy, dy);
+	/* still coming nearer at the end of the step: wait for the step that passes it */
+	if (dot >= dd && dd) return 0;
+	t = dd == 0 || dot <= 0 ? 0 : (int16_t)((dot << 8) / dd);
+	*qx = (int16_t)(cx - (MULS16(dx, t) >> 8));
+	*qy = (int16_t)(cy - (MULS16(dy, t) >> 8));
+	e2 = MULS16(*qx, *qx) + MULS16(*qy, *qy);
+	if (e2 >= (int32_t)CUP_R * CUP_R) return 0;
+	*e = (int16_t)isqrt32((uint32_t)e2);
+	*side = MULS16(dx, cy) - MULS16(dy, cx);
+	return 1;
+}
+
 /* The highest ground on the hole, so the flight needn't look at the
  * ground while it's above it. */
 static fixed SEC_BALL top(const Hole *h)
@@ -268,7 +305,7 @@ void ball_shot(const ShotIn *in, Shot *o)
 	angle dir;
 	int16_t elev;
 	uint16_t step;
-	uint8_t rolling = 0, landed = 0, s = surf(in, x, y);
+	uint8_t rolling = 0, landed = 0, s = surf(in, x, y), holed = 0, cool = 0;
 
 	if (power < 0) power = 0;
 	if (power > FIX_ONE) power = FIX_ONE;
@@ -282,9 +319,17 @@ void ball_shot(const ShotIn *in, Shot *o)
 	o->n = o->fly_n = 0;
 	o->steps = 0;
 	o->land_surf = s;
+	o->lip = 0;
 
-	/* launch */
-	sp = mul((fixed)c->speed << 13, power);
+	/* launch; the putter at the speed that rolls power times the range on a flat green */
+	if (c->launch == 0) {
+		fixed range = in->range > 0 && in->range < ((fixed)BALL_PUTT_MAX << 16) ? in->range : (fixed)BALL_PUTT_MAX << 16;
+		/* plus half a step's slowing, which the steps lose against the exact roll */
+		sp = fix_sqrt(mul((fixed)bounces[SURF_GREEN].roll << 13, mul(power, range)));
+		if (sp) sp += (fixed)bounces[SURF_GREEN].roll << (12 - STEP_S - 1);
+	} else {
+		sp = mul((fixed)c->speed << 13, power);
+	}
 	sp = (sp >> 8) * l->speed;
 	wb = (fixed)c->spin << 12;
 	wb = (wb >> 8) * l->spin;
@@ -400,7 +445,16 @@ void ball_shot(const ShotIn *in, Shot *o)
 				rolling = 2;
 			}
 			pull = mul(G, len(gx * 16, gy * 16, 0) >> 4);
-			if (v <= STOP_V && pull <= dec) break;
+			if (v <= STOP_V && pull <= dec) {
+				/* stopped over the cup: it drops */
+				int16_t ex = (int16_t)((x - in->pin.x) >> 6), ey = (int16_t)((y - in->pin.y) >> 6);
+				if (ex > -CUP_R && ex < CUP_R && ey > -CUP_R && ey < CUP_R &&
+				    MULS16(ex, ex) + MULS16(ey, ey) < (int32_t)CUP_R * CUP_R) {
+					rec(o, x, y, z);
+					holed = 1;
+				}
+				break;
+			}
 			if (v > (dec >> STEP_S)) {
 				fixed f = ratio(v - (dec >> STEP_S), v);
 				vx = mul(vx, f);
@@ -412,6 +466,42 @@ void ball_shot(const ShotIn *in, Shot *o)
 			vy -= mul(G, gy) >> STEP_S;
 			x += vx >> STEP_S;
 			y += vy >> STEP_S;
+			if (cool) {
+				cool--;
+			} else {
+				int16_t qx, qy, e;
+				int32_t sd;
+				if (cup(in->pin, x - (vx >> STEP_S), y - (vy >> STEP_S), x, y, &qx, &qy, &e, &sd)) {
+					/* the slowest drop at the edge, VCAP through the middle half */
+					fixed vmax = e <= CUP_R / 2 ? VCAP : mul(VCAP, ((fixed)(CUP_R - e) << 17) / CUP_R);
+					if (vmax < VSLOW) vmax = VSLOW;
+					if (v <= vmax) {
+						x = in->pin.x - ((fixed)qx * 64);
+						y = in->pin.y - ((fixed)qy * 64);
+						rec(o, x, y, hole_height(h, x, y));
+						holed = 1;
+						break;
+					} else {
+						/* a lip-out: turned away from the middle, more off the edge, and slowed */
+						angle a = (angle)(15 * 182 + (int16_t)((int32_t)e * (40 * 182) / CUP_R));
+						fixed k = YD(0.6), nx;
+						int16_t ca, sa;
+						if (v > 3 * VCAP) {
+							a = 5 * 182;
+							k = YD(0.9);
+						}
+						if (sd > 0) a = (angle)-a;
+						ca = icos(a);
+						sa = isin(a);
+						nx = fix_mulq14(vx, ca) - fix_mulq14(vy, sa);
+						vy = fix_mulq14(vx, sa) + fix_mulq14(vy, ca);
+						vx = mul(nx, k);
+						vy = mul(vy, k);
+						o->lip = 1;
+						cool = 8;
+					}
+				}
+			}
 			z = hole_height(h, x, y);
 			if ((s = surf(in, x, y)) == SURF_WATER || s == SURF_OOB) break;
 			dry = vec2_make(x, y);
@@ -419,6 +509,13 @@ void ball_shot(const ShotIn *in, Shot *o)
 		}
 	}
 	if (!o->fly_n) o->fly_n = o->n;
+	if (holed) {
+		/* down into the cup */
+		x = in->pin.x;
+		y = in->pin.y;
+		z = hole_height(h, x, y) - DROP_Z;
+		s = surf(in, x, y);
+	}
 	rec(o, x, y, z);
 	if (!landed) {
 		o->land = vec2_make(x, y);
@@ -435,6 +532,8 @@ void ball_shot(const ShotIn *in, Shot *o)
 		o->result = SHOT_OOB;
 		o->stop = in->pos;
 		o->lie = in->lie;
+	} else if (holed) {
+		o->result = SHOT_HOLED;
 	}
 done:
 	o->steps = step > MAX_STEPS ? MAX_STEPS : step;

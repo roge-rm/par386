@@ -245,6 +245,7 @@ int main(int argc, char **argv)
 	v.hole = &h;
 	v.grid = &g;
 	v.pin = 0;
+	v.green = 0;
 	for (i = 0; i < 3; i++) {
 		v.ball = vec2_make(Y(pos[i].x), Y(pos[i].y));
 		v.aim = toward(v.ball, pos[i].to_pin ? h.pins[0] : h.aim);
@@ -371,6 +372,89 @@ int main(int argc, char **argv)
 		play_status(&s, &pl, NULL);
 		play_map(&s, &pl);
 		free(s.bits);
+	}
+
+	/* The green view from 7 yd short of the pin, at both sizes and every depth,
+	 * then odd spots: on the pin, from the tee, off the hole's corner. */
+	{
+		RenderView gv = v;
+		static const double odd[][2] = { { 0, 0 }, { 60, 12 }, { -30, -30 }, { 230, 470 } };
+		int k, greens;
+		gv.green = 1;
+		gv.pin = 0;
+		gv.ball = vec2_make(h.pins[0].x - Y(2), h.pins[0].y - Y(7));
+		gv.aim = toward(gv.ball, h.pins[0]);
+		for (scale = 1; scale <= 2; scale++) {
+			Surface s, s2;
+			int x, y;
+			surface(&s, scale);
+			surface(&s2, scale);
+			memset(s.bits, s.depth == 8 ? SENTINEL : 0x55, (size_t)s.rowBytes * s.h);
+			CHECK(render_green(&s, &gv) == 0);
+			CHECK(render_green(&s2, &gv) == 0);
+			CHECK(memcmp(s.bits, s2.bits, (size_t)s.rowBytes * s.h) == 0);
+			greens = 0;
+			if (s.depth == 8)
+				for (y = 0; y < s.h; y++)
+					for (x = 0; x < s.w; x++) {
+						uint8_t c = pixel(&s, x, y);
+						CHECK(c != SENTINEL);
+						greens += c >= PAL_GREEN && c < PAL_GREEN + PAL_RAMP_N;
+					}
+			if (s.depth == 8) {
+				printf("green view %d: %d%% green\n", s.w, greens * 100 / (s.w * s.h));
+				CHECK(greens > s.w * s.h / 2);
+			}
+			save(&s, "green");
+			free(s.bits);
+			free(s2.bits);
+		}
+		/* the aim turned well off the pin both ways: nothing written outside the bitmap */
+		for (k = -1; k <= 1; k += 2) {
+			int g, a;
+			for (a = 1; a <= 8; a++) {
+				Surface s;
+				size_t n;
+				uint8_t *raw, *keep;
+				RenderView ov = gv;
+				ov.aim = (angle)(gv.aim + k * 1500 * a);
+				surface(&s, 1);
+				n = (size_t)s.rowBytes * s.h;
+				raw = malloc(n + 128);
+				memset(raw, 0xA5, n + 128);
+				keep = s.bits;
+				s.bits = raw + 64;
+				CHECK(render_green(&s, &ov) == 0);
+				for (g = 0; g < 64; g++) CHECK(raw[g] == 0xA5 && raw[64 + n + g] == 0xA5);
+				s.bits = keep;
+				free(raw);
+				free(s.bits);
+			}
+		}
+		for (k = 4; k >= 1; k >>= 2) {
+			Surface s;
+			surface_d(&s, 1, k);
+			CHECK(render_green(&s, &gv) == 0);
+			free(s.bits);
+		}
+		for (k = 0; k < 4; k++) {
+			Surface s;
+			gv.ball = k == 0 ? h.pins[0] : vec2_make(Y(odd[k][0]), Y(odd[k][1]));
+			gv.aim = toward(gv.ball, h.pins[0]);
+			surface(&s, 1);
+			CHECK(render_green(&s, &gv) == 0);
+			free(s.bits);
+			surface(&s, 2);
+			CHECK(render_green(&s, &gv) == 0);
+			free(s.bits);
+		}
+		{
+			Surface s;
+			surface(&s, 1);
+			s.w = 100;
+			CHECK(render_green(&s, &gv) == -1);
+			free(s.bits);
+		}
 	}
 
 	{

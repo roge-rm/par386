@@ -178,7 +178,7 @@ int main(void)
 	CHECK(fix_abs(F(-1.25)) == F(1.25));
 	CHECK(fix_abs(FIX_MIN) == FIX_MAX);
 
-	CHECK(strcmp(par386_version(), "0.0.5") == 0);
+	CHECK(strcmp(par386_version(), "0.1.0") == 0);
 
 	printf("%d checks, %d failed\n", checks, fails);
 	return fails ? 1 : 0;

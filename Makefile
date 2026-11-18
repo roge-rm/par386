@@ -137,10 +137,11 @@ ui-test: build/uitest $(ART)/art.rcp
 build/rendertest: host/rendertest.c $(HOSTSRC) src/core/*.h | $(BUILD)
 	$(HOSTCC) host/rendertest.c $(HOSTSRC) -lm -o $@
 
-# Draws the test hole from the tee, mid-fairway and near the green at
+# Draws the test hole from the tee, mid-fairway, near the green and the
+# green view for putting at
 # 160x160 2-bit and 320x320 8-bit, writes PNGs to $(DEBUGDIR)/m3 and
 # compares them with host/ref/. render-ref stores the current ones there.
-REFS     = tee-160 tee-320 fairway-160 fairway-320 approach-160 approach-320
+REFS     = tee-160 tee-320 fairway-160 fairway-320 approach-160 approach-320 green-160 green-320
 
 render-test: build/rendertest build/courses/Par386-Test.pdb $(ART)/obj.rcp
 	rm -rf build/render && mkdir -p build/render
@@ -160,9 +161,9 @@ build/physicstest: host/physicstest.c $(HOSTSRC) src/core/*.h | $(BUILD)
 # bounds, rolls, the checksum over a run of shots and the swing meter. The
 # strip over a blank scene goes to $(DEBUGDIR)/m5/host-*.png.
 physics-test: build/physicstest build/courses/Par386-Test.pdb
-	rm -rf build/physics && mkdir -p build/physics $(DEBUGDIR)/m5
+	rm -rf build/physics && mkdir -p build/physics $(DEBUGDIR)/m6
 	build/physicstest build/courses/Par386-Test.pdb build/physics
-	python3 tools/topng.py build/physics $(DEBUGDIR)/m5 host-
+	python3 tools/topng.py build/physics $(DEBUGDIR)/m6 host-
 
 tables:
 	python3 tools/mktrig.py
