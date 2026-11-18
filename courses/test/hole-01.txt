@@ -1,0 +1,54 @@
+# A par 4 dogleg right, around 400 yards, with a pond in the elbow.
+# Yards: x across from the left edge, y along from the tee end.
+name Elbow Pond
+par 4
+size 200 440
+heightmap hole-01.png 8
+height 0 0.0625
+base rough
+aim 62 240
+
+tee Blue 60 12
+tee White 60 18
+tee Red 62 40
+
+pin 140 405
+pin 134 396
+pin 146 414
+pin 136 416
+
+poly deep-rough 10,0 24,0 24,440 10,440
+poly first-cut 44,46 84,46 91,120 93,198 98,236 115,264 145,294 169,328
+    167,376 126,378 105,350 76,324 49,294 35,252 33,180 37,108
+poly fairway 50,50 78,50 84,120 86,200 92,240 110,270 140,300 162,330
+    160,370 130,372 110,345 80,318 55,290 42,250 40,180 44,110
+ellipse fringe 140 405 19 22 16
+ellipse green 140 405 15 18 16
+ellipse bunker 38 236 7 10 10
+ellipse bunker 120 391 6 9 10 30
+ellipse bunker 158 420 7 5 10
+ellipse water 135 235 22 16 16
+poly path 66,24 28,44 26,300 58,348 106,388
+    109,385 61,345 29,299 31,46 69,27
+rect tee 52 6 68 22
+rect tee 57 36 67 44
+rect oob 0 0 10 440
+
+object pine 16 60 0 72
+object pine 18 95 1 64
+object tree 15 130 0 80
+object pine 19 165 2 64
+object tree 16 200 1 70
+object pine 18 270 0 64
+object tree 15 310 2 90
+object pine 20 350 1 64
+object tree 40 380 0 80
+object tree 108 180 0 90
+object tree 118 192 1 80
+object pine 104 205 0 72
+object tree 126 170 2 70
+object bush 112 252 0 64
+object pine 150 438 0 72
+object tree 172 430 1 80
+object pine 184 400 0 64
+object rock 160 252 0 48

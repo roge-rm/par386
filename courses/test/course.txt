@@ -1,0 +1,6 @@
+# Par 386 test course: one hole for the tests.
+name Test
+tee Blue
+tee White
+tee Red
+holes 1

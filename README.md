@@ -8,7 +8,8 @@ You need prc-tools-remix, PilRC and the Palm OS SDK 5r3 (at `../palm-os-sdk/sdk-
 
 - `make` builds a debug `build/Par386.prc`
 - `make release` builds the release one
-- `make host-test` builds the game core with the host gcc (ASan and UBSan) and runs its tests
+- `make host-test` builds the game core with the host gcc (ASan and UBSan) and runs its tests, course-test included
+- `make courses` compiles the courses in `courses/` into `build/courses/` (needs Python 3 and Pillow), see doc/course-format.md
 
 ## Licence
 

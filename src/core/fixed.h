@@ -27,6 +27,23 @@ fixed SEC_CORE fix_mul(fixed a, fixed b);
 fixed SEC_CORE fix_div(fixed a, fixed b);
 fixed SEC_CORE fix_abs(fixed a);
 
+/* 16x16 bit products that compile to one mulu.w or muls.w on the 68000. */
+#define MULU16(a, b) ((uint32_t)(uint16_t)(a) * (uint16_t)(b))
+#define MULS16(a, b) ((int32_t)(int16_t)(a) * (int16_t)(b))
+
+/* Fast paths for per-frame code: no 64-bit library calls, only 16x16 multiplies. */
+/* a * b truncated toward zero, exact while |a * b| < 32768.0, no saturation. */
+fixed SEC_CORE fix_mulf(fixed a, fixed b);
+/* a * q / 16384 truncated toward zero (q is 2.14, e.g. a sine), for any a but FIX_MIN and |q| <= 16384. */
+fixed SEC_CORE fix_mulq14(fixed a, int16_t q);
+/* a * n for a whole number n, exact while |a * n| < 32768.0. */
+#define fix_muli(a, n) ((fixed)(a) * (int32_t)(n))
+
+/* Square root of a 32-bit whole number, rounded down. */
+uint16_t SEC_CORE isqrt32(uint32_t v);
+/* Square root of a 16.16 number, rounded down to the step. Negative gives 0. */
+fixed SEC_CORE fix_sqrt(fixed a);
+
 /* The game version as text. */
 const char *SEC_CORE par386_version(void);
 
