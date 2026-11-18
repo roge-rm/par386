@@ -44,9 +44,14 @@ static SurfaceGrid gGrid;
 static DmOpenRef gCourseDb, gScratchDb;
 static MemHandle gHoleH, gGridH;
 static UInt32 gMinFree;        /* least free heap while the scene was drawn */
+static Surface gBgS;           /* gBg's pixels, when it holds the scene */
+static Boolean gAnim;          /* play wants frames */
+static Boolean gRom35;
 #ifdef DEBUG
 static RenderStats gStats;
 static UInt32 gDrawTicks, gMapTicks;
+/* ticks and counts of meter and flight frames, and ticks for the last shot's physics */
+static UInt32 gMtrTicks, gMtrN, gFlyTicks, gFlyN, gSimTicks;
 #endif
 
 #ifdef DEBUG
@@ -153,6 +158,7 @@ static Err ScreenOpen(void)
 	gS.scale = gHiRes ? 2 : 1;
 	if (!gS.bits || w != 160 * gS.scale || h != 160 * gS.scale) return 2;
 	gfx_init(&gS);
+	gRom35 = rom >= kRom35;
 	return errNone;
 }
 
@@ -360,7 +366,7 @@ static Boolean PlayStart(void)
 	DmReleaseRecord(gScratchDb, at, true);
 	gGridH = h;
 	gGrid.cells = MemHandleLock(h);
-	play_init(&gPlay, &gHole, &gGrid);
+	play_init(&gPlay, &gHole, &gGrid, TimGetSeconds());
 	gPlaying = true;
 	return true;
 }
@@ -375,6 +381,8 @@ static void LockArt(RenderData *d, UInt32 type, UInt16 id, MemHandle *hs, UInt16
 	hs[(*n)++] = h;
 }
 
+/* Copies the scene to gBg, so overlays can be taken off and the map put back
+ * without drawing it again, and points gBgS at its pixels. */
 static void KeepScene(void)
 {
 	RectangleType r = { { 0, 0 }, { 160, 160 } };
@@ -384,26 +392,98 @@ static void KeepScene(void)
 	if (gBg) {
 		WinCopyRectangle(gOff, gBg, &r, 0, 0, winPaint);
 		gBgPic = PIC_SCENE;
+		gBgS = gS;
+		gBgS.bits = gRom35 ? BmpGetBits(WinGetBitmap(gBg)) : ((WindowType *)gBg)->displayAddrV20;
 	}
 }
 
-static void PlayStatus(Boolean map)
+/* Time for the play code, in ms. */
+static UInt32 NowMs(void)
+{
+	UInt32 t = TimGetTicks(), tps = SysTicksPerSecond();
+	return (t / tps) * 1000 + (t % tps) * 1000 / tps;
+}
+
+/* Copies a rectangle of gOff's pixels to the screen, in standard coordinates. */
+static void ShowRect(const URect *d)
+{
+	Int16 sc = gS.scale, x0 = d->x, y0 = d->y, x1 = d->x + d->w, y1 = d->y + d->h;
+	RectangleType r;
+
+	if (x0 < 0) x0 = 0;
+	if (y0 < 0) y0 = 0;
+	x0 /= sc;
+	y0 /= sc;
+	x1 = (x1 + sc - 1) / sc;
+	y1 = (y1 + sc - 1) / sc;
+	if (x1 > 160) x1 = 160;
+	if (y1 > 160) y1 = 160;
+	if (x1 <= x0 || y1 <= y0) return;
+	RctSetRectangle(&r, x0, y0, x1 - x0, y1 - y0);
+	WinCopyRectangle(gOff, WinGetDisplayWindow(), &r, x0, y0, winPaint);
+}
+
+static void SceneRender(void);
+
+#ifdef DEBUG
+/* Notes the physics time when a click (or the meter running out) started the flight. */
+static void SimTime(UInt8 before, UInt32 t0)
+{
+	if (before == PS_DOWN && gPlay.state == PS_FLY) gSimTicks = TimGetTicks() - t0;
+}
+#endif
+
+/* Lets play move the meter or the ball on and draw over the scene, and copies what changed to the screen. */
+static void PlayFrame(void)
+{
+	int f;
+#ifdef DEBUG
+	UInt8 st = gPlay.state;
+	UInt32 t0 = TimGetTicks();
+#endif
+
+	gAnim = false;
+	if (!gPlaying || gPlay.view != PLAY_SCENE) return;
+	f = play_frame(&gPlay, &gS, gBg && gBgPic == PIC_SCENE ? &gBgS : NULL, NowMs());
+	if (f & PL_RENDER) {
+		/* the next shot, or aimed off the side: SceneRender comes back here once it's drawn */
+		SceneRender();
+		return;
+	}
+	if (f & PL_DIRTY) ShowRect(&gPlay.dirty);
+	gAnim = (f & PL_ANIM) != 0;
+#ifdef DEBUG
+	SimTime(st, t0);
+	/* frames that drew something, by what they drew */
+	if (!(f & PL_DIRTY)) {
+	} else if ((st == PS_UP || st == PS_DOWN) && (gPlay.state == PS_UP || gPlay.state == PS_DOWN)) {
+		gMtrTicks += TimGetTicks() - t0;
+		gMtrN++;
+	} else if (st == PS_FLY && gPlay.state == PS_FLY) {
+		gFlyTicks += TimGetTicks() - t0;
+		gFlyN++;
+	}
+#endif
+}
+
+/* The map's strip. Debug builds put timings on its second line: the last
+ * scene draw and the map in ms, the average meter and flight frame in
+ * 0.1 ms and the last shot's physics in ms; then the least free heap while
+ * drawing and what the game uses of it, after the key is pressed again. */
+static void PlayStatus(void)
 {
 #ifdef DEBUG
-	/* Scene: draw time in ms, free heap at its lowest while drawing and what
-	 * the game uses of it. Map: its draw time, then the scene's stages in
-	 * ticks (gather, terrain, sky, objects, golfer). */
 	char t[32];
 	UInt32 tps = SysTicksPerSecond();
-	if (map)
-		StrPrintF(t, "M%lu %lu/%lu/%lu/%lu/%lu", gMapTicks * 1000 / tps, gStats.ticks[RS_GATHER],
-		          gStats.ticks[RS_TERRAIN], gStats.ticks[RS_SKY], gStats.ticks[RS_OBJECTS], gStats.ticks[RS_GOLFER]);
-	else
-		StrPrintF(t, "%lums %luK u%luK", gDrawTicks * 1000 / tps, gMinFree >> 10,
-		          gHeapStart > gMinFree ? (gHeapStart - gMinFree) >> 10 : 0);
+	StrPrintF(t, "S%lu M%lu F%lu P%lu", gDrawTicks * 1000 / tps,
+	          gMtrN ? gMtrTicks * 10000 / tps / gMtrN : 0,
+	          gFlyN ? gFlyTicks * 10000 / tps / gFlyN : 0, gSimTicks * 1000 / tps);
 	play_status(&gS, &gPlay, t);
+	StrPrintF(t, "m%lu %luK u%luK", gMapTicks * 1000 / tps, gMinFree >> 10,
+	          gHeapStart > gMinFree ? (gHeapStart - gMinFree) >> 10 : 0);
+	gfx_fill(&gS, 0, 0, (Int16)(StrLen(t) * 8 * gS.scale), 8 * gS.scale, UIC_BLACK);
+	gfx_text(&gS, 0, 0, t, StrLen(t), UIC_WHITE);
 #else
-	(void)map;
 	play_status(&gS, &gPlay, NULL);
 #endif
 }
@@ -446,9 +526,11 @@ static void SceneRender(void)
 		MemHandleUnlock(hs[k]);
 		DmReleaseResource(hs[k]);
 	}
-	PlayStatus(false);
 	KeepScene();
-	Show();
+	/* taps and keys made while it drew are dropped */
+	EvtFlushPenQueue();
+	EvtFlushKeyQueue();
+	PlayFrame();
 }
 
 static void PlayAct(int f)
@@ -456,6 +538,7 @@ static void PlayAct(int f)
 	RectangleType r = { { 0, 0 }, { 160, 160 } };
 
 	if (f & PL_BACK) {
+		gAnim = false;
 		PlayEnd();
 		gFront.screen = SCR_MENU;
 		Redraw();
@@ -463,18 +546,36 @@ static void PlayAct(int f)
 #ifdef DEBUG
 		UInt32 t0 = TimGetTicks();
 #endif
+		gAnim = false;
 		play_map(&gS, &gPlay);
 #ifdef DEBUG
 		gMapTicks = TimGetTicks() - t0;
 #endif
-		PlayStatus(true);
+		PlayStatus();
 		Show();
 	} else if ((f & PL_SCENE) && gBg && gBgPic == PIC_SCENE) {
 		WinCopyRectangle(gBg, gOff, &r, 0, 0, winPaint);
-		Show();
+		PlayFrame();
 	} else if (f & (PL_SCENE | PL_RENDER)) {
 		SceneRender();
+	} else {
+		PlayFrame();
 	}
+}
+
+/* A key or tap while playing, with the physics timed in debug builds. */
+static void PlayInput(Boolean tap, Int16 x, Int16 y, UInt8 key)
+{
+#ifdef DEBUG
+	UInt8 st = gPlay.state;
+	UInt32 t0 = TimGetTicks();
+#endif
+	int f = tap ? play_tap(&gPlay, x, y, NowMs()) : play_key(&gPlay, key, NowMs());
+#ifdef DEBUG
+	SimTime(st, t0);
+	if (st == PS_AIM && gPlay.state == PS_UP) gMtrTicks = gMtrN = gFlyTicks = gFlyN = 0;
+#endif
+	PlayAct(f);
 }
 
 static void Act(int r)
@@ -505,7 +606,7 @@ static Boolean MainFormHandleEvent(EventType *e)
 		Show();
 		return true;
 	case penDownEvent:
-		if (gPlaying) PlayAct(play_tap(&gPlay, e->screenX, e->screenY));
+		if (gPlaying) PlayInput(true, e->screenX, e->screenY, 0);
 		else Act(front_tap(&gFront, e->screenX, e->screenY));
 		return true;
 	default:
@@ -532,15 +633,19 @@ static void EventLoop(void)
 	UInt8 key;
 
 	do {
-		EvtGetEvent(&e, evtWaitForever);
+		/* a tick between frames while the meter or the ball moves */
+		EvtGetEvent(&e, gAnim ? 1 : evtWaitForever);
+		if (gAnim) PlayFrame();
+		if (e.eType == nilEvent && gPlaying) continue;
 		if (e.eType == keyDownEvent && gPlaying) {
 			/* the Menu button and backspace go back to the clubhouse */
 			WChar c = e.data.keyDown.chr;
-			/* a held key would queue up toggles during the draw */
-			if (e.data.keyDown.modifiers & autoRepeatKeyMask) continue;
 			key = (c == vchrMenu || c == chrBackspace || c == chrEscape) ? KEY_BACK : MapKey(&e);
+			/* held keys repeat for aiming and clubs only, or they'd queue up clicks and toggles */
+			if ((e.data.keyDown.modifiers & autoRepeatKeyMask) && key != KEY_LEFT && key != KEY_RIGHT &&
+			    key != KEY_UP && key != KEY_DOWN) continue;
 			if (key != KEY_NONE) {
-				PlayAct(play_key(&gPlay, key));
+				PlayInput(false, 0, 0, key);
 				continue;
 			}
 		}

@@ -169,6 +169,46 @@ static void bad_bands(void)
 	free(s.bits);
 }
 
+/* The byte-at-a-time 2-bit text matches the pixel-at-a-time path: the same
+ * text at every offset in a byte, once on a full surface (fast path) and
+ * once on one cut 1 pixel short of the text's end (pixel path). */
+static void text_paths(void)
+{
+	Surface a, b;
+	uint8_t ba[40 * 16], bb[40 * 16];
+	int x, y, i;
+
+	static const int xs[8] = {0, 1, 2, 3, 149, 150, 151, 152};
+	int xi;
+
+	for (xi = 0; xi < 8; xi++) {
+		x = xs[xi];
+		memset(&a, 0, sizeof a);
+		a.depth = 2;
+		a.scale = 1;
+		a.w = 160;
+		a.h = 16;
+		a.rowBytes = 40;
+		a.bits = ba;
+		gfx_init(&a);
+		b = a;
+		b.bits = bb;
+		b.w = (int16_t)(x + 7);
+		memset(ba, 0x55, sizeof ba);
+		memset(bb, 0x55, sizeof bb);
+		for (i = 0; i < UIC_COUNT; i += 3) {
+			gfx_text(&a, (int16_t)x, (int16_t)(i & 7), "W", 1, (uint8_t)i);
+			gfx_text(&b, (int16_t)x, (int16_t)(i & 7), "W", 1, (uint8_t)i);
+		}
+		/* compare the pixels b could draw */
+		for (y = 0; y < 16; y++)
+			for (i = 0; i < x + 7; i++) {
+				int sh = 6 - 2 * (i & 3);
+				CHECK(((ba[y * 40 + i / 4] >> sh) & 3) == ((bb[y * 40 + i / 4] >> sh) & 3));
+			}
+	}
+}
+
 int main(int argc, char **argv)
 {
 	long len;
@@ -189,6 +229,7 @@ int main(int argc, char **argv)
 	screens(2);
 	input();
 	bad_bands();
+	text_paths();
 	printf("uitest: %d checks, %d failed\n", checks, fails);
 	return fails != 0;
 }

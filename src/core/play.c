@@ -1,52 +1,591 @@
 #include "play.h"
 
-void play_init(Play *p, const Hole *h, const SurfaceGrid *g)
+/* What play_frame draws again. */
+#define R_STRIP  1
+#define R_OVER   2      /* the aim marker or the ball moved */
+#define R_METER  4
+#define R_ALL    8      /* the scene under the overlays is new */
+
+#define STRIP_Y   (160 - RENDER_STATUS)
+#define FLY_MS    42    /* a path point in the air: 1.5 times real time */
+#define ROLL_MS   62    /* a point on the ground: twice real time */
+#define RESULT_MS 1500
+#define AIM_STEP  182   /* a degree */
+#define AIM_EDGE  56    /* the marker this far off the centre draws the scene again */
+#define MAP_X     136   /* the Map button on the strip's second line */
+#define S16       (MTR_SNAP * 16)
+#define W16       (MTR_W * 16)
+
+/* Wind arrows, 7 x 7, by the way it blows on screen: up (with the shot),
+ * up-left, left and on round. */
+static const uint8_t arrows[8][7] = {
+	{ 0x10, 0x38, 0x54, 0x10, 0x10, 0x10, 0x10 },
+	{ 0xF0, 0xC0, 0xA0, 0x90, 0x08, 0x04, 0x02 },
+	{ 0x00, 0x20, 0x40, 0xFE, 0x40, 0x20, 0x00 },
+	{ 0x02, 0x04, 0x08, 0x90, 0xA0, 0xC0, 0xF0 },
+	{ 0x10, 0x10, 0x10, 0x10, 0x54, 0x38, 0x10 },
+	{ 0x80, 0x40, 0x20, 0x12, 0x0A, 0x06, 0x1E },
+	{ 0x00, 0x08, 0x04, 0xFE, 0x04, 0x08, 0x00 },
+	{ 0x1E, 0x06, 0x0A, 0x12, 0x20, 0x40, 0x80 },
+};
+
+static vec2 SEC_UI pin(const Play *p)
 {
+	return p->rv.hole->pins[p->rv.pin & 3];
+}
+
+static uint16_t SEC_UI pin_yards(const Play *p)
+{
+	return (uint16_t)((vec2_len(vec2_sub(pin(p), p->rv.ball)) + FIX_HALF) >> 16);
+}
+
+/* Yards to the aim marker: the club's carry, or for the putter the pin up to 30. */
+static uint16_t SEC_UI mark_yards(const Play *p)
+{
+	uint16_t d;
+	if (p->club != CLUB_PT) return ball_carry(p->club, p->lie);
+	d = pin_yards(p);
+	return d > 30 ? 30 : d < 2 ? 2 : d;
+}
+
+/* Gets ready for the next shot from rv.ball: aim, club and state. */
+static void SEC_UI setup(Play *p)
+{
+	const Hole *h = p->rv.hole;
+	vec2 to = pin(p);
+
+	if (p->rv.ball.x == h->tees[0].pos.x && p->rv.ball.y == h->tees[0].pos.y) to = h->aim;
+	p->rv.aim = vec2_angle(vec2_sub(to, p->rv.ball));
+	p->aim = p->rv.aim;
+	p->club = ball_pick(pin_yards(p), p->lie);
+	p->state = p->lie == LIE_GREEN ? PS_GREEN : PS_AIM;
+	p->cam_ok = 0;
+	p->redraw = R_ALL;
+	p->shown = -2;
+	p->mishit = 0;
+}
+
+void play_init(Play *p, const Hole *h, const SurfaceGrid *g, uint32_t seed)
+{
+	uint8_t *b = (uint8_t *)p;
+	uint16_t i;
+
+	for (i = 0; i < sizeof(Play); i++) b[i] = 0;
 	p->rv.hole = h;
 	p->rv.grid = g;
 	p->rv.pin = 0;
+	p->rv.ball = h->tees[0].pos;
+	p->lie = LIE_TEE;
+	p->stroke = 1;
 	p->view = PLAY_SCENE;
-	play_spot(p, 0);
+	ball_wind(seed, h->number, &p->wind_mph, &p->wind_dir);
+	setup(p);
 }
 
-void play_spot(Play *p, uint8_t n)
+/* The meter's marker at now, 1/16 units from the bar's left. */
+static int16_t SEC_UI meter_pos(const Play *p, uint32_t now)
 {
-	const Hole *h = p->rv.hole;
-	vec2 to;
-
-	p->spot = (uint8_t)(n % PLAY_SPOTS);
-	switch (p->spot) {
-	case 1: p->rv.ball = vec2_make(64L << 16, 190L << 16); break;
-	case 2: p->rv.ball = vec2_make(124L << 16, 352L << 16); break;
-	default: p->rv.ball = h->tees[0].pos; break;
+	/* the times are clamped (past the end of either run) so the product stays small after a long pause */
+	uint32_t e;
+	if (p->state == PS_UP) {
+		e = now - p->t0;
+		if (e > 2 * MTR_UP_MS) e = 2 * MTR_UP_MS;
+		return (int16_t)(S16 + (int32_t)(W16 - S16) * (int32_t)e / MTR_UP_MS);
 	}
-	to = p->spot ? h->pins[p->rv.pin & 3] : h->aim;
-	p->rv.aim = vec2_angle(vec2_sub(to, p->rv.ball));
+	e = now - p->t1;
+	if (e > 2 * MTR_DOWN_MS) e = 2 * MTR_DOWN_MS;
+	return (int16_t)(p->turn - (int32_t)(W16 - S16) * (int32_t)e / MTR_DOWN_MS);
 }
 
-int play_key(Play *p, uint8_t key)
+static void SEC_UI launch(Play *p)
 {
-	switch (key) {
-	case KEY_BACK:
-		return PL_BACK;
-	case KEY_SELECT: case KEY_OTHER:
-		p->view = p->view == PLAY_SCENE ? PLAY_MAP : PLAY_SCENE;
-		return p->view == PLAY_MAP ? PL_MAP : PL_SCENE;
-#ifdef DEBUG
-	case KEY_UP: case KEY_DOWN:
-		play_spot(p, (uint8_t)(p->spot + (key == KEY_DOWN ? 1 : PLAY_SPOTS - 1)));
-		p->view = PLAY_SCENE;
-		return PL_RENDER;
-#endif
+	ShotIn in;
+
+	in.hole = p->rv.hole;
+	in.grid = p->rv.grid;
+	in.pos = p->rv.ball;
+	in.pin = pin(p);
+	in.wind = ball_wind_vec(p->wind_mph, p->wind_dir);
+	in.aim = p->aim;
+	in.power = p->power;
+	in.snap = p->snap;
+	in.club = p->club;
+	in.lie = p->lie;
+	in.mishit = p->mishit;
+	ball_shot(&in, &p->shot);
+	p->have_shot = 1;
+	p->state = PS_FLY;
+	p->shown = -2;
+	p->redraw |= R_OVER;
+}
+
+/* A click of the meter: start, set the power, set the snap. */
+static int SEC_UI click(Play *p, uint32_t now)
+{
+	int16_t pos;
+
+	switch (p->state) {
+	case PS_AIM:
+		p->state = PS_UP;
+		p->t0 = now;
+		p->mpos = S16;
+		p->power = FIX_ONE;
+		p->snap = 0;
+		p->mishit = 0;
+		p->redraw |= R_STRIP;
+		return PL_ANIM;
+	case PS_UP:
+		pos = meter_pos(p, now);
+		if (pos > W16) pos = W16;
+		p->turn = pos;
+		p->mpos = pos;
+		p->t1 = now;
+		p->power = ((fixed)(pos - S16) << 16) / (W16 - S16);
+		if (p->power < 0) p->power = 0;
+		p->state = PS_DOWN;
+		p->redraw |= R_METER;
+		return PL_ANIM;
+	case PS_DOWN: {
+		/* when the marker crossed (or will cross) the snap line, and how far off the click was */
+		uint32_t ts = p->t1 + (uint32_t)((int32_t)(p->turn - S16) * MTR_DOWN_MS / (W16 - S16));
+		int32_t err = (int32_t)(now - ts), a = err < 0 ? -err : err;
+		fixed e;
+		a = a > 10 ? a - 10 : 0;
+		e = a >= MTR_SNAP_MS ? FIX_ONE : (fixed)((a << 16) / MTR_SNAP_MS);
+		p->snap = err > 0 ? -e : e;
+		p->mpos = meter_pos(p, now);
+		p->redraw |= R_METER;
+		launch(p);
+		return PL_ANIM;
+	}
+	case PS_RESULT:
+		p->t0 = now - RESULT_MS;
+		return PL_ANIM;
 	}
 	return 0;
 }
 
-int play_tap(Play *p, int16_t x, int16_t y)
+int play_key(Play *p, uint8_t key, uint32_t now)
 {
-	(void)x;
-	if (y >= 160 - RENDER_STATUS) return PL_BACK;
-	return play_key(p, KEY_SELECT);
+	if (key == KEY_BACK) return PL_BACK;
+	if (p->view == PLAY_MAP) {
+		p->view = PLAY_SCENE;
+		p->redraw = R_ALL;
+		return PL_SCENE;
+	}
+	if (key == KEY_SELECT) return click(p, now);
+	if (p->state != PS_AIM && p->state != PS_GREEN) return 0;
+	switch (key) {
+	case KEY_OTHER:
+		p->view = PLAY_MAP;
+		return PL_MAP;
+	}
+	if (p->state != PS_AIM) return 0;
+	switch (key) {
+	case KEY_LEFT:
+		p->aim = (angle)(p->aim + AIM_STEP);
+		p->redraw |= R_OVER;
+		break;
+	case KEY_RIGHT:
+		p->aim = (angle)(p->aim - AIM_STEP);
+		p->redraw |= R_OVER;
+		break;
+	case KEY_UP:
+		if (p->club > CLUB_DR) p->club--;
+		p->redraw |= R_OVER | R_STRIP;
+		break;
+	case KEY_DOWN:
+		if (p->club < CLUB_PT) p->club++;
+		p->redraw |= R_OVER | R_STRIP;
+		break;
+	}
+	return 0;
+}
+
+static void SEC_UI camera(Play *p, const Surface *s)
+{
+	if (!p->cam_ok) render_camera(s, &p->rv, &p->cam);
+	p->cam_ok = 1;
+}
+
+/* Where the aim marker shows for an aim, in pixels. */
+static int SEC_UI mark_at(const Play *p, angle a, int16_t *x, int16_t *y)
+{
+	fixed d = (fixed)mark_yards(p) << 16, depth;
+	vec2 m = vec2_make(p->rv.ball.x + fix_mulq14(d, icos(a)), p->rv.ball.y + fix_mulq14(d, isin(a)));
+	return render_point(&p->cam, m.x, m.y, hole_height(p->rv.hole, m.x, m.y), x, y, &depth);
+}
+
+/* Turns the aim so the marker shows in pixel column tx. */
+static void SEC_UI aim_at(Play *p, int16_t tx)
+{
+	int32_t d = mark_yards(p);
+	angle a = (angle)(p->rv.aim - iatan2((int32_t)(tx - p->cam.cx), p->cam.f));
+	int16_t i, mx, my;
+
+	/* the marker is d yards past the ball and the camera 14 behind, so it moves less than the angle */
+	for (i = 0; i < 4; i++) {
+		int32_t e;
+		if (!mark_at(p, a, &mx, &my)) break;
+		e = tx - mx;
+		if (e > -1 && e < 1) break;
+		a = (angle)(a - iatan2(e * (d + 14) / d, p->cam.f));
+	}
+	p->aim = a;
+	p->redraw |= R_OVER;
+}
+
+int play_tap(Play *p, int16_t x, int16_t y, uint32_t now)
+{
+	if (p->view == PLAY_MAP) return play_key(p, KEY_SELECT, now);
+	if (p->state == PS_UP || p->state == PS_DOWN || p->state == PS_RESULT) return click(p, now);
+	if (y >= STRIP_Y) {
+		if (x >= MAP_X && y >= STRIP_Y + UI_CHAR) return play_key(p, KEY_OTHER, now);
+		if (p->state == PS_AIM) return click(p, now);
+		return 0;
+	}
+	/* cx is 80 times the scale */
+	if (p->state == PS_AIM && p->cam_ok) aim_at(p, (int16_t)(x * (p->cam.cx / 80)));
+	return 0;
+}
+
+/* Adds a pixel rectangle to the dirty one. */
+static void SEC_UI dirty(Play *p, int16_t x, int16_t y, int16_t w, int16_t h)
+{
+	URect *d = &p->dirty;
+	if (w <= 0 || h <= 0) return;
+	if (d->w <= 0) {
+		d->x = x; d->y = y; d->w = w; d->h = h;
+		return;
+	}
+	if (x < d->x) { d->w += d->x - x; d->x = x; }
+	if (y < d->y) { d->h += d->y - y; d->y = y; }
+	if (x + w > d->x + d->w) d->w = x + w - d->x;
+	if (y + h > d->y + d->h) d->h = y + h - d->y;
+}
+
+/* A fill over the scene, kept to the view. */
+static void SEC_UI over(Surface *s, int16_t x, int16_t y, int16_t w, int16_t h, uint8_t c)
+{
+	int16_t vh = (int16_t)(STRIP_Y * s->scale);
+	if (y + h > vh) h = vh - y;
+	if (h > 0) gfx_fill(s, x, y, w, h, c);
+}
+
+/* Remembers pixels drawn over the scene, to take off again from the kept copy. */
+static void SEC_UI patch(Play *p, int16_t x, int16_t y, int16_t w, int16_t h)
+{
+	int16_t vh = (int16_t)(STRIP_Y * (p->cam.cx / 80));
+	if (y + h > vh) h = vh - y;
+	if (h <= 0) return;
+	if (p->npatch < PLAY_PATCHES) {
+		URect *r = &p->patch[p->npatch++];
+		r->x = x; r->y = y; r->w = w; r->h = h;
+	}
+	dirty(p, x, y, w, h);
+}
+
+/* The aim marker: a white cross with a black edge, so it shows on dark
+ * trees and light grass alike. */
+static void SEC_UI draw_mark(Play *p, Surface *s, int16_t x, int16_t y)
+{
+	int16_t u = s->scale;
+	over(s, x - 4 * u, y - u, 9 * u, 3 * u, UIC_BLACK);
+	over(s, x - u, y - 4 * u, 3 * u, 9 * u, UIC_BLACK);
+	over(s, x - 3 * u, y, 7 * u, u, UIC_WHITE);
+	over(s, x, y - 3 * u, u, 7 * u, UIC_WHITE);
+	patch(p, x - 4 * u, y - 4 * u, 9 * u, 9 * u);
+}
+
+static void SEC_UI path_pt(const Play *p, int16_t k, fixed *x, fixed *y, fixed *z)
+{
+	const BallPt *b = &p->shot.path[k];
+	*x = (fixed)b->x * 4096;
+	*y = (fixed)b->y * 4096;
+	*z = (fixed)b->z * 4096;
+}
+
+/* The ball at path point shown, with a trail of the points before it in
+ * the air, smaller with distance. White with a dark ring so it shows on
+ * the sky and on grass. */
+static void SEC_UI draw_ball(Play *p, Surface *s)
+{
+	int16_t k = p->shown, j, sx, sy, u = s->scale, n;
+	uint8_t grey = s->depth >= 8;
+	fixed x, y, z, depth;
+
+	for (j = k - 8; j < k; j += 2) {
+		if (j < 0 || j >= p->shot.fly_n) continue;
+		path_pt(p, j, &x, &y, &z);
+		if (render_point(&p->cam, x, y, z, &sx, &sy, &depth)) {
+			over(s, sx, sy, u, u, grey ? UIC_BALL_LT : UIC_BLACK);
+			patch(p, sx, sy, u, u);
+		}
+	}
+	path_pt(p, k, &x, &y, &z);
+	if (!render_point(&p->cam, x, y, z, &sx, &sy, &depth)) return;
+	n = depth < (50L << 16) ? 2 * u : u;
+	over(s, sx - 1, sy - 1, n + 2, n + 2, grey ? UIC_BALL_DK : UIC_BLACK);
+	over(s, sx, sy, n, n, UIC_WHITE);
+	patch(p, sx - 1, sy - 1, n + 2, n + 2);
+}
+
+/* Appends s to t at *n. */
+static void SEC_UI add(char *t, int16_t *n, const char *s)
+{
+	while (*s) t[(*n)++] = *s++;
+	t[*n] = 0;
+}
+
+static void SEC_UI pad(char *t, int16_t *n, int16_t to)
+{
+	while (*n < to) t[(*n)++] = ' ';
+	t[*n] = 0;
+}
+
+static void SEC_UI line(Surface *s, int16_t row, const char *t)
+{
+	int16_t n;
+	for (n = 0; t[n] && n < 20; n++) {}
+	ui_text(s, 0, STRIP_Y + row * UI_CHAR, t, n, UIC_WHITE, -1);
+}
+
+static void SEC_UI draw_strip(Play *p, Surface *s)
+{
+	char t[24];
+	int16_t n = 0;
+
+	ui_fill(s, 0, STRIP_Y, 160, RENDER_STATUS, UIC_BLACK);
+	if (p->state == PS_RESULT || p->state == PS_GREEN) {
+		line(s, 0, p->msg1);
+		line(s, 1, p->msg2);
+	} else {
+		/* club and carry, the pin, the wind */
+		add(t, &n, ball_club_name(p->club));
+		if (p->club != CLUB_PT) {
+			add(t, &n, " ");
+			n += play_num(t + n, ball_carry(p->club, p->lie));
+		}
+		pad(t, &n, 8);
+		add(t, &n, "Pin ");
+		n += play_num(t + n, pin_yards(p));
+		pad(t, &n, 17);
+		if (p->wind_mph < 10) add(t, &n, " ");
+		n += play_num(t + n, p->wind_mph);
+		line(s, 0, t);
+		if (p->wind_mph) {
+			const uint8_t *a = arrows[((uint16_t)(p->wind_dir - p->aim) + 4096) >> 13 & 7];
+			int16_t i, j;
+			for (j = 0; j < 7; j++)
+				for (i = 0; i < 7; i++)
+					if (a[j] & (0x80 >> i)) ui_fill(s, 16 * UI_CHAR + i, STRIP_Y + j, 1, 1, UIC_WHITE);
+		}
+		/* the lie and the shot */
+		n = 0;
+		add(t, &n, ball_lie_name(p->lie));
+		pad(t, &n, 9);
+		add(t, &n, "Shot ");
+		n += play_num(t + n, p->stroke);
+		line(s, 1, t);
+	}
+	if (p->state == PS_AIM || p->state == PS_GREEN) {
+		ui_fill(s, MAP_X, STRIP_Y + UI_CHAR, 160 - MAP_X, UI_CHAR, UIC_WHITE);
+		ui_text(s, MAP_X, STRIP_Y + UI_CHAR, "Map", 3, UIC_BLACK, -1);
+	}
+	dirty(p, 0, (int16_t)(STRIP_Y * s->scale), s->w, (int16_t)(RENDER_STATUS * s->scale));
+}
+
+/* A fill of the meter kept to columns x0 to x1. */
+static void SEC_UI mfill(Surface *s, int16_t x0, int16_t x1, int16_t x, int16_t y, int16_t w, int16_t h, uint8_t c)
+{
+	if (x < x0) { w -= x0 - x; x = x0; }
+	if (x + w > x1) w = x1 - x;
+	if (w > 0) ui_fill(s, x, y, w, h, c);
+}
+
+/* The meter on the strip's first line, columns x0 to x1 only: the bar, the
+ * power so far, quarter marks, the snap line and the marker (black between
+ * white sides, so it shows on the bar and the power). */
+static void SEC_UI draw_meter(Play *p, Surface *s, int16_t x0, int16_t x1)
+{
+	int16_t y = STRIP_Y, top = p->state == PS_UP ? p->mpos : p->turn, k, m = MTR_X + (p->mpos >> 4);
+
+	mfill(s, x0, x1, 0, y, 160, UI_CHAR, UIC_BLACK);
+	mfill(s, x0, x1, MTR_X - 1, y + 1, MTR_W + 2, 6, UIC_WHITE);
+	mfill(s, x0, x1, MTR_X, y + 2, MTR_W, 4, UIC_BLACK);
+	if (top > S16) mfill(s, x0, x1, MTR_X + MTR_SNAP, y + 2, (top - S16) >> 4, 4, UIC_BALL_LT);
+	for (k = 1; k < 4; k++) mfill(s, x0, x1, MTR_X + MTR_SNAP + (MTR_W - MTR_SNAP) * k / 4, y + 6, 1, 2, UIC_WHITE);
+	mfill(s, x0, x1, MTR_X + MTR_SNAP, y, 1, UI_CHAR, UIC_WHITE);
+	if (p->mpos >= 0) {
+		mfill(s, x0, x1, m - 2, y, 3, UI_CHAR, UIC_WHITE);
+		mfill(s, x0, x1, m - 1, y + 1, 1, UI_CHAR - 2, UIC_BLACK);
+	}
+	p->mshown = m;
+	dirty(p, (int16_t)(x0 * s->scale), (int16_t)(y * s->scale), (int16_t)((x1 - x0) * s->scale), (int16_t)(UI_CHAR * s->scale));
+}
+
+/* The result line when the ball has stopped. */
+static void SEC_UI result(Play *p)
+{
+	const Shot *sh = &p->shot;
+	int16_t n = 0;
+	char *a = p->msg1, *b = p->msg2;
+
+	a[0] = b[0] = 0;
+	if (sh->result == SHOT_WATER) {
+		add(a, &n, "In the water");
+		n = 0;
+		add(b, &n, "1 stroke penalty");
+	} else if (sh->result == SHOT_OOB) {
+		add(a, &n, "Out of bounds");
+		n = 0;
+		add(b, &n, "Stroke and distance");
+	} else if (sh->lie == LIE_GREEN) {
+		vec2 d = vec2_sub(pin(p), sh->stop);
+		add(a, &n, "On the green");
+		n = play_num(b, (uint32_t)((vec2_len(d) + FIX_HALF) >> 16));
+		add(b, &n, "y to pin");
+	} else {
+		add(a, &n, ball_lie_name(sh->lie));
+		add(a, &n, ", ");
+		n += play_num(a + n, (uint32_t)((sh->total + FIX_HALF) >> 16));
+		add(a, &n, " yd");
+		n = 0;
+		if (p->mishit) {
+			add(b, &n, "Mis-hit");
+		} else {
+			add(b, &n, "Carry ");
+			n += play_num(b + n, (uint32_t)((sh->carry + FIX_HALF) >> 16));
+			add(b, &n, " yd");
+		}
+	}
+}
+
+/* After the result: the ball where the shot left it, penalties, the next club. */
+static void SEC_UI next(Play *p)
+{
+	const Shot *sh = &p->shot;
+	p->stroke = (uint8_t)(p->stroke + (sh->result == SHOT_OK ? 1 : 2));
+	p->rv.ball = sh->stop;
+	p->lie = sh->lie;
+	setup(p);
+	if (p->state == PS_GREEN) {
+		/* keep "On the green" and the distance on the strip */
+		int16_t n = 0;
+		p->msg1[0] = 0;
+		add(p->msg1, &n, "On the green");
+		n = play_num(p->msg2, pin_yards(p));
+		add(p->msg2, &n, "y to pin");
+	}
+}
+
+int play_frame(Play *p, Surface *s, const Surface *bg, uint32_t now)
+{
+	int flags = 0;
+	uint8_t k;
+
+	if (p->view == PLAY_MAP) return 0;
+	camera(p, s);
+	p->dirty.w = 0;
+	if (p->redraw & R_ALL) {
+		p->npatch = 0;
+		p->redraw = R_STRIP | R_OVER;
+		dirty(p, 0, 0, s->w, s->h);
+	}
+
+	switch (p->state) {
+	case PS_UP:
+		p->mpos = meter_pos(p, now);
+		if (p->mpos >= W16) {
+			/* no second click: full power, and it starts back down */
+			p->mpos = p->turn = W16;
+			p->t1 = p->t0 + MTR_UP_MS;
+			p->power = FIX_ONE;
+			p->state = PS_DOWN;
+		}
+		p->redraw |= R_METER;
+		flags |= PL_ANIM;
+		break;
+	case PS_DOWN:
+		p->mpos = meter_pos(p, now);
+		p->redraw |= R_METER;
+		if (p->mpos <= 0) {
+			/* no third click: a mis-hit */
+			p->mpos = 0;
+			p->mishit = 1;
+			p->snap = -FIX_ONE;
+			launch(p);
+		}
+		flags |= PL_ANIM;
+		break;
+	case PS_FLY: {
+		int32_t e, fly = (int32_t)p->shot.fly_n * FLY_MS;
+		int16_t i;
+		if (p->shown == -2) {
+			p->tf = now;
+			p->shown = -1;
+		}
+		e = (int32_t)(now - p->tf);
+		{
+			int32_t k = e < fly ? e / FLY_MS : p->shot.fly_n + (e - fly) / ROLL_MS;
+			if (k > p->shot.n - 1) k = p->shot.n - 1;
+			i = (int16_t)k;
+		}
+		if (i >= p->shot.n - 1) {
+			i = (int16_t)(p->shot.n - 1);
+			result(p);
+			p->state = PS_RESULT;
+			p->t0 = now;
+			p->redraw |= R_STRIP;
+		}
+		if (i != p->shown) {
+			p->shown = i;
+			p->redraw |= R_OVER;
+		}
+		flags |= PL_ANIM;
+		break;
+	}
+	case PS_RESULT:
+		if ((int32_t)(now - p->t0) >= RESULT_MS) {
+			next(p);
+			return PL_RENDER;
+		}
+		flags |= PL_ANIM;
+		break;
+	}
+
+	if (p->redraw & R_OVER) {
+		int16_t mx = 0, my = 0, ok = 0;
+		if (p->state <= PS_DOWN) {
+			ok = mark_at(p, p->aim, &mx, &my);
+			if (p->state == PS_AIM && (!ok || mx < p->cam.cx - AIM_EDGE * s->scale || mx > p->cam.cx + AIM_EDGE * s->scale)) {
+				/* aimed off the side of the view: draw it again looking that way */
+				p->rv.aim = p->aim;
+				p->cam_ok = 0;
+				p->redraw = R_ALL;
+				return PL_RENDER;
+			}
+		}
+		for (k = 0; k < p->npatch; k++) {
+			URect *r = &p->patch[k];
+			if (bg) gfx_copy(s, bg, r->x, r->y, r->w, r->h);
+			dirty(p, r->x, r->y, r->w, r->h);
+		}
+		p->npatch = 0;
+		if (ok) draw_mark(p, s, mx, my);
+		if ((p->state == PS_FLY || p->state == PS_RESULT) && p->shown >= 0) draw_ball(p, s);
+	}
+	if (p->redraw & R_STRIP) draw_strip(p, s);
+	if ((p->redraw & R_STRIP) && (p->state == PS_UP || p->state == PS_DOWN)) {
+		draw_meter(p, s, 0, 160);
+	} else if (p->redraw & R_METER) {
+		/* only between where the marker was and where it is, as the power fill follows it */
+		int16_t m = MTR_X + (p->mpos >> 4), a = m < p->mshown ? m : p->mshown, b = m < p->mshown ? p->mshown : m;
+		draw_meter(p, s, a - 3, b + 3);
+	}
+	p->redraw = 0;
+	if (p->dirty.w > 0) flags |= PL_DIRTY;
+	return flags;
 }
 
 int16_t play_num(char *t, uint32_t v)
@@ -60,20 +599,13 @@ int16_t play_num(char *t, uint32_t v)
 	return k;
 }
 
-/* Appends s to t at *n. */
-static void SEC_UI add(char *t, int16_t *n, const char *s)
-{
-	while (*s) t[(*n)++] = *s++;
-	t[*n] = 0;
-}
-
 void play_status(Surface *s, const Play *p, const char *info)
 {
 	const Hole *h = p->rv.hole;
 	char t[24];
-	int16_t n = 0, y = 160 - RENDER_STATUS;
+	int16_t n = 0;
 
-	ui_fill(s, 0, y, 160, RENDER_STATUS, UIC_BLACK);
+	ui_fill(s, 0, STRIP_Y, 160, RENDER_STATUS, UIC_BLACK);
 	add(t, &n, "Hole ");
 	n += play_num(t + n, h->number);
 	add(t, &n, " Par ");
@@ -81,19 +613,26 @@ void play_status(Surface *s, const Play *p, const char *info)
 	add(t, &n, " ");
 	n += play_num(t + n, h->tees[0].yards);
 	add(t, &n, " yd");
-	ui_text(s, 0, y, t, n, UIC_WHITE, -1);
-	if (!info) info = h->name;
-	for (n = 0; info[n] && n < 20; n++) {}
-	ui_text(s, 0, y + UI_CHAR, info, n, UIC_WHITE, -1);
+	line(s, 0, t);
+	line(s, 1, info ? info : h->name);
 }
 
 void play_map(Surface *s, const Play *p)
 {
 	RenderMap m;
 	char t[12];
-	int16_t n, x, y, sc = s->scale;
+	int16_t n, x, y, sc = s->scale, k;
 
 	if (render_map(s, &p->rv, &m) != 0) return;
+	/* the last shot's path, dotted */
+	if (p->have_shot) {
+		for (k = 0; k < p->shot.n; k += 2) {
+			const BallPt *b = &p->shot.path[k];
+			x = (int16_t)(m.left + ((fixed)b->x * 4096) / m.ypp);
+			y = (int16_t)(m.top + (m.length - ((fixed)b->y * 4096)) / m.ypp);
+			if (y < (STRIP_Y - 1) * sc) gfx_fill(s, x, y, sc, sc, UIC_WHITE);
+		}
+	}
 	n = play_num(t, m.yards);
 	t[n++] = 'y';
 	t[n] = 0;
@@ -103,7 +642,7 @@ void play_map(Surface *s, const Play *p)
 	if (x + n * UI_CHAR > 159) x = (int16_t)((m.bx + m.px) / 2 / sc - 4 - n * UI_CHAR);
 	if (x < 0) x = 0;
 	if (y < 0) y = 0;
-	if (y > 160 - RENDER_STATUS - UI_CHAR) y = 160 - RENDER_STATUS - UI_CHAR;
+	if (y > STRIP_Y - UI_CHAR) y = STRIP_Y - UI_CHAR;
 	ui_fill(s, x - 1, y - 1, n * UI_CHAR + 2, UI_CHAR + 2, UIC_BLACK);
 	ui_text(s, x, y, t, n, UIC_WHITE, -1);
 }

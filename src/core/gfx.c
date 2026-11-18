@@ -91,6 +91,34 @@ void gfx_fill(Surface *s, int16_t x, int16_t y, int16_t w, int16_t h, uint8_t c)
 	}
 }
 
+/* Each bit of a nibble as two bits, for 2-bit glyph rows. */
+static const uint8_t exp4[16] = {
+	0x00, 0x03, 0x0C, 0x0F, 0x30, 0x33, 0x3C, 0x3F, 0xC0, 0xC3, 0xCC, 0xCF, 0xF0, 0xF3, 0xFC, 0xFF
+};
+
+/* One 8x8 glyph on a 2-bit surface a byte at a time; it must lie inside the surface across. */
+static void SEC_UI text2(Surface *s, int16_t x, int16_t y, const uint8_t *g, uint8_t c)
+{
+	int16_t r, py;
+	uint8_t off = (uint8_t)((x & 3) << 1);
+
+	for (r = 0; r < 8; r++) {
+		uint8_t row = g[r], va, vb, pat, *p;
+		uint32_t m;
+		py = y + r;
+		if (!row || py < 0 || py >= s->h) continue;
+		/* the checker: even pixels take pa on even rows, as put() does */
+		va = (py & 1) ? s->pb[c] : s->pa[c];
+		vb = (py & 1) ? s->pa[c] : s->pb[c];
+		pat = (uint8_t)((va << 6) | (vb << 4) | (va << 2) | vb);
+		m = ((uint32_t)exp4[row >> 4] << 16 | (uint32_t)exp4[row & 15] << 8) >> off;
+		p = rowp(s, py) + ((uint16_t)x >> 2);
+		p[0] = (uint8_t)((p[0] & ~(m >> 16)) | (pat & (m >> 16)));
+		p[1] = (uint8_t)((p[1] & ~(m >> 8)) | (pat & (m >> 8)));
+		if (off) p[2] = (uint8_t)((p[2] & ~m) | (pat & m));
+	}
+}
+
 void gfx_text(Surface *s, int16_t x, int16_t y, const char *t, int16_t n, uint8_t c)
 {
 	int16_t k, r, b, px, py;
@@ -101,6 +129,10 @@ void gfx_text(Surface *s, int16_t x, int16_t y, const char *t, int16_t n, uint8_
 		const uint8_t *g;
 		if (ch < FONT_FIRST || ch >= FONT_FIRST + FONT_COUNT) ch = '?';
 		g = big ? font16 + (ch - FONT_FIRST) * 16 : font8 + (ch - FONT_FIRST) * 8;
+		if (s->lg == 1 && !big && x >= 0 && x + 8 <= s->w) {
+			text2(s, x, y, g, c);
+			continue;
+		}
 		for (r = 0; r < rows; r++) {
 			uint8_t row = g[r], *p;
 			py = y + r;
@@ -113,6 +145,25 @@ void gfx_text(Surface *s, int16_t x, int16_t y, const char *t, int16_t n, uint8_
 				if (big && ++px >= 0 && px < s->w) put(s, p, px, ((px ^ py) & 1) ? s->pb[c] : s->pa[c]);
 			}
 		}
+	}
+}
+
+void gfx_copy(Surface *d, const Surface *src, int16_t x, int16_t y, int16_t w, int16_t h)
+{
+	int16_t x1 = x + w, y1 = y + h, j;
+	uint16_t b0, b1, i;
+
+	if (x < 0) x = 0;
+	if (y < 0) y = 0;
+	if (x1 > d->w) x1 = d->w;
+	if (y1 > d->h) y1 = d->h;
+	if (x >= x1 || y >= y1 || src->rowBytes != d->rowBytes || src->h < y1) return;
+	b0 = (uint16_t)(((uint16_t)x << d->lg) >> 3);
+	b1 = (uint16_t)((((uint16_t)x1 << d->lg) + 7) >> 3);
+	for (j = y; j < y1; j++) {
+		uint8_t *p = rowp(d, j);
+		const uint8_t *q = src->bits + MULU16(j, src->rowBytes);
+		for (i = b0; i < b1; i++) p[i] = q[i];
 	}
 }
 

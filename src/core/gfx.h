@@ -31,6 +31,9 @@ void SEC_UI gfx_fill(Surface *s, int16_t x, int16_t y, int16_t w, int16_t h, uin
 /* Text in the font for the surface's scale: 8x8 at scale 1, 8x16 with each
  * column doubled at scale 2, so a character is 8 logical units square. */
 void SEC_UI gfx_text(Surface *s, int16_t x, int16_t y, const char *t, int16_t n, uint8_t c);
+/* Copies the pixels of a rectangle from src, a surface of the same size and
+ * depth; below 8 bits whole bytes go, so a few pixels either side come too. */
+void SEC_UI gfx_copy(Surface *d, const Surface *src, int16_t x, int16_t y, int16_t w, int16_t h);
 /* The golf ball cursor, BALL_W x BALL_H logical units. */
 void SEC_UI gfx_ball(Surface *s, int16_t x, int16_t y);
 int16_t SEC_UI gfx_ball_w(void);

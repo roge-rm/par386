@@ -9,6 +9,7 @@
 #   make ui-test     draws the title and menu with the core UI kit on the host, to PNGs
 #   make render-test draws the test hole from 3 places and compares with host/ref/
 #   make render-ref  makes host/ref/ again from the current renderer
+#   make physics-test plays shots on the host and checks carries, wind, lies, water and the meter
 # Both flavours write build/Par386.prc, so build one at a time.
 
 SDK      = ../palm-os-sdk/sdk-5r3
@@ -28,7 +29,7 @@ CFLAGS   = -O2 -Wall -Wno-unknown-pragmas $(DEFS) $(INCLUDES) -Isrc/core -Isrc/p
 LDFLAGS  = -L$(SDK)/lib/m68k-palmos-coff
 
 PALMSRCS = main
-CORESRCS = fixed trig vec hole gfx ui front render play
+CORESRCS = fixed trig vec hole gfx ui front render play ball
 OBJS     = $(addprefix $(BUILD)/,$(addsuffix .o,$(PALMSRCS) $(CORESRCS)))
 
 all: build/$(PRC)
@@ -95,6 +96,7 @@ host-test: build/hosttest
 	$(MAKE) course-test
 	$(MAKE) ui-test
 	$(MAKE) render-test
+	$(MAKE) physics-test
 
 build/hosttest: host/hosttest.c $(HOSTSRC) src/core/*.h | $(BUILD)
 	$(HOSTCC) host/hosttest.c $(HOSTSRC) -lm -o $@
@@ -150,6 +152,18 @@ render-ref: build/rendertest build/courses/Par386-Test.pdb $(ART)/obj.rcp
 	build/rendertest build/courses/Par386-Test.pdb $(ART) build/render
 	python3 tools/refcmp.py build/render $(DEBUGDIR)/m3 host/ref --update $(REFS)
 
+build/physicstest: host/physicstest.c $(HOSTSRC) src/core/*.h | $(BUILD)
+	$(HOSTCC) host/physicstest.c $(HOSTSRC) -lm -o $@
+
+# Plays shots on flat, sloped and made-up holes and the test hole: the carry
+# of each club in its range, wind, hook and slice, lies, water, out of
+# bounds, rolls, the checksum over a run of shots and the swing meter. The
+# strip over a blank scene goes to $(DEBUGDIR)/m5/host-*.png.
+physics-test: build/physicstest build/courses/Par386-Test.pdb
+	rm -rf build/physics && mkdir -p build/physics $(DEBUGDIR)/m5
+	build/physicstest build/courses/Par386-Test.pdb build/physics
+	python3 tools/topng.py build/physics $(DEBUGDIR)/m5 host-
+
 tables:
 	python3 tools/mktrig.py
 	python3 tools/mkfont.py
@@ -158,4 +172,4 @@ tables:
 clean:
 	rm -rf build
 
-.PHONY: all release clean host-test course-test ui-test render-test render-ref courses tables art
+.PHONY: all release clean host-test course-test ui-test render-test render-ref physics-test courses tables art

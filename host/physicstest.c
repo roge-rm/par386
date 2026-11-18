@@ -1,0 +1,599 @@
+/* Ball physics test. Run by `make physics-test`:
+ *   physicstest COURSE.pdb [OUTDIR]
+ * Plays shots on made-up flat and sloped holes and on the test hole and
+ * checks the carry of each club against its range, wind, hook and slice,
+ * lies, water drops, out of bounds, rolls on slopes, that the same shot
+ * always comes out the same, the swing meter's timing and the camera's
+ * projection. Prints the carry table. With OUTDIR it saves the strip and
+ * overlays over a blank scene as PPMs there. */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "ball.h"
+#include "play.h"
+
+static int fails, checks;
+
+#define CHECK(cond) do { checks++; if (!(cond)) { fails++; printf("FAIL %s:%d %s\n", __FILE__, __LINE__, #cond); } } while (0)
+
+#define YD(v) ((fixed)((v) * 65536.0))
+#define TOYD(v) ((v) / 65536.0)
+
+/* The stored checksum over the run of shots in checksum_run. */
+#define CHECKSUM 0x9f820dbcUL
+
+/* Carry ranges in yards, longest first, rising down the bag with no overlaps. */
+static const int range_lo[CLUB_COUNT - 1] = { 230, 212, 198, 186, 176, 166, 155, 144, 132, 120, 108, 95, 80, 60 };
+static const int range_hi[CLUB_COUNT - 1] = { 250, 229, 211, 197, 185, 175, 165, 154, 143, 131, 119, 107, 94, 75 };
+
+static uint8_t *load_file(const char *path, uint32_t *len)
+{
+	FILE *f = fopen(path, "rb");
+	uint8_t *d;
+	long n;
+
+	*len = 0;
+	if (!f) return NULL;
+	fseek(f, 0, SEEK_END);
+	n = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	d = malloc(n ? n : 1);
+	if (fread(d, 1, n, f) != (size_t)n) { free(d); fclose(f); return NULL; }
+	fclose(f);
+	*len = (uint32_t)n;
+	return d;
+}
+
+static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
+
+static uint8_t *pdb_record(const uint8_t *d, uint32_t n, int k, uint32_t *len)
+{
+	int count = d[76] << 8 | d[77];
+	uint32_t a, b;
+	uint8_t *r;
+
+	if (k >= count) return NULL;
+	a = be32(d + 78 + 8 * k);
+	b = k + 1 < count ? be32(d + 78 + 8 * (k + 1)) : n;
+	*len = b - a;
+	r = malloc(*len);
+	memcpy(r, d + a, *len);
+	return r;
+}
+
+static uint8_t *grid_bytes;
+static uint16_t grid_stride;
+
+static void put_row(void *ctx, uint16_t row, const uint8_t *bytes, uint16_t len)
+{
+	(void)ctx;
+	memcpy(grid_bytes + (uint32_t)row * grid_stride, bytes, len);
+}
+
+/* A made-up hole 256 x 640 yards with 8 yard height cells, 1/16 yard
+ * height steps, the heights from slope (bytes per cell across) and
+ * everything one surface. */
+#define FW 33
+#define FH 81
+static uint8_t flat_h[FW * FH];
+static uint8_t flat_g[64 * 320];
+static Hole flat;
+static SurfaceGrid fgrid;
+
+static void flat_make(int slope, uint8_t surface)
+{
+	int i, j;
+	memset(&flat, 0, sizeof flat);
+	for (j = 0; j < FH; j++)
+		for (i = 0; i < FW; i++) flat_h[j * FW + i] = (uint8_t)(64 + slope * (i - 16));
+	flat.heights = flat_h;
+	flat.base = 0;
+	flat.step = FIX_ONE / 16;
+	flat.width = 256;
+	flat.length = 640;
+	flat.hm_w = FW;
+	flat.hm_h = FH;
+	flat.hm_shift = 3;
+	flat.pins[0] = vec2_make(YD(128), YD(600));
+	surface_size(&flat, &fgrid);
+	memset(flat_g, surface * 0x11, sizeof flat_g);
+	fgrid.cells = flat_g;
+}
+
+/* Sets the cells of a box of yards to a surface. */
+static void flat_box(int x0, int y0, int x1, int y1, uint8_t surface)
+{
+	int x, y;
+	for (y = y0 / 2; y < y1 / 2 && y < fgrid.h; y++)
+		for (x = x0 / 2; x < x1 / 2 && x < fgrid.w; x++) {
+			uint8_t *b = &flat_g[y * fgrid.stride + x / 2];
+			*b = (x & 1) ? (uint8_t)((*b & 0xF0) | surface) : (uint8_t)((*b & 0x0F) | (surface << 4));
+		}
+}
+
+static ShotIn shot_in(uint8_t club)
+{
+	ShotIn in;
+	memset(&in, 0, sizeof in);
+	in.hole = &flat;
+	in.grid = &fgrid;
+	in.pos = vec2_make(YD(128), YD(20));
+	in.pin = flat.pins[0];
+	in.aim = ANG_90;
+	in.power = FIX_ONE;
+	in.club = club;
+	in.lie = LIE_FAIRWAY;
+	return in;
+}
+
+static Shot sh;
+
+static Shot *play(const ShotIn *in)
+{
+	ball_shot(in, &sh);
+	return &sh;
+}
+
+static int carry_yd(const ShotIn *in) { return (int)(TOYD(play(in)->carry) + 0.5); }
+static double side(const Shot *s) { return TOYD(s->stop.x - s->start.x); }
+
+static void carry_table(void)
+{
+	int c, last = 10000;
+	printf("club  carry  total  in range\n");
+	for (c = 0; c < CLUB_COUNT - 1; c++) {
+		ShotIn in = shot_in((uint8_t)c);
+		Shot *s = play(&in);
+		int carry = (int)(TOYD(s->carry) + 0.5), total = (int)(TOYD(s->total) + 0.5), est = ball_carry((uint8_t)c, LIE_FAIRWAY);
+		int ok = carry >= range_lo[c] && carry <= range_hi[c];
+		printf("%-4s  %5d  %5d  %d-%d %s (table %d)\n", ball_club_name((uint8_t)c), carry, total,
+		       range_lo[c], range_hi[c], ok ? "ok" : "OUT", est);
+		CHECK(ok);
+		CHECK(s->result == SHOT_OK && s->total >= s->carry);
+		CHECK(carry < last);
+		CHECK(est >= range_lo[c] && est <= range_hi[c]);
+		CHECK(abs(est - carry) <= 4);
+		CHECK(abs((int)(side(s) * 10)) <= 5);
+		last = carry;
+		if (c) CHECK(range_hi[c] < range_lo[c - 1]);
+	}
+	/* the putter rolls only */
+	{
+		ShotIn in = shot_in(CLUB_PT);
+		Shot *s;
+		flat_make(0, SURF_GREEN);
+		in.lie = LIE_GREEN;
+		s = play(&in);
+		printf("Pt    %5d  %5d  on a flat green\n", (int)TOYD(s->carry), (int)(TOYD(s->total) + 0.5));
+		CHECK(s->carry == 0 && s->fly_n <= 1);
+		CHECK(s->total > YD(15) && s->total < YD(40));
+		flat_make(0, SURF_FAIRWAY);
+	}
+}
+
+static void wind_tests(void)
+{
+	ShotIn in = shot_in(CLUB_7I);
+	int calm = carry_yd(&in), head, tail;
+	double right, left;
+
+	in.wind = ball_wind_vec(15, ANG_270);
+	head = carry_yd(&in);
+	in.wind = ball_wind_vec(15, ANG_90);
+	tail = carry_yd(&in);
+	in.wind = ball_wind_vec(15, 0);
+	right = side(play(&in));
+	in.wind = ball_wind_vec(15, ANG_180);
+	left = side(play(&in));
+	printf("7i, 15 mph: calm %d, headwind %d, tailwind %d, blowing right %+.1f, left %+.1f yd\n",
+	       calm, head, tail, right, left);
+	CHECK(head < calm - 5 && tail > calm + 3);
+	CHECK(right > 3 && left < -3);
+	in = shot_in(CLUB_DR);
+	calm = carry_yd(&in);
+	in.wind = ball_wind_vec(20, ANG_270);
+	head = carry_yd(&in);
+	printf("Dr, 20 mph headwind: %d (calm %d)\n", head, calm);
+	CHECK(head < calm - 15);
+
+	/* wind from a seed: in range, the same each time, changing between holes */
+	{
+		uint8_t mph, m2, h, same = 0, top = 0;
+		angle dir, d2;
+		for (h = 1; h <= 18; h++) {
+			ball_wind(12345, h, &mph, &dir);
+			ball_wind(12345, h, &m2, &d2);
+			CHECK(mph <= 20 && mph == m2 && dir == d2);
+			ball_wind(12345, (uint8_t)(h + 1), &m2, &d2);
+			same += mph == m2 && dir == d2;
+			if (mph > top) top = mph;
+		}
+		CHECK(same < 3 && top > 5);
+	}
+}
+
+static void snap_tests(void)
+{
+	static const double e[4] = { 0.2, 0.5, -0.2, -0.5 };
+	double d[4];
+	int i, c;
+
+	for (c = CLUB_DR; c <= CLUB_9I; c += 7) {
+		ShotIn in = shot_in((uint8_t)c);
+		for (i = 0; i < 4; i++) {
+			in.snap = YD(e[i]);
+			d[i] = side(play(&in));
+		}
+		printf("%s snap error +0.2 %+.1f, +0.5 %+.1f, -0.2 %+.1f, -0.5 %+.1f yd\n", ball_club_name((uint8_t)c), d[0], d[1], d[2], d[3]);
+		CHECK(d[0] > 2 && d[1] > d[0] + 2);
+		CHECK(d[2] < -2 && d[3] < d[2] - 2);
+		in.snap = 0;
+		in.mishit = 1;
+		{
+			Shot *s = play(&in);
+			int full = carry_yd(&in);
+			printf("  mis-hit: carry %d, %+.1f yd\n", full, side(s));
+			CHECK(side(s) < -5);
+		}
+	}
+}
+
+static void lie_tests(void)
+{
+	static const uint8_t l[] = { LIE_FAIRWAY, LIE_FIRST_CUT, LIE_ROUGH, LIE_DEEP_ROUGH, LIE_BUNKER, LIE_PLUGGED, LIE_FRINGE, LIE_PATH };
+	int k[sizeof l], i;
+	ShotIn in = shot_in(CLUB_7I);
+
+	printf("7i carry by lie:");
+	for (i = 0; i < (int)sizeof l; i++) {
+		in.lie = l[i];
+		k[i] = carry_yd(&in);
+		printf(" %s %d (%d%%, table %d)", ball_lie_name(l[i]), k[i], k[i] * 100 / k[0], ball_carry(CLUB_7I, l[i]));
+		CHECK(abs(ball_carry(CLUB_7I, l[i]) - k[i]) <= 5);
+	}
+	printf("\n");
+	CHECK(k[2] < k[0] - 5 && k[4] < k[0] - 5 && k[3] < k[2] && k[5] < k[4] && k[1] < k[0]);
+	for (i = 0; i < LIE_COUNT; i++) CHECK(strlen(ball_lie_name((uint8_t)i)) <= 8);
+
+	/* club picking: longest that doesn't go past, the driver only off the tee */
+	CHECK(ball_pick(400, LIE_TEE) == CLUB_DR);
+	CHECK(ball_pick(400, LIE_FAIRWAY) == CLUB_3W);
+	CHECK(ball_pick(150, LIE_FAIRWAY) == CLUB_7I);
+	CHECK(ball_pick(150, LIE_ROUGH) < CLUB_7I);
+	CHECK(ball_pick(10, LIE_FAIRWAY) == CLUB_LW);
+}
+
+static void water_oob_tests(void)
+{
+	Shot *s;
+	ShotIn in;
+	double cross_to_pin;
+	uint8_t surf;
+
+	/* a pond across the hole from 140 to 200 yards; the 7 iron lands in it */
+	flat_make(0, SURF_FAIRWAY);
+	flat_box(0, 140, 256, 200, SURF_WATER);
+	in = shot_in(CLUB_7I);
+	s = play(&in);
+	surf = surface_at(&fgrid, s->stop.x, s->stop.y);
+	cross_to_pin = 600 - 140;
+	printf("water: landed at %.1f, dropped at %.1f, %.1f yd from the pin\n", TOYD(s->land.y), TOYD(s->stop.y),
+	       TOYD(vec2_len(vec2_sub(s->stop, in.pin))));
+	CHECK(s->result == SHOT_WATER);
+	CHECK(surf != SURF_WATER && surf != SURF_OOB);
+	CHECK(s->stop.y < YD(140) && s->stop.y > YD(130));
+	CHECK(TOYD(vec2_len(vec2_sub(s->stop, in.pin))) >= cross_to_pin - 0.5);
+
+	/* a pond off at an angle: the drop is on the line from the pin through the crossing */
+	flat_make(0, SURF_FAIRWAY);
+	flat_box(150, 100, 256, 240, SURF_WATER);
+	in = shot_in(CLUB_7I);
+	in.aim = ANG_90 - 2500;
+	s = play(&in);
+	surf = surface_at(&fgrid, s->stop.x, s->stop.y);
+	printf("water to the side: landed %.1f,%.1f, dropped %.1f,%.1f\n", TOYD(s->land.x), TOYD(s->land.y), TOYD(s->stop.x), TOYD(s->stop.y));
+	CHECK(s->result == SHOT_WATER && surf != SURF_WATER && surf != SURF_OOB);
+	CHECK(s->stop.x < YD(150) && s->stop.x > YD(140));
+
+	/* out of bounds right of 150 yards across: replay from the same spot and lie */
+	flat_make(0, SURF_FAIRWAY);
+	flat_box(150, 0, 256, 640, SURF_OOB);
+	in = shot_in(CLUB_DR);
+	in.lie = LIE_TEE;
+	in.aim = ANG_90 - 3000;
+	s = play(&in);
+	printf("out of bounds: landed %.1f,%.1f\n", TOYD(s->land.x), TOYD(s->land.y));
+	CHECK(s->result == SHOT_OOB);
+	CHECK(s->stop.x == in.pos.x && s->stop.y == in.pos.y && s->lie == LIE_TEE);
+
+	/* off the hole altogether is out of bounds too */
+	flat_make(0, SURF_FAIRWAY);
+	in = shot_in(CLUB_DR);
+	in.pos = vec2_make(YD(20), YD(20));
+	in.aim = ANG_180 - 3000;
+	CHECK(play(&in)->result == SHOT_OOB);
+
+	/* a plugged lie from a wedge into a bunker */
+	flat_make(0, SURF_BUNKER);
+	in = shot_in(CLUB_SW);
+	s = play(&in);
+	CHECK(s->result == SHOT_OK && s->lie == LIE_PLUGGED);
+	CHECK(s->total - s->carry < YD(1));
+	/* a low runner into sand stops near where it lands */
+	in = shot_in(CLUB_3I);
+	in.power = YD(0.3);
+	s = play(&in);
+	CHECK(s->lie == LIE_BUNKER || s->lie == LIE_PLUGGED);
+	CHECK(s->total - s->carry < YD(4));
+	flat_make(0, SURF_FAIRWAY);
+}
+
+static void slope_tests(void)
+{
+	static const struct { int slope; uint8_t surf; const char *name; } t[3] = {
+		{ 4, SURF_GREEN, "3% green" }, { 10, SURF_FAIRWAY, "8% fairway" }, { 6, SURF_FRINGE, "5% fringe" }
+	};
+	int i;
+	for (i = 0; i < 3; i++) {
+		ShotIn in;
+		Shot *s;
+		flat_make(t[i].slope, t[i].surf);
+		in = shot_in(CLUB_PT);
+		in.lie = ball_lie(t[i].surf);
+		in.power = i ? FIX_ONE : YD(0.6);
+		s = play(&in);
+		printf("roll on a %s: stopped %.1f yd downhill after %.1f s\n", t[i].name, -side(s), s->steps / 32.0);
+		CHECK(s->result == SHOT_OK);
+		CHECK(s->steps < 32 * 30);
+		CHECK(side(s) < -0.3);
+	}
+	/* a ball left still on a slope it can't hold rolls down to the flat */
+	{
+		ShotIn in;
+		Shot *s;
+		flat_make(40, SURF_GREEN);
+		in = shot_in(CLUB_PT);
+		in.lie = LIE_GREEN;
+		in.power = YD(0.05);
+		s = play(&in);
+		printf("on a steep green it rolls %.1f yd down\n", -side(s));
+		CHECK(s->result == SHOT_OK && s->steps < 32 * 40 && side(s) < -5);
+	}
+	flat_make(0, SURF_FAIRWAY);
+}
+
+static uint32_t mix(uint32_t h, uint32_t v)
+{
+	return (h ^ v) * 16777619UL;
+}
+
+static uint32_t checksum_run(const Hole *h, const SurfaceGrid *g)
+{
+	uint32_t sum = 2166136261UL;
+	int i;
+	for (i = 0; i < 60; i++) {
+		ShotIn in;
+		const Shot *s;
+		int k;
+		memset(&in, 0, sizeof in);
+		in.hole = i & 1 ? h : &flat;
+		in.grid = i & 1 ? g : &fgrid;
+		in.pos = i & 1 ? h->tees[0].pos : vec2_make(YD(128), YD(20));
+		in.pin = i & 1 ? h->pins[0] : flat.pins[0];
+		in.aim = (angle)(ANG_90 + (i * 397) % 4000 - 2000);
+		in.club = (uint8_t)(i % CLUB_COUNT);
+		in.lie = (uint8_t)(i % LIE_COUNT);
+		in.power = YD(0.4) + (fixed)(i * 7919) % YD(0.6);
+		in.snap = (fixed)(i * 4973) % YD(1.6) - YD(0.8);
+		in.wind = ball_wind_vec((uint8_t)(i % 21), (angle)(i * 9001));
+		in.mishit = i % 13 == 0;
+		s = play(&in);
+		sum = mix(sum, (uint32_t)s->stop.x);
+		sum = mix(sum, (uint32_t)s->stop.y);
+		sum = mix(sum, (uint32_t)s->carry);
+		sum = mix(sum, (uint32_t)s->n << 8 | s->result << 4 | s->lie);
+		for (k = 0; k < s->n; k++) sum = mix(sum, (uint32_t)(uint16_t)s->path[k].z);
+	}
+	return sum;
+}
+
+static void test_hole(const Hole *h, const SurfaceGrid *g)
+{
+	ShotIn in;
+	Shot *s;
+	memset(&in, 0, sizeof in);
+	in.hole = h;
+	in.grid = g;
+	in.pos = h->tees[0].pos;
+	in.pin = h->pins[0];
+	in.aim = vec2_angle(vec2_sub(h->aim, in.pos));
+	in.power = FIX_ONE;
+	in.club = CLUB_DR;
+	in.lie = LIE_TEE;
+	s = play(&in);
+	printf("test hole drive: carry %.0f, total %.0f, landed %.1f,%.1f on %d, stopped %.1f,%.1f, lie %s\n",
+	       TOYD(s->carry), TOYD(s->total), TOYD(s->land.x), TOYD(s->land.y), s->land_surf,
+	       TOYD(s->stop.x), TOYD(s->stop.y), ball_lie_name(s->lie));
+	CHECK(s->result == SHOT_OK && s->land_surf == SURF_FAIRWAY);
+	CHECK(s->lie == LIE_FAIRWAY || s->lie == LIE_FIRST_CUT);
+}
+
+static const char *outdir;
+
+/* Saves a 2-bit surface as a PPM in outdir, if there is one. */
+static void save(const Surface *s, const char *name)
+{
+	char path[512];
+	FILE *f;
+	int x, y;
+	if (!outdir) return;
+	snprintf(path, sizeof path, "%s/%s.ppm", outdir, name);
+	f = fopen(path, "wb");
+	if (!f) return;
+	fprintf(f, "P6\n%d %d\n255\n", s->w, s->h);
+	for (y = 0; y < s->h; y++)
+		for (x = 0; x < s->w; x++) {
+			int v = 255 - 85 * ((s->bits[y * s->rowBytes + x / 4] >> (6 - 2 * (x & 3))) & 3);
+			fputc(v, f); fputc(v, f); fputc(v, f);
+		}
+	fclose(f);
+}
+
+static void surface2(Surface *s)
+{
+	memset(s, 0, sizeof *s);
+	s->scale = 1;
+	s->depth = 2;
+	s->w = s->h = 160;
+	s->rowBytes = 40;
+	s->bits = calloc(40, 160);
+	gfx_init(s);
+}
+
+/* Plays the swing through: start at t, power at t + up ms, snap at off ms from the snap line. */
+static void swing(Play *p, Surface *s, Surface *bg, uint32_t t, uint32_t up, int32_t off)
+{
+	uint32_t ts;
+	CHECK(play_key(p, KEY_SELECT, t) & PL_ANIM);
+	CHECK(p->state == PS_UP);
+	play_frame(p, s, bg, t + up / 2);
+	save(s, "meter-up");
+	CHECK(play_tap(p, 80, 60, t + up) & PL_ANIM);
+	CHECK(p->state == PS_DOWN);
+	play_frame(p, s, bg, t + up + 100);
+	ts = t + up + (uint32_t)up * MTR_DOWN_MS / MTR_UP_MS;
+	play_key(p, KEY_SELECT, (uint32_t)((int32_t)ts + off));
+}
+
+static void meter_tests(const Hole *h, const SurfaceGrid *g)
+{
+	Play p;
+	Surface s, bg;
+	uint32_t t;
+	int f, frames;
+	int16_t sx, sy;
+	fixed depth;
+
+	surface2(&s);
+	surface2(&bg);
+	play_init(&p, h, g, 7);
+	CHECK(p.club == CLUB_DR && p.lie == LIE_TEE && p.stroke == 1 && p.state == PS_AIM);
+	CHECK(p.wind_mph <= 20);
+	f = play_frame(&p, &s, &bg, 0);
+	CHECK(f & PL_DIRTY);
+
+	/* the ball projects where render_scene draws it: the middle column, row 107 */
+	CHECK(render_point(&p.cam, p.rv.ball.x, p.rv.ball.y, hole_height(h, p.rv.ball.x, p.rv.ball.y), &sx, &sy, &depth));
+	CHECK(sx == 80 && sy >= 105 && sy <= 109);
+
+	/* club changes and aiming */
+	play_key(&p, KEY_DOWN, 10);
+	CHECK(p.club == CLUB_3W);
+	play_key(&p, KEY_UP, 20);
+	CHECK(p.club == CLUB_DR);
+	play_key(&p, KEY_LEFT, 30);
+	CHECK(p.aim == (angle)(p.rv.aim + 182));
+	CHECK(!(play_frame(&p, &s, &bg, 40) & PL_RENDER));
+	play_tap(&p, 100, 60, 50);
+	CHECK((int16_t)(p.aim - p.rv.aim) < -500 && (int16_t)(p.aim - p.rv.aim) > -3000);
+	CHECK(!(play_frame(&p, &s, &bg, 60) & PL_RENDER));
+	/* far off the side the scene is drawn again looking that way */
+	play_tap(&p, 2, 60, 70);
+	CHECK(play_frame(&p, &s, &bg, 80) & PL_RENDER);
+	CHECK(p.rv.aim == p.aim);
+	play_frame(&p, &s, &bg, 90);
+	play_init(&p, h, g, 7);
+	play_frame(&p, &s, &bg, 100);
+
+	/* 80 % power and a perfect snap */
+	swing(&p, &s, &bg, 1000, MTR_UP_MS * 4 / 5, 0);
+	printf("meter: power %.3f snap %.3f\n", TOYD(p.power), TOYD(p.snap));
+	CHECK(p.power > YD(0.79) && p.power < YD(0.81));
+	CHECK(p.snap == 0 && p.state == PS_FLY && !p.mishit);
+	/* the flight plays out, the result shows, then the next shot */
+	frames = 0;
+	for (t = 3000; t < 40000; t += 30) {
+		f = play_frame(&p, &s, &bg, t);
+		frames++;
+		if (frames == 25) save(&s, "flight");
+		if (p.state == PS_RESULT) save(&s, "result");
+		if (f & PL_RENDER) break;
+	}
+	printf("shot 1: %s, then %s; %d frames\n", p.msg1, p.msg2, frames);
+	CHECK(f & PL_RENDER);
+	CHECK(p.stroke == 2 && p.state == PS_AIM && p.lie != LIE_TEE);
+	CHECK(p.club != CLUB_DR);
+	play_frame(&p, &s, &bg, t + 10);
+
+	/* late and early clicks give a hook and a slice in proportion */
+	swing(&p, &s, &bg, 50000, MTR_UP_MS / 2, 50);
+	CHECK(p.snap == -YD(0.5));
+	play_init(&p, h, g, 7);
+	play_frame(&p, &s, &bg, 0);
+	swing(&p, &s, &bg, 1000, MTR_UP_MS / 2, -30);
+	CHECK(p.snap == YD(0.25));
+	/* no clicks after the start: full power, then a mis-hit */
+	play_init(&p, h, g, 7);
+	play_frame(&p, &s, &bg, 0);
+	play_key(&p, KEY_SELECT, 1000);
+	for (t = 1000; t < 4000 && p.state != PS_FLY; t += 20) play_frame(&p, &s, &bg, t);
+	CHECK(p.state == PS_FLY && p.mishit && p.power == FIX_ONE && p.snap == -FIX_ONE);
+	CHECK(t > 1000 + MTR_UP_MS + MTR_DOWN_MS);
+	/* the map with the path, and back */
+	for (; t < 40000 && p.state != PS_RESULT; t += 30) play_frame(&p, &s, &bg, t);
+	CHECK(play_key(&p, KEY_OTHER, t) == 0);
+	CHECK(play_frame(&p, &s, &bg, t + 2000) & PL_RENDER);
+	CHECK(play_key(&p, KEY_OTHER, t + 2100) == PL_MAP);
+	play_map(&s, &p);
+	CHECK(play_tap(&p, 10, 10, t + 2200) == PL_SCENE);
+	CHECK(play_frame(&p, &s, &bg, t + 2300) & PL_DIRTY);
+	free(s.bits);
+	free(bg.bits);
+}
+
+int main(int argc, char **argv)
+{
+	uint8_t *pdb, *hrec;
+	uint32_t n, hlen, a, b;
+	Hole h;
+	SurfaceGrid g;
+	uint8_t row[SURF_ROW_MAX];
+
+	if (argc < 2) {
+		printf("usage: physicstest COURSE.pdb [OUTDIR]\n");
+		return 2;
+	}
+	if (argc > 2) outdir = argv[2];
+	pdb = load_file(argv[1], &n);
+	if (!pdb || n < 78) { printf("FAIL can't read %s\n", argv[1]); return 1; }
+	hrec = pdb_record(pdb, n, 1, &hlen);
+	CHECK(hrec && hole_parse(&h, hrec, hlen) == HOLE_OK);
+	if (fails) return 1;
+	surface_size(&h, &g);
+	grid_stride = g.stride;
+	grid_bytes = malloc((size_t)g.stride * g.h);
+	g.cells = grid_bytes;
+	surface_raster(&h, row, put_row, &g);
+
+	flat_make(0, SURF_FAIRWAY);
+	carry_table();
+	wind_tests();
+	snap_tests();
+	lie_tests();
+	water_oob_tests();
+	slope_tests();
+	test_hole(&h, &g);
+	meter_tests(&h, &g);
+
+	a = checksum_run(&h, &g);
+	b = checksum_run(&h, &g);
+	printf("checksum %08lx\n", (unsigned long)a);
+	CHECK(a == b);
+	CHECK(a == CHECKSUM);
+
+	free(hrec);
+	free(pdb);
+	free(grid_bytes);
+	printf("physics-test: %d checks, %d failed\n", checks, fails);
+	return fails ? 1 : 0;
+}

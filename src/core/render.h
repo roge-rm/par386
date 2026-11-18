@@ -55,11 +55,22 @@ typedef struct {
 
 typedef uint32_t (*RenderClock)(void);
 
-/* Where render_map put things, in pixels, and the ball to pin distance. */
+/* Where render_map put things, in pixels, and the ball to pin distance.
+ * A point (x, y) on the hole is at left + x / ypp, top + (length - y) / ypp. */
 typedef struct {
 	int16_t bx, by, px, py;
 	uint16_t yards;
+	int16_t left, top;
+	fixed ypp;                  /* yards a pixel */
+	fixed length;               /* the hole's length in yards */
 } RenderMap;
+
+/* The camera render_scene uses for a view, for putting things over the scene. */
+typedef struct {
+	fixed camx, camy, camz;     /* yards */
+	int16_t fx, fy, rx, ry;     /* forward and right, 2.14 */
+	int16_t f, cx, yh;          /* focal length, centre column and horizon row in pixels */
+} RenderCam;
 
 /* Bytes of work memory render_scene needs for this surface. */
 uint32_t SEC_RENDER render_work_size(const Surface *s);
@@ -74,5 +85,10 @@ void SEC_RENDER render_clock(RenderClock fn);
  * ball and a line from the ball to the pin. Text is left to the caller.
  * Returns 0, or -1 if the surface isn't 160 or 320 wide. */
 int SEC_RENDER render_map(Surface *s, const RenderView *v, RenderMap *out);
+/* The camera for the view on surface s. */
+void SEC_RENDER render_camera(const Surface *s, const RenderView *v, RenderCam *c);
+/* The pixel the point (x, y) at height z (yards) shows at, and its depth.
+ * Returns 0 if it's nearer than 1 yard or behind the camera. */
+int SEC_RENDER render_point(const RenderCam *c, fixed x, fixed y, fixed z, int16_t *sx, int16_t *sy, fixed *depth);
 
 #endif

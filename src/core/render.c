@@ -1090,6 +1090,10 @@ int render_map(Surface *s, const RenderView *v, RenderMap *out)
 	out->px = MX(h->pins[v->pin & 3].x);
 	out->py = MY(h->pins[v->pin & 3].y);
 	out->yards = (uint16_t)((vec2_len(vec2_sub(h->pins[v->pin & 3], v->ball)) + FIX_HALF) >> 16);
+	out->left = left;
+	out->top = top;
+	out->ypp = ypp;
+	out->length = (fixed)h->length << 16;
 	{
 		int16_t dx = out->px - out->bx, dy = out->py - out->by;
 		int16_t ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
@@ -1120,4 +1124,46 @@ int render_map(Surface *s, const RenderView *v, RenderMap *out)
 		for (x = 0; x < (int16_t)r.rb; x++) p[x] = 0xFF;
 	}
 	return 0;
+}
+
+void render_camera(const Surface *s, const RenderView *v, RenderCam *c)
+{
+	int32_t bh = hb_at(v->hole, v->ball.x, v->ball.y);
+
+	c->fx = icos(v->aim);
+	c->fy = isin(v->aim);
+	c->rx = c->fy;
+	c->ry = (int16_t)-c->fx;
+	c->camx = v->ball.x - mulq(CAM_BACK, c->fx);
+	c->camy = v->ball.y - mulq(CAM_BACK, c->fy);
+	c->camz = v->hole->base + fix_mul(bh << 8, v->hole->step) + CAM_UP;
+	c->f = (int16_t)(FOCAL * s->scale);
+	c->cx = s->w / 2;
+	c->yh = (int16_t)(HORIZON * s->scale);
+}
+
+/* v * f / d for d over 1 yard, clamped to the int16 range. */
+static int16_t SEC_RENDER persp(fixed v, int16_t f, fixed d)
+{
+	int32_t r = (v >> 8) * f / (d >> 8);
+	if (r > 32000) r = 32000;
+	if (r < -32000) r = -32000;
+	return (int16_t)r;
+}
+
+int render_point(const RenderCam *c, fixed x, fixed y, fixed z, int16_t *sx, int16_t *sy, fixed *depth)
+{
+	fixed dx = x - c->camx, dy = y - c->camy, side;
+	int32_t px, py;
+
+	*depth = mulq(dx, c->fx) + mulq(dy, c->fy);
+	if (*depth < FIX_ONE) return 0;
+	side = mulq(dx, c->rx) + mulq(dy, c->ry);
+	if (side > (fixed)(4000L << 16) || side < -(fixed)(4000L << 16)) return 0;
+	px = (int32_t)c->cx + persp(side, c->f, *depth);
+	py = (int32_t)c->yh + persp(c->camz - z, c->f, *depth);
+	/* clamped so callers can add sizes without overflowing 16 bits */
+	*sx = (int16_t)(px > 1000 ? 1000 : px < -1000 ? -1000 : px);
+	*sy = (int16_t)(py > 1000 ? 1000 : py < -1000 ? -1000 : py);
+	return 1;
 }

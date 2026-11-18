@@ -2,11 +2,16 @@
 
 Each step is KIND:ARG, such as key:down, tap:80,60 (logical 160x160 units,
 scaled to the device), wait:1.5 or snap:menu (saves OUTDIR/menu.png).
+replay:FILE sends a Frond input replay (lines of MS COMMAND ARGS, with
+{out} standing for OUTDIR and {n} for how many replays have run, from 1)
+and waits for its last line, for taps that need
+exact timing such as the swing meter.
 """
 import time
 
 
 def run(core, out, steps, scale=1):
+    replays = 0
     for step in steps:
         kind, _, arg = step.partition(':')
         if kind == 'key':
@@ -16,6 +21,12 @@ def run(core, out, steps, scale=1):
             core.tap(out, x, y)
         elif kind == 'wait':
             time.sleep(float(arg))
+        elif kind == 'replay':
+            replays += 1
+            lines = [l.replace('{out}', str(out)).replace('{n}', str(replays))
+                     for l in open(arg).read().splitlines() if l.strip() and not l.startswith('#')]
+            core.replay(out, lines)
+            time.sleep(int(lines[-1].split()[0]) / 1000 + 0.5)
         elif kind == 'snap':
             core.frame(out / f'{arg}.png')
         else:

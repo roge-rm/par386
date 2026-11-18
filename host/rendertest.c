@@ -353,7 +353,7 @@ int main(int argc, char **argv)
 		Play pl;
 		Surface s;
 		int unwritten;
-		play_init(&pl, &h, &g);
+		play_init(&pl, &h, &g, 1);
 		for (scale = 1; scale <= 2; scale++) {
 			surface(&s, scale);
 			CHECK(draw_map(&s, &pl, &unwritten) == 0);
