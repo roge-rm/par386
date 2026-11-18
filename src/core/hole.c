@@ -76,12 +76,14 @@ int course_parse(Course *c, const uint8_t *buf, uint32_t len)
 	Reader r;
 	uint8_t i;
 	int ok = 1;
+	uint16_t v;
 
 	r.p = buf;
 	r.len = len;
 	r.pos = 0;
 	r.err = 0;
-	if (rd16(&r) != COURSE_VERSION) return r.err ? r.err : HOLE_ERR_VERSION;
+	v = rd16(&r);
+	if (v < 1 || v > COURSE_VERSION) return r.err ? r.err : HOLE_ERR_VERSION;
 	c->hole_count = rd8(&r);
 	c->tee_count = rd8(&r);
 	if (c->hole_count < 1 || c->hole_count > COURSE_MAX_HOLES) ok = 0;
@@ -93,6 +95,12 @@ int course_parse(Course *c, const uint8_t *buf, uint32_t len)
 		c->par[i] = rd8(&r);
 		c->yards[i] = rd16(&r);
 		if (c->par[i] < 3 || c->par[i] > 6) ok = 0;
+	}
+	c->scenery = 0;
+	for (i = 0; i < COURSE_MAX_HOLES; i++) c->turn[i] = 0;
+	if (ok && v >= 2) {
+		c->scenery = rd8(&r);
+		for (i = 0; i < c->hole_count; i++) c->turn[i] = rd8(&r);
 	}
 	return finish(&r, ok);
 }
@@ -116,6 +124,7 @@ int hole_parse(Hole *h, const uint8_t *buf, uint32_t len)
 	r.pos = 0;
 	r.err = 0;
 	if (rd16(&r) != HOLE_VERSION) return r.err ? r.err : HOLE_ERR_VERSION;
+	h->turn = 0;
 	h->number = rd8(&r);
 	h->par = rd8(&r);
 	h->width = rd16(&r);

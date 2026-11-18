@@ -36,7 +36,8 @@ static UInt32 gHeapStart;      /* free dynamic heap at launch */
  * dynamic heap. */
 #define kScratchName "Par386 Scratch"
 #define kCreator     'P386'
-#define kCourseName  "Par386 Test"
+#define kCourseType  'Crse'
+#define kCoursePre   "Par386 "    /* course databases' names start with this */
 /* The saved round: record 0, written by rules_pack. */
 #define kSaveName    "Par386 Save"
 #define kSaveType    'Save'
@@ -47,6 +48,10 @@ static Round gRound;
 static Hole gHole;
 static SurfaceGrid gGrid;
 static DmOpenRef gCourseDb, gScratchDb;
+static Course gCourseHdr;      /* the open course's header: scenery and each hole's turn */
+/* The installed courses' database names, sorted, found at start-up. */
+static char gCourseNames[FRONT_COURSES][dmDBNameLength];
+static UInt8 gCourseCount;
 static MemHandle gHoleH, gGridH;
 static UInt32 gMinFree;        /* least free heap while the scene was drawn */
 static Surface gBgS;           /* gBg's pixels, when it holds the scene */
@@ -457,6 +462,7 @@ static Boolean LoadHole(UInt16 n)
 	if ((h = DmQueryRecord(gCourseDb, n)) == NULL) return false;
 	gHoleH = h;
 	if (hole_parse(&gHole, MemHandleLock(h), MemHandleSize(h)) != HOLE_OK) return false;
+	if (n >= 1 && n <= COURSE_MAX_HOLES) gHole.turn = (UInt16)gCourseHdr.turn[n - 1] << 8;
 	surface_size(&gHole, &gGrid);
 	if ((h = DmNewRecord(gScratchDb, &at, (UInt32)gGrid.stride * gGrid.h)) == NULL) return false;
 	surface_raster(&gHole, row, GridRow, MemHandleLock(h));
@@ -483,7 +489,9 @@ static Boolean PlayStart(Boolean resume)
 		gSaveBad = !LoadSave(&gRound);
 		if (gSaveBad) return false;
 	} else {
-		if ((id = DmFindDatabase(0, kCourseName)) == 0 || (gCourseDb = DmOpenDatabase(0, id, dmModeReadOnly)) == 0)
+		if (gFront.course >= gCourseCount) return false;
+		if ((id = DmFindDatabase(0, gCourseNames[gFront.course])) == 0 ||
+		    (gCourseDb = DmOpenDatabase(0, id, dmModeReadOnly)) == 0)
 			return false;
 		if (!CourseHeader(gCourseDb, &c)) return false;
 		DmCloseDatabase(gCourseDb);
@@ -494,10 +502,11 @@ static Boolean PlayStart(Boolean resume)
 #else
 		seed = TimGetSeconds();
 #endif
-		rules_init(&gRound, kCourseName, gFront.players, c.hole_count, c.par, seed);
+		rules_init(&gRound, gCourseNames[gFront.course], gFront.players, c.hole_count, c.par, seed);
 	}
 	if ((id = DmFindDatabase(0, gRound.course)) == 0 || (gCourseDb = DmOpenDatabase(0, id, dmModeReadOnly)) == 0)
 		return false;
+	if (!CourseHeader(gCourseDb, &gCourseHdr)) return false;
 	if ((id = DmFindDatabase(0, kScratchName)) != 0) DmDeleteDatabase(0, id);
 	if (DmCreateDatabase(0, kScratchName, kCreator, 'Tmp ', false) != errNone) return false;
 	if ((id = DmFindDatabase(0, kScratchName)) == 0) return false;
@@ -647,7 +656,7 @@ static void PlayStatus(void)
 static void SceneRender(void)
 {
 	RenderArt art;
-	MemHandle hs[RENDER_TYPES * RENDER_SIZES + 2];
+	MemHandle hs[RENDER_TYPES * RENDER_SIZES + 3];
 	UInt16 n = 0, t, k;
 	void *work;
 	UInt32 fr;
@@ -675,7 +684,9 @@ static void SceneRender(void)
 		for (k = 0; k < RENDER_SIZES; k++)
 			LockArt(&art.spr[t][k], 'Spr8', 1000 + t * 10 + k, hs, &n);
 	LockArt(&art.golfer, 'Spr8', 2000 + gS.scale - 1, hs, &n);
-	LockArt(&art.backdrop, 'Bkd8', 1000 + gS.scale - 1, hs, &n);
+	/* the course's backdrop, or the first one if it's not in this build */
+	LockArt(&art.backdrop, 'Bkd8', 1000 + 10 * gCourseHdr.scenery + gS.scale - 1, hs, &n);
+	if (!art.backdrop.p) LockArt(&art.backdrop, 'Bkd8', 1000 + gS.scale - 1, hs, &n);
 	work = MemPtrNew(render_work_size(&gS));
 	fr = FreeHeap();
 	if (fr < gMinFree || !gMinFree) gMinFree = fr;
@@ -791,7 +802,7 @@ static void Act(int r)
 		} else {
 			PlayEnd();
 			front_clubhouse(&gFront, LoadSave(&gRound));
-			front_message(&gFront, "No course", "Install\nPar386-Test.pdb\nand try again.");
+			front_message(&gFront, "No course", "Install a course\nPDB and try again.");
 			Redraw();
 		}
 		return;
@@ -800,6 +811,22 @@ static void Act(int r)
 	else if ((r & FR_LINES) && RedrawLines()) return;
 	else if (r & FR_REDRAW) Redraw();
 }
+
+#ifdef DEBUG
+/* n, or a tap in the top left corner, gives everyone par for the rest of
+ * the hole and goes on to the next, for walking through a course's tee
+ * views in Frond. */
+static void SkipHole(void)
+{
+	UInt8 i;
+
+	if (rules_hole_over(&gRound)) return;
+	for (i = 0; i < gRound.players; i++)
+		if (!gRound.pl[i].holed) rules_hole_out(&gRound, i, gRound.pars[gRound.hole]);
+	rules_advance(&gRound);
+	PlayAct(gRound.over ? PL_BACK : PL_NEXT);
+}
+#endif
 
 static Boolean MainFormHandleEvent(EventType *e)
 {
@@ -812,6 +839,13 @@ static Boolean MainFormHandleEvent(EventType *e)
 		Show();
 		return true;
 	case penDownEvent:
+#ifdef DEBUG
+		/* a tap in the top left corner skips the hole, as n does */
+		if (gPlaying && e->screenX < 8 && e->screenY < 8) {
+			SkipHole();
+			return true;
+		}
+#endif
 		if (gPlaying) PlayInput(true, e->screenX, e->screenY, 0);
 		else Act(front_tap(&gFront, e->screenX, e->screenY));
 		return true;
@@ -832,6 +866,7 @@ static Boolean ApplicationHandleEvent(EventType *e)
 	return false;
 }
 
+
 static void EventLoop(void)
 {
 	EventType e;
@@ -846,6 +881,12 @@ static void EventLoop(void)
 		if (e.eType == keyDownEvent && gPlaying) {
 			/* the Menu button and backspace go back to the clubhouse */
 			WChar c = e.data.keyDown.chr;
+#ifdef DEBUG
+			if (c == 'n' || c == 'N') {
+				SkipHole();
+				continue;
+			}
+#endif
 			key = (c == vchrMenu || c == chrBackspace || c == chrEscape) ? KEY_BACK : MapKey(&e);
 			/* held keys repeat for aiming and clubs only, or they'd queue up clicks and toggles */
 			if ((e.data.keyDown.modifiers & autoRepeatKeyMask) && key != KEY_LEFT && key != KEY_RIGHT &&
@@ -864,6 +905,38 @@ static void EventLoop(void)
 		if (ApplicationHandleEvent(&e)) continue;
 		FrmDispatchEvent(&e);
 	} while (e.eType != appStopEvent);
+}
+
+/* Finds the installed course databases (type Crse, ours) and gives their
+ * names, less "Par386 ", to the clubhouse, sorted, the first picked. */
+static void FindCourses(void)
+{
+	DmSearchStateType st;
+	UInt16 card;
+	LocalID id;
+	Boolean first = true;
+	char name[dmDBNameLength];
+	const char *shown[FRONT_COURSES];
+	UInt8 i, k, pre = StrLen(kCoursePre);
+
+	gCourseCount = 0;
+	while (DmGetNextDatabaseByTypeCreator(first, &st, kCourseType, kCreator, false, &card, &id) == errNone) {
+		first = false;
+		if (card != 0 || DmDatabaseInfo(card, id, name, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL) != errNone)
+			continue;
+		if (StrNCompare(name, kCoursePre, pre) != 0 || !name[pre]) continue;
+		/* keep the first FRONT_COURSES names in sorted order */
+		i = gCourseCount;
+		if (i == FRONT_COURSES) {
+			if (StrCompare(gCourseNames[i - 1], name) <= 0) continue;
+			i--;
+		} else gCourseCount++;
+		for (; i > 0 && StrCompare(gCourseNames[i - 1], name) > 0; i--)
+			StrCopy(gCourseNames[i], gCourseNames[i - 1]);
+		StrCopy(gCourseNames[i], name);
+	}
+	for (k = 0; k < gCourseCount; k++) shown[k] = gCourseNames[k] + pre;
+	front_courses(&gFront, shown, gCourseCount, 0);
 }
 
 /* Globals are only safe on a normal launch, so other launch codes do nothing here. */
@@ -887,6 +960,7 @@ UInt32 PilotMain(UInt16 cmd, void *cmdPBP, UInt16 launchFlags)
 	DebugCoreCheck();
 #endif
 	front_init(&gFront);
+	FindCourses();
 	front_clubhouse(&gFront, LoadSave(&gRound));
 	gFront.screen = SCR_TITLE;
 	FrmGotoForm(MainForm);

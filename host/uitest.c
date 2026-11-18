@@ -154,6 +154,38 @@ static void input(void)
 	}
 }
 
+/* The courses screen: lists the installed courses and Back, picks one, and
+ * goes back to the clubhouse on Courses. Drawn to host-courses-*.png. */
+static void courses(uint8_t scale)
+{
+	static const char *const names[2] = { "Auld Kirk", "Test" };
+	Surface s;
+	Front f;
+
+	surface(&s, scale);
+	front_init(&f);
+	front_courses(&f, names, 2, 0);
+	front_clubhouse(&f, 0);
+	f.menu.sel = MAIN_COURSES;
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_COURSES && !f.dialog);
+	CHECK(f.menu.count == 3 && f.menu.sel == 0);
+	draw(&s, &f);
+	save(&s, "courses");
+	CHECK(front_key(&f, KEY_DOWN) & FR_REDRAW);
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_MENU && f.course == 1);
+	CHECK(f.menu.sel == MAIN_COURSES);
+	/* Back keeps the pick */
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_COURSES && f.menu.sel == 1);
+	CHECK(front_key(&f, KEY_BACK) == FR_REDRAW && f.screen == SCR_MENU && f.course == 1);
+	/* with a saved round the menu has Continue first */
+	front_clubhouse(&f, 1);
+	f.menu.sel = MAIN_COURSES + 1;
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_COURSES);
+	CHECK(front_tap(&f, 80, f.menu.y + 3) & FR_REDRAW);
+	CHECK(f.screen == SCR_MENU && f.course == 0 && f.menu.sel == MAIN_COURSES + 1 && f.saved);
+	free(s.bits);
+}
+
 /* A band that runs past the surface or is cut short is refused. */
 static void bad_bands(void)
 {
@@ -228,6 +260,8 @@ int main(int argc, char **argv)
 	screens(1);
 	screens(2);
 	input();
+	courses(1);
+	courses(2);
 	bad_bands();
 	text_paths();
 	printf("uitest: %d checks, %d failed\n", checks, fails);

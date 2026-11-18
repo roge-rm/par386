@@ -8,6 +8,8 @@
 #   make art         makes the title and menu pictures and the renderer's sprites in build/art/ (part of the PRC)
 #   make ui-test     draws the title and menu with the core UI kit on the host, to PNGs
 #   make render-test draws the test hole from 3 places and compares with host/ref/
+#   make course-render draws every hole of Auld Kirk from the tee, the landing area and near the green
+#   make auldkirk    writes courses/auldkirk/ again from tools/mkauldkirk.py
 #   make render-ref  makes host/ref/ again from the current renderer
 #   make physics-test plays shots on the host and checks carries, wind, lies, water and the meter
 #   make rules-test  turn order, honour, scores, the scorecard and the saved round
@@ -33,10 +35,10 @@ PALMSRCS = main
 CORESRCS = fixed trig vec hole gfx ui front render play ball rules card
 OBJS     = $(addprefix $(BUILD)/,$(addsuffix .o,$(PALMSRCS) $(CORESRCS)))
 
-all: build/$(PRC)
+all: build/$(PRC) courses
 
 release:
-	$(MAKE) RELEASE=1 build/$(PRC)
+	$(MAKE) RELEASE=1 build/$(PRC) courses
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -113,6 +115,11 @@ build/courses/Par386-%.pdb: tools/coursec.py
 	python3 tools/coursec.py build courses/$(shell echo $* | tr A-Z a-z) $@
 
 build/courses/Par386-Test.pdb: $(wildcard courses/test/*)
+build/courses/Par386-Auldkirk.pdb: $(wildcard courses/auldkirk/*)
+
+# The Auld Kirk sources are made by a script; run it after editing it.
+auldkirk:
+	python3 tools/mkauldkirk.py courses/auldkirk
 
 # Compiles the test course, dumps it to text, compiles the dump and checks
 # both load the same. The surface grid picture goes to $(DEBUGDIR).
@@ -155,6 +162,20 @@ render-ref: build/rendertest build/courses/Par386-Test.pdb $(ART)/obj.rcp
 	build/rendertest build/courses/Par386-Test.pdb $(ART) build/render
 	python3 tools/refcmp.py build/render $(DEBUGDIR)/m3 host/ref --update $(REFS)
 
+build/courserender: host/courserender.c $(HOSTSRC) src/core/*.h | $(BUILD)
+	$(HOSTCC) host/courserender.c $(HOSTSRC) -lm -o $@
+
+# Every hole of Auld Kirk from the tee, the landing area and near the green,
+# and its map, at 160 2-bit and 320 8-bit, to $(DEBUGDIR)/m8/. Round-trips
+# the course through the dump and checks every hole loads.
+course-render: build/courserender build/coursetest build/courses/Par386-Auldkirk.pdb $(ART)/obj.rcp
+	rm -rf build/course-render build/course-dump/auldkirk && mkdir -p build/course-render
+	python3 tools/coursec.py dump build/courses/Par386-Auldkirk.pdb build/course-dump/auldkirk
+	python3 tools/coursec.py build build/course-dump/auldkirk build/course-dump/Par386-Auldkirk.pdb
+	build/coursetest --course build/courses/Par386-Auldkirk.pdb build/course-dump/Par386-Auldkirk.pdb
+	build/courserender build/courses/Par386-Auldkirk.pdb $(ART) build/course-render
+	python3 tools/refcmp.py build/course-render $(DEBUGDIR)/m8 -
+
 build/physicstest: host/physicstest.c $(HOSTSRC) src/core/*.h | $(BUILD)
 	$(HOSTCC) host/physicstest.c $(HOSTSRC) -lm -o $@
 
@@ -186,4 +207,4 @@ tables:
 clean:
 	rm -rf build
 
-.PHONY: all release clean host-test course-test ui-test render-test render-ref physics-test rules-test courses tables art
+.PHONY: all release clean host-test course-test course-render auldkirk ui-test render-test render-ref physics-test rules-test courses tables art

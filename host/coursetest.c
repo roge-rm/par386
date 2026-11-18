@@ -1,7 +1,10 @@
 /* Course loading tests. Run by `make course-test`:
  *   coursetest COURSE.pdb ROUNDTRIP.pdb OUT.ppm
  * The second PDB is the first dumped to text and compiled again; both must
- * hold the same records. OUT.ppm gets the test hole's surface grid. */
+ * hold the same records. OUT.ppm gets the test hole's surface grid.
+ *   coursetest --course COURSE.pdb ROUNDTRIP.pdb
+ * checks any course: the round trip, every hole loads and draws its surface
+ * grid, pins are on the green and tees on a tee, the header matches. */
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -203,6 +206,49 @@ static void fuzz(const uint8_t *rec, uint32_t len, int is_hole)
 	free(b);
 }
 
+/* Checks every hole of any course. */
+static int any_course(const char *pa, const char *pb)
+{
+	Pdb a, b;
+	Course c;
+	Hole h;
+	SurfaceGrid g;
+	static uint8_t row[SURF_ROW_MAX];
+	uint32_t total = 0;
+	int i, k;
+
+	if (!load_pdb(pa, &a) || !load_pdb(pb, &b)) {
+		printf("FAIL can't read the PDBs\n");
+		return 1;
+	}
+	CHECK(a.count == b.count);
+	for (i = 0; i < a.count && i < b.count; i++)
+		CHECK(a.len[i] == b.len[i] && memcmp(a.rec[i], b.rec[i], a.len[i]) == 0);
+	CHECK(course_parse(&c, a.rec[0], a.len[0]) == HOLE_OK);
+	CHECK(a.count == c.hole_count + 1);
+	for (k = 1; k < a.count; k++) {
+		total += a.len[k];
+		CHECK(a.len[k] < 16384);
+		if (hole_parse(&h, a.rec[k], a.len[k]) != HOLE_OK) { CHECK(!"hole parses"); continue; }
+		CHECK(h.number == k && h.par == c.par[k - 1] && h.tees[0].yards == c.yards[k - 1]);
+		surface_size(&h, &g);
+		rows_seen = rows_bad = 0;
+		surface_raster(&h, row, put_row, &g);
+		g.cells = grid;
+		CHECK(rows_bad == 0 && rows_seen == g.h);
+		for (i = 0; i < HOLE_PINS; i++)
+			CHECK(surface_at(&g, h.pins[i].x, h.pins[i].y) == SURF_GREEN);
+		for (i = 0; i < h.tee_count; i++)
+			CHECK(surface_at(&g, h.tees[i].pos.x, h.tees[i].pos.y) == SURF_TEE);
+		CHECK(surface_at(&g, h.aim.x, h.aim.y) != SURF_OOB);
+	}
+	printf("%s: %d holes, %u bytes in hole records\n", a.name, a.count - 1, total);
+	for (i = 0; i < a.count; i++) free(a.rec[i]);
+	for (i = 0; i < b.count; i++) free(b.rec[i]);
+	printf("%d checks, %d failed\n", checks, fails);
+	return fails ? 1 : 0;
+}
+
 int main(int argc, char **argv)
 {
 	Pdb a, b;
@@ -215,6 +261,7 @@ int main(int argc, char **argv)
 	int i;
 	double worst = 0;
 
+	if (argc == 4 && strcmp(argv[1], "--course") == 0) return any_course(argv[2], argv[3]);
 	if (argc != 4) {
 		printf("usage: coursetest COURSE.pdb ROUNDTRIP.pdb OUT.ppm\n");
 		return 2;

@@ -1,0 +1,84 @@
+# Auld Kirk Links, hole 8. Made by tools/mkauldkirk.py; edit that and run it again.
+name Selkie
+par 3
+size 200 229
+heightmap hole-08.png 8
+height 0 0.046875
+base rough
+aim 88 172
+turn 35
+
+tee Medal 120 14 161
+tee Club 108.4 25.9 147
+tee Forward 125.8 45.8 131
+
+pin 79.4 165.9
+pin 95.7 164.9
+pin 94.7 181.2
+pin 80.3 180.2
+
+poly deep-rough 0,0 34,0 37.9,114.5 36,229 0,229
+poly first-cut 108,149 105.3,156 98,161.1 88,163 78,161.1 70.7,156 68,149 70.7,142 78,136.9 88,135 98,136.9 105.3,142
+poly fringe 107.5,172 106.5,178.3 103.8,184 99.5,188.6 94,191.5 88,192.5 82,191.5 76.5,188.6 72.2,184 69.5,178.3 68.5,172 69.5,165.7 72.2,160 76.5,155.4 82,152.5 88,151.5 94,152.5 99.5,155.4 103.8,160 106.5,165.7
+poly green 104,172 103.2,177.3 100.9,182 97.4,185.8 92.9,188.2 88,189 83.1,188.2 78.6,185.8 75.1,182 72.8,177.3 72,172 72.8,166.7 75.1,162 78.6,158.2 83.1,155.8 88,155 92.9,155.8 97.4,158.2 100.9,162 103.2,166.7
+poly bunker 65,164 63.9,161.7 64.7,159.3 66.8,158 69.2,158.4 70.9,160.1 71.7,162.3 71,164.5 69.1,165.6 66.8,165.5
+poly bunker 102.5,161.9 101.8,159.4 103.2,157.3 105.3,156.2 107.7,156.5 109.7,158 110.1,160.6 109,162.9 106.6,163.8 104.3,163.5
+poly bunker 98.4,196.1 96.7,197.3 94.7,197.1 93.1,195.7 92.3,193.7 93.6,191.9 95.3,190.7 97.5,190.6 98.9,192.3 99.2,194.3
+poly tee 113,8 127,8 127,20 113,20
+poly tee 103.4,19.9 113.4,19.9 113.4,31.9 103.4,31.9
+poly tee 120.8,39.8 130.8,39.8 130.8,51.8 120.8,51.8
+poly oob 0,0 10,0 12,114.5 10,229 0,229
+
+object grass 56.8 42.6 2 82
+object grass 19.8 48.8 2 97
+object grass 57.9 58.7 2 70
+object grass 23.4 59.4 1 72
+object grass 39.8 68.2 2 105
+object gorse 37.4 75.9 2 80
+object gorse 43.3 77.6 0 79
+object gorse 34.9 77.7 1 75
+object gorse 54 78.2 1 87
+object grass 25.8 80.7 1 101
+object gorse 30.3 81.4 0 74
+object gorse 60.4 81.8 0 92
+object gorse 47 83.6 2 68
+object grass 15.2 86.6 0 106
+object grass 31.4 87.2 1 72
+object gorse 41.2 88.9 0 73
+object gorse 46.2 90.1 0 82
+object grass 41.9 90.8 0 70
+object grass 29 91.7 1 90
+object gorse 51 93.6 0 66
+object gorse 46.9 98.9 0 87
+object grass 15.3 126 0 96
+object grass 19.2 129.8 2 74
+object grass 13.8 141 1 74
+object gorse 53.7 146.1 2 79
+object gorse 58 147 2 78
+object gorse 52.4 148 2 85
+object gorse 49.5 150.3 2 79
+object gorse 30.7 151.1 1 71
+object gorse 32 151.3 0 90
+object gorse 55.4 152.9 2 86
+object gorse 50.9 155.6 1 62
+object gorse 36.9 155.7 0 77
+object gorse 32.1 157.1 2 93
+object gorse 39.2 157.4 2 63
+object grass 43.2 158.2 2 73
+object gorse 48.3 158.5 0 90
+object gorse 38 159.5 0 84
+object grass 37.9 162.4 1 86
+object gorse 38.1 163.5 0 75
+object grass 16.7 163.6 1 83
+object gorse 41.9 164.4 1 94
+object gorse 27.5 165.9 2 78
+object gorse 35 169.8 2 89
+object grass 53.3 174.4 0 84
+object gorse 34.3 175.3 1 65
+object grass 57.2 188.3 1 79
+object grass 34.2 189 1 90
+object grass 46.6 193.3 2 109
+object grass 38.7 199.6 1 100
+object grass 31.6 204.8 2 94
+object grass 53.5 206.6 1 94
+object grass 28.1 208.8 2 81

@@ -23,7 +23,27 @@ void front_init(Front *f)
 	f->saved = 0;
 	f->players = 1;
 	f->oldSel = 0;
+	f->courses = 0;
+	f->course = 0;
+	f->course_list[0] = 0;
 	main_menu(f);
+}
+
+void front_courses(Front *f, const char *const *names, uint8_t count, uint8_t pick)
+{
+	uint8_t i, k;
+	uint16_t n = 0;
+	const char *b = "Back";
+
+	if (count > FRONT_COURSES) count = FRONT_COURSES;
+	for (i = 0; i < count; i++) {
+		for (k = 0; names[i][k] && k < 23; k++) f->course_list[n++] = names[i][k] == '|' ? ' ' : names[i][k];
+		f->course_list[n++] = '|';
+	}
+	while (*b) f->course_list[n++] = *b++;
+	f->course_list[n] = 0;
+	f->courses = count;
+	f->course = pick < count ? pick : 0;
 }
 
 void front_clubhouse(Front *f, uint8_t saved)
@@ -47,7 +67,7 @@ uint16_t front_picture(const Front *f)
 
 void front_draw(const Front *f, Surface *s)
 {
-	const char *plate = f->screen == SCR_PLAYERS ? "PLAYERS" : "CLUBHOUSE";
+	const char *plate = f->screen == SCR_PLAYERS ? "PLAYERS" : f->screen == SCR_COURSES ? "COURSES" : "CLUBHOUSE";
 	int16_t n;
 
 	if (f->screen == SCR_TITLE) {
@@ -70,8 +90,22 @@ static int SEC_UI players_screen(Front *f)
 	return FR_REDRAW;
 }
 
+static int SEC_UI courses_screen(Front *f)
+{
+	f->screen = SCR_COURSES;
+	ui_menu_init(&f->menu, f->course_list, 22, 36, 116, 20);
+	f->menu.sel = f->course;
+	return FR_REDRAW;
+}
+
 static int SEC_UI open_item(Front *f, uint8_t i)
 {
+	if (f->screen == SCR_COURSES) {
+		if (i < f->courses) f->course = i;
+		front_clubhouse(f, f->saved);
+		f->menu.sel = (uint8_t)(MAIN_COURSES + (f->saved ? 1 : 0));
+		return FR_REDRAW;
+	}
 	if (f->screen == SCR_PLAYERS) {
 		if (i >= BACK_LINE) {
 			front_clubhouse(f, f->saved);
@@ -92,7 +126,10 @@ static int SEC_UI open_item(Front *f, uint8_t i)
 	}
 	switch (i) {
 	case MAIN_PRACTICE: ui_dialog_init(&f->dlg, "Practice", "The range and the\ngreen come later.", "OK"); break;
-	case MAIN_COURSES: ui_dialog_init(&f->dlg, "Courses", "No courses yet.", "OK"); break;
+	case MAIN_COURSES:
+		if (f->courses) return courses_screen(f);
+		ui_dialog_init(&f->dlg, "Courses", "No courses are\ninstalled.", "OK");
+		break;
 	default: ui_dialog_init(&f->dlg, "Settings", "Nothing to set yet.", "OK"); break;
 	}
 	f->dialog = DLG_MESSAGE;
@@ -143,6 +180,7 @@ int front_key(Front *f, uint8_t key)
 	case KEY_SELECT: return open_item(f, f->menu.sel);
 	case KEY_BACK:
 		if (f->screen == SCR_PLAYERS) return open_item(f, BACK_LINE);
+		if (f->screen == SCR_COURSES) return open_item(f, f->courses);
 		return 0;
 	}
 	return 0;

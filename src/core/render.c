@@ -39,7 +39,7 @@
 
 /* Object heights in 1/16 yards at scale 64, by type. */
 static const uint16_t obj_h16[RENDER_TYPES] = {
-	0, 192, 224, 208, 35, 21, 128, 80, 24
+	0, 192, 224, 208, 35, 21, 128, 80, 24, 24, 14
 };
 
 /* The ball's second pixel and its black edge on 4 greys, from the ball point. */
@@ -943,7 +943,7 @@ int render_scene(Surface *s, const RenderView *v, const RenderArt *a, void *work
 	t = lap(r.st, RS_GATHER, t);
 	terrain(&r);
 	t = lap(r.st, RS_TERRAIN, t);
-	sky(&r, &a->backdrop, v->aim);
+	sky(&r, &a->backdrop, (angle)(v->aim + v->hole->turn));
 	t = lap(r.st, RS_SKY, t);
 	for (x = r.nobj; x > 0; x--) draw_obj(&r, &r.obj[x - 1]);
 	t = lap(r.st, RS_OBJECTS, t);
@@ -1072,11 +1072,13 @@ int render_map(Surface *s, const RenderView *v, RenderMap *out)
 
 #define MX(wx) ((int16_t)(left + (wx) / ypp))
 #define MY(wy) ((int16_t)(top + (((fixed)h->length << 16) - (wy)) / ypp))
-	/* trees and bushes as dark dots, rocks grey */
+	/* trees, bushes and gorse as dark dots, rocks, walls and houses grey */
 	for (i = 0; i < h->object_count; i++) {
 		hole_object(h, i, &o);
-		if (o.type == OBJ_ROCK) dot(&r, MX(o.pos.x), MY(o.pos.y), sc, PAL_ROCK + 3);
-		else if (o.type >= OBJ_TREE && o.type <= OBJ_BUSH) dot(&r, MX(o.pos.x) - (sc >> 1), MY(o.pos.y) - (sc >> 1), sc + 1, PAL_TREE + 1);
+		if (o.type == OBJ_ROCK || o.type == OBJ_WALL) dot(&r, MX(o.pos.x), MY(o.pos.y), sc, PAL_ROCK + 3);
+		else if (o.type == OBJ_HOUSE) dot(&r, MX(o.pos.x) - sc, MY(o.pos.y) - sc, 2 * sc + 1, PAL_WALL + 2);
+		else if ((o.type >= OBJ_TREE && o.type <= OBJ_BUSH) || o.type == OBJ_GORSE)
+			dot(&r, MX(o.pos.x) - (sc >> 1), MY(o.pos.y) - (sc >> 1), sc + 1, PAL_TREE + 1);
 	}
 	/* the tee: a white square with a black edge */
 	x = MX(h->tees[0].pos.x);

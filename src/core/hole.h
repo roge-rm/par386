@@ -6,7 +6,7 @@
 
 #include "vec.h"
 
-#define COURSE_VERSION    1
+#define COURSE_VERSION    2      /* 1 is read too: scenery 0 */
 #define HOLE_VERSION      1
 #define COURSE_MAX_HOLES  36
 #define COURSE_MAX_TEES   4
@@ -31,7 +31,7 @@ enum {
 /* Object types. Unknown ones are kept so newer courses still load. */
 enum {
 	OBJ_TREE = 1, OBJ_PINE, OBJ_PALM, OBJ_BUSH, OBJ_ROCK, OBJ_HOUSE, OBJ_STAND,
-	OBJ_WALL
+	OBJ_WALL, OBJ_GORSE, OBJ_GRASS
 };
 
 /* Errors from course_parse and hole_parse. */
@@ -45,6 +45,8 @@ typedef struct {
 	uint16_t yards[COURSE_MAX_HOLES];     /* from the longest tee */
 	uint8_t par[COURSE_MAX_HOLES];
 	uint8_t hole_count, tee_count;
+	uint8_t scenery;    /* which sky and backdrop art, 0 the parkland one */
+	uint8_t turn[COURSE_MAX_HOLES];       /* each hole's map turned against the course, 256 a turn */
 } Course;
 
 typedef struct {
@@ -69,6 +71,7 @@ typedef struct {
 	HoleTee tees[COURSE_MAX_TEES];
 	uint16_t width, length;    /* yards */
 	uint16_t object_count;
+	uint16_t turn;             /* Course.turn << 8 for the backdrop; hole_parse leaves it 0, the caller sets it */
 	uint8_t number, par, hm_w, hm_h, hm_shift, base_surface, tee_count, shape_count;
 	char name[HOLE_NAME_MAX + 1];
 } Hole;

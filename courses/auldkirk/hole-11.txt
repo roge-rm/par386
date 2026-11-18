@@ -1,0 +1,84 @@
+# Auld Kirk Links, hole 11. Made by tools/mkauldkirk.py; edit that and run it again.
+name Bents
+par 3
+size 200 261
+heightmap hole-11.png 8
+height 0 0.046875
+base rough
+aim 110 205
+turn 70
+
+tee Medal 96 14 192
+tee Club 106 27.3 178
+tee Forward 86.2 44.8 162
+
+pin 102.5 197.8
+pin 118.7 199.7
+pin 115.1 214.7
+pin 101.1 211.2
+
+poly deep-rough 0,0 34,0 22,130.5 36,261 0,261
+poly deep-rough 200,0 180,0 176,130.5 182,261 200,261
+poly first-cut 129.7,186.5 125.8,192.9 117.7,196.7 107.6,196.8 98,193.2 91.7,186.9 90.3,179.5 94.2,173.1 102.3,169.3 112.4,169.2 122,172.8 128.3,179.1
+poly fringe 158.6,211 155.9,216.7 150.1,221.2 141.7,224.1 131.7,225.1 121,224.2 110.6,221.4 101.6,217 94.8,211.4 90.9,205.2 90.2,199 92.9,193.3 98.7,188.8 107.1,185.9 117.1,184.9 127.8,185.8 138.2,188.6 147.2,193 154,198.6 157.9,204.8
+poly green 155.1,210.4 152.8,215 147.6,218.6 140.2,220.9 131.3,221.7 121.6,220.8 112.3,218.3 104.1,214.6 97.9,209.9 94.3,204.7 93.7,199.6 96,195 101.2,191.4 108.6,189.1 117.5,188.3 127.2,189.2 136.5,191.7 144.7,195.4 150.9,200.1 154.5,205.3
+poly bunker 91.3,199.6 89.3,198.4 88.3,196.4 88.6,194.1 90.3,192.5 92.8,191.9 95.2,193.2 96,195.6 95.2,197.8 93.6,199.5
+poly bunker 126.1,189.2 124.1,187.7 124.2,185.2 125.5,183.1 127.7,181.9 130.1,182.4 131.4,184.5 132.1,186.9 130.5,188.9 128.3,190.1
+poly bunker 102.4,175.3 100.5,173.8 99.9,171.4 101.3,169.4 103.3,168.2 105.7,168.6 107.5,170.2 107.7,172.5 106.8,174.7 104.7,176.1
+poly tee 89,8 103,8 103,20 89,20
+poly tee 101,21.3 111,21.3 111,33.3 101,33.3
+poly tee 81.2,38.8 91.2,38.8 91.2,50.8 81.2,50.8
+poly oob 0,0 10,0 12,130.5 10,261 0,261
+
+object gorse 196 41.4 0 64
+object grass 29 41.5 1 70
+object grass 40.6 53.4 1 84
+object gorse 176.9 54.1 0 72
+object grass 58.9 54.2 1 84
+object grass 30.8 64.6 2 107
+object grass 36.2 70.1 0 95
+object gorse 176.1 71.3 0 64
+object grass 57 88.9 2 72
+object grass 54.3 98 1 82
+object gorse 180.8 112.1 0 72
+object grass 38.4 115 1 108
+object grass 51.8 117 2 73
+object grass 34.6 135.6 0 74
+object gorse 181.4 137.6 0 72
+object grass 34.1 138.3 1 101
+object grass 13.4 142.1 1 102
+object gorse 164.8 153.8 2 91
+object gorse 43 155.2 2 91
+object grass 48.9 157.3 0 99
+object gorse 195 158.9 0 68
+object grass 13.1 159 0 71
+object grass 25 159.8 2 92
+object grass 58.2 161.8 2 88
+object gorse 158.6 163.1 1 85
+object gorse 146.9 164.5 1 80
+object gorse 51.2 165.3 1 86
+object gorse 49.8 170.3 2 90
+object grass 56.5 171 2 81
+object grass 48.1 174.3 1 89
+object gorse 65.5 174.7 0 67
+object gorse 53.3 175 0 87
+object gorse 156.2 176.2 1 75
+object gorse 145.9 176.4 2 68
+object gorse 70.4 176.7 1 83
+object gorse 151.6 177.5 2 62
+object gorse 51.7 183 2 88
+object gorse 162.1 183.5 0 62
+object gorse 146.4 184.5 0 64
+object gorse 56.7 186.2 2 95
+object grass 28.3 188.2 0 90
+object gorse 63.7 188.7 2 91
+object gorse 61.6 190.7 1 60
+object gorse 59.1 196.1 0 84
+object gorse 54.3 196.2 0 76
+object grass 44.8 209.7 1 79
+object grass 46.8 217.5 2 87
+object gorse 189.3 220.1 0 56
+object grass 44.6 220.7 1 74
+object grass 37.4 223 1 75
+object gorse 193.8 229.2 0 62
+object grass 53.4 250.9 1 99

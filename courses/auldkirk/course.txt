@@ -1,0 +1,8 @@
+# Auld Kirk Links, an old links out along the shore and back.
+# Made by tools/mkauldkirk.py.
+name Auld Kirk
+tee Medal
+tee Club
+tee Forward
+holes 18
+scenery 1         # the links backdrop: sea, hills and the kirk

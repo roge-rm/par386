@@ -12,7 +12,7 @@
 /* Logical rows left at the bottom for the status bar: the view is the top
  * 160 - RENDER_STATUS rows (times the surface's scale). */
 #define RENDER_STATUS     16
-#define RENDER_TYPES      9     /* object types 0..8 (hole.h) */
+#define RENDER_TYPES      11    /* object types 0..10 (hole.h) */
 #define RENDER_SIZES      2     /* sprite sizes per type, small then big */
 
 typedef struct {

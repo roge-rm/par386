@@ -14,7 +14,7 @@ from decimal import Decimal
 
 from PIL import Image
 
-COURSE_VERSION = 1
+COURSE_VERSION = 1    # 2 with a scenery line
 HOLE_VERSION = 1
 MAX_HOLES = 36
 MAX_TEES = 4
@@ -32,7 +32,7 @@ MAX_OBJECTS = 1024
 SURFACES = ["rough", "first-cut", "fairway", "deep-rough", "green", "fringe",
             "bunker", "water", "path", "oob", "tee"]
 OBJECTS = {"tree": 1, "pine": 2, "palm": 3, "bush": 4, "rock": 5, "house": 6,
-           "stand": 7, "wall": 8}
+           "stand": 7, "wall": 8, "gorse": 9, "grass": 10}
 OBJECT_NAMES = {v: k for k, v in OBJECTS.items()}
 
 PALM_EPOCH = 2082844800    # seconds from 1904 to 1970
@@ -85,7 +85,7 @@ def name_bytes(where, s, lo, hi):
 
 def read_course(folder):
     path = os.path.join(folder, "course.txt")
-    course = {"name": None, "tees": [], "holes": None}
+    course = {"name": None, "tees": [], "holes": None, "scenery": None}
     for n, w in read_lines(path):
         where = "%s:%d" % (path, n)
         key, rest = w[0], " ".join(w[1:])
@@ -95,6 +95,10 @@ def read_course(folder):
             course["tees"].append(rest)
         elif key == "holes":
             course["holes"] = int(number(where, rest))
+        elif key == "scenery":
+            course["scenery"] = int(number(where, rest))
+            if not 0 <= course["scenery"] <= 255:
+                fail(where, "scenery 0 to 255")
         else:
             fail(where, "unknown line %r" % key)
     if not course["name"] or not course["tees"] or not course["holes"]:
@@ -121,7 +125,7 @@ def ellipse(where, args, hole):
     return [(round(x * 4), round(y * 4)) for x, y in pts]
 
 
-SINGLE = ("name", "par", "size", "heightmap", "height", "base", "aim")
+SINGLE = ("name", "par", "size", "heightmap", "height", "base", "aim", "turn")
 SHAPES = ("poly", "rect", "ellipse")
 
 
@@ -158,7 +162,7 @@ def read_hole(folder, number_, course):
     path = os.path.join(folder, "hole-%02d.txt" % number_)
     h = {"name": "", "par": None, "width": None, "length": None, "heightmap": None,
          "base": 0.0, "step": 1 / 16, "surface": 0, "aim": None, "tees": [], "pins": [],
-         "shapes": [], "objects": []}
+         "shapes": [], "objects": [], "turn": None}
     lines = hole_lines(folder, "hole-%02d.txt" % number_)
     # Size first, as points are checked against it.
     for where, w in lines:
@@ -193,6 +197,8 @@ def read_hole(folder, number_, course):
             h["surface"] = SURFACES.index(args[0])
         elif key == "aim":
             h["aim"] = point(where, args[0], args[1])
+        elif key == "turn":
+            h["turn"] = round(number(where, args[0]) * 256 / 360) % 256
         elif key == "tee":
             if args[0] not in course["tees"]:
                 fail(where, "tee %r isn't in course.txt" % args[0])
@@ -299,12 +305,18 @@ def hole_record(folder, n, h):
 
 
 def course_record(course, holes):
-    out = struct.pack(">HBB", COURSE_VERSION, course["holes"], len(course["tees"]))
+    turns = any(h["turn"] is not None for h in holes)
+    version = 2 if course["scenery"] is not None or turns else COURSE_VERSION
+    out = struct.pack(">HBB", version, course["holes"], len(course["tees"]))
+    if "|" in course["name"]:
+        fail("course.txt", "course name can't contain '|': %r" % course["name"])
     out += name_bytes("course.txt", course["name"], 1, NAME_MAX)
     for t in course["tees"]:
         out += name_bytes("course.txt", t, 1, TEE_NAME_MAX)
     for h in holes:
         out += struct.pack(">BH", h["par"], max(t[2] for t in h["tees"]))
+    if version >= 2:
+        out += bytes([course["scenery"] or 0] + [h["turn"] or 0 for h in holes])
     return out
 
 
@@ -344,7 +356,8 @@ def build(folder, out):
             raise CourseError("record %d is %d bytes, over 16 KB" % (i, len(r)))
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     write_pdb(out, "Par386 " + course["name"], records)
-    print("%s: %d holes, record sizes %s" % (out, len(holes), " ".join(str(len(r)) for r in records)))
+    print("%s: %d holes, %d bytes in records, sizes %s" % (out, len(holes), sum(len(r) for r in records),
+                                                     " ".join(str(len(r)) for r in records)))
 
 
 def yd(q, d=4):
@@ -378,11 +391,16 @@ def dump(pdb, outdir):
     version, nholes, ntees = c.take("HBB")
     cname = c.name()
     tees = [c.name() for _ in range(ntees)]
+    c.take("BH" * nholes)
+    turns = [None] * nholes
     with open(os.path.join(outdir, "course.txt"), "w") as f:
         f.write("name %s\n" % cname)
         for t in tees:
             f.write("tee %s\n" % t)
         f.write("holes %d\n" % nholes)
+        if version >= 2:
+            f.write("scenery %d\n" % c.take("B"))
+            turns = [c.take("B") for _ in range(nholes)]
     for n in range(1, nholes + 1):
         c = Cursor(records[n])
         (version, num, par, W, L, hm_w, hm_h, shift, surf, base, step,
@@ -392,6 +410,8 @@ def dump(pdb, outdir):
                  "heightmap hole-%02d.png %d" % (n, 1 << shift),
                  "height %s %s" % (yd(base, 16), yd(step, 4096)),
                  "base %s" % SURFACES[surf], "aim %s %s" % (yd(ax), yd(ay))]
+        if turns[n - 1] is not None:
+            lines.append("turn %s" % yd(turns[n - 1] * 360, 256))
         for _ in range(c.take("B")):
             s, x, y, yards = c.take("BHHH")
             lines.append("tee %s %s %s %d" % (tees[s], yd(x), yd(y), yards))

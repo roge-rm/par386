@@ -6,7 +6,8 @@ Every PGM in PGMDIR becomes OUTDIR/NAME.png: 8-bit ones with the master
 palette, 2-bit ones in the greys the IIIx shows, plus a 3x copy of each
 160 one (NAME-x3.png) for looking at. NAMEs listed (default all) are compared
 pixel for pixel with REFDIR/NAME.png; --update copies them there instead.
-Exits 1 on any difference or missing reference.
+Exits 1 on any difference or missing reference. A REFDIR of - only makes
+the PNGs.
 """
 import sys
 from pathlib import Path
@@ -59,7 +60,7 @@ def main():
         im.save(out / f'{p.stem}.png', optimize=True)
         if im.width == 160:
             im.convert('RGB').resize((480, 480), Image.NEAREST).save(out / f'{p.stem}-x3.png')
-        if names and p.stem not in names:
+        if (names and p.stem not in names) or str(ref) == '-':
             continue
         seen.add(p.stem)
         r = ref / f'{p.stem}.png'
@@ -81,7 +82,7 @@ def main():
         if n not in seen:
             print(f'refcmp: no render for {n} in {src}')
             bad += 1
-    if not update:
+    if not update and str(ref) != '-':
         print(f'refcmp: {"all match" if not bad else f"{bad} differ"}')
     return 1 if bad else 0
 

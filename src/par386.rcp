@@ -6,12 +6,22 @@ ICONFAMILYEX
 BEGIN
   BITMAP "../res/icon-1.bmp" BPP 1
   BITMAP "../res/icon-2.bmp" BPP 2
+  BITMAP "../res/icon-4.bmp" BPP 4
+  BITMAP "../res/icon-8.bmp" BPP 8 TRANSPARENT 255 0 255
+  BITMAP "../res/icon-16.bmp" BPP 16 TRANSPARENT 255 0 255
+  BITMAP "../res/icon-hd-8.bmp" BPP 8 TRANSPARENT 255 0 255 DENSITY 144
+  BITMAP "../res/icon-hd-16.bmp" BPP 16 TRANSPARENT 255 0 255 DENSITY 144
 END
 
 SMALLICONFAMILYEX
 BEGIN
   BITMAP "../res/small-1.bmp" BPP 1
   BITMAP "../res/small-2.bmp" BPP 2
+  BITMAP "../res/small-4.bmp" BPP 4
+  BITMAP "../res/small-8.bmp" BPP 8 TRANSPARENT 255 0 255
+  BITMAP "../res/small-16.bmp" BPP 16 TRANSPARENT 255 0 255
+  BITMAP "../res/small-hd-8.bmp" BPP 8 TRANSPARENT 255 0 255 DENSITY 144
+  BITMAP "../res/small-hd-16.bmp" BPP 16 TRANSPARENT 255 0 255 DENSITY 144
 END
 
 FORM ID MainForm AT (0 0 160 160)

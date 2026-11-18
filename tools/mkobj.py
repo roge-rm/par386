@@ -17,6 +17,10 @@ Trees and the rest are drawn as lit shapes with grain and no outline, lit
 from the left and behind the camera like the golfer and the terrain. They'll
 be drawn again per course in milestone 11.
 
+Backdrops come in sets by the course's scenery number: Bkd8 1000 + 10 *
+scenery + 0 or 1. Scenery 0 is the tree line, 1 the links (sea, hills and a
+town with a kirk).
+
 Usage: mkobj.py OUT [PREVIEW]
 """
 import math
@@ -186,16 +190,17 @@ def rock(H, seed):
     return finish(H, [(hit, 'rock', shade)], (w / 2 / SS, h / SS))
 
 
-def finish(H, layers, anchor):
+def finish(H, layers, anchor, grng=None):
     """Shrinks the supersampled layers, cuts them to their ramps with grain and
     returns (indices, anchor x, anchor y)."""
+    grng = grng or rng
     h, w = layers[0][0].shape
     idx = np.zeros((h // SS, w // SS), dtype=np.uint8)
     for mask, name, shade in layers:
         cov = shrink(mask.astype(float), SS)
         s = shrink(np.where(mask, shade, 0), SS) / np.maximum(cov, 1e-6)
         on = cov >= 0.5
-        grain = rng.random(idx.shape) - 0.5
+        grain = grng.random(idx.shape) - 0.5
         k = ramp_index(name, np.clip(s, 0, 1), grain * 0.9)
         idx[on] = k[on]
     return idx, round(anchor[0]), round(anchor[1])
@@ -286,6 +291,211 @@ def preview(idx, path, scale):
     Image.fromarray(rgb).resize((idx.shape[1] * scale, idx.shape[0] * scale), Image.NEAREST).save(path)
 
 
+# Links art: the stone wall, a stone house, gorse and dune grass, and the
+# links backdrop. They draw from their own random numbers, so the art above
+# comes out the same as before.
+OBJ_HOUSE, OBJ_WALL, OBJ_GORSE, OBJ_GRASS = 6, 8, 9, 10
+LINKS_SIZES = {OBJ_HOUSE: (28, 84), OBJ_WALL: (8, 24), OBJ_GORSE: (12, 36), OBJ_GRASS: (8, 20)}
+lrng = np.random.default_rng(1386)
+
+
+def wall(H, seed):
+    """A dry-stone wall section, 4 times as long as it's tall, with a row of
+    upright cope stones along the top."""
+    r = np.random.default_rng(seed)
+    h, w = H * SS, H * 4 * SS
+    y, x = np.mgrid[0:h, 0:w] + 0.5
+    cope = h * 0.22
+    # coursed stones: rows of uneven height, joints dark
+    rows = np.cumsum(r.uniform(0.6, 1.0, 8))
+    rows = cope + rows / rows[-1] * (h - cope)
+    shade = np.full((h, w), 0.55)
+    joint = np.zeros((h, w), dtype=bool)
+    top = cope
+    for k, bot in enumerate(rows):
+        band = (y >= top) & (y < bot)
+        edges = np.cumsum(r.uniform(0.8, 1.6, 64)) * (bot - top) * 1.4 - r.random() * h
+        cell = np.searchsorted(edges, x[0])
+        bump = r.uniform(-0.18, 0.18, len(edges) + 1)
+        shade[band] = (0.55 + bump[cell])[None, :].repeat(h, 0)[band]
+        # each stone lit from the top left
+        fy = np.clip((y - top) / max(bot - top, 1), 0, 1)
+        shade[band] += (0.15 - fy[band] * 0.3)
+        joint |= band & (np.abs(y - top) < SS * 0.6)
+        for e in edges:
+            joint |= band & (np.abs(x - e) < SS * 0.5)
+        top = bot
+    # cope stones on edge
+    cw = h * 0.16
+    cx = (x // cw)
+    lean = (r.random(int(w // cw) + 2) - 0.5) * 0.3
+    cop = (y < cope) & (y > cope * (0.15 + 0.3 * np.abs(np.sin(cx * 1.7))))
+    cop &= (x % cw) > SS * 0.6
+    shade[y < cope] = 0.6 + lean[cx.astype(int)][y < cope] - ((x % cw) / cw * 0.25)[y < cope]
+    fine = r.random((h, w)) - 0.5
+    shade = np.clip(shade + fine * 0.25 - joint * 0.45, 0, 1)
+    body = (y >= cope) | cop
+    # a ragged top line
+    body &= ~((y < cope) & ~cop)
+    return finish(H, [(body, 'wall', shade)], (w / 2 / SS, h / SS), lrng)
+
+
+def house(H, seed):
+    """An old stone house with a pitched slate roof and chimneys at the gables."""
+    r = np.random.default_rng(seed)
+    h, w = H * SS, int(H * 1.6) * SS
+    y, x = np.mgrid[0:h, 0:w] + 0.5
+    eave, ridge = h * 0.48, h * 0.12
+    x0, x1 = w * 0.06, w * 0.94
+    walls = (y >= eave) & (x >= x0) & (x < x1)
+    # roof: two slopes seen from the long side, the near one lit
+    roof = (y >= ridge) & (y < eave) & (x >= x0 - SS) & (x < x1 + SS)
+    fine = r.random((h, w)) - 0.5
+    stone = vnoise((h, w), SS * 2, seed) - 0.5
+    ws = 0.62 + stone * 0.35 + fine * 0.2 - (y - eave) / h * 0.3
+    # windows and a door, dark
+    win = np.zeros((h, w), dtype=bool)
+    for k in range(5):
+        wx = x0 + (x1 - x0) * (k + 0.5) / 5
+        if k == 2:
+            win |= (np.abs(x - wx) < w * 0.035) & (y > h * 0.72)
+        else:
+            win |= (np.abs(x - wx) < w * 0.03) & (np.abs(y - h * 0.68) < h * 0.07)
+    ws = np.where(win, 0.05, ws)
+    slate = vnoise((h, w), SS, seed + 1) - 0.5
+    rs = 0.32 + (y - ridge) / (eave - ridge) * 0.15 + slate * 0.2 + fine * 0.15
+    rs = np.where(((y - ridge) % (SS * 1.5)) < SS * 0.4, rs - 0.15, rs)
+    chim = np.zeros((h, w), dtype=bool)
+    for cx in (x0 + w * 0.05, x1 - w * 0.05):
+        chim |= (np.abs(x - cx) < w * 0.035) & (y > ridge - h * 0.1) & (y < ridge + h * 0.1)
+    cs = 0.55 + fine * 0.2
+    return finish(H, [(walls, 'wall', np.clip(ws, 0, 1)), (roof, 'grey', np.clip(rs, 0, 1)),
+                      (chim, 'wall', np.clip(cs, 0, 1))], (w / 2 / SS, h / SS), lrng)
+
+
+def gorse(H, seed):
+    """A gorse clump: a dark spiny mound with yellow flowers on its lit side."""
+    r = np.random.default_rng(seed)
+    h, w = H * SS, int(H * 1.6) * SS
+    balls = []
+    for _ in range(22):
+        bx = w * (0.15 + r.random() * 0.7)
+        rad = h * (0.2 + r.random() * 0.2)
+        by = h - rad * (0.6 + r.random() * 0.9)
+        balls.append((bx, max(rad * 0.9, by), r.random() * rad * 0.5, rad))
+    zb, n, hit = spheres(h, w, balls)
+    fine = r.random((h, w)) - 0.5
+    spike = vnoise((h, w), max(2, SS * H // 18), seed + 1) - 0.5
+    # spiny edge: thin out the outline with fine noise
+    edge = shrink(hit.astype(float), 1)
+    shade = lambert(n) * 0.55 + 0.02 + spike * 0.35 + fine * 0.25
+    lit = lambert(n)
+    flower = hit & (r.random((h, w)) < 0.01 + 0.3 * np.clip(lit - 0.5, 0, 1) ** 1.2) & (spike > 0)
+    # flowers in small clumps a few supersamples across
+    fl = shrink(flower.astype(float), SS).repeat(SS, 0).repeat(SS, 1) > 0.1
+    fl &= hit
+    del edge
+    return finish(H, [(hit, 'pine', np.clip(shade, 0, 1)),
+                      (fl, 'gold', np.clip(0.55 + lit * 0.4 + fine * 0.2, 0, 1))],
+                  (w / 2 / SS, h / SS), lrng)
+
+
+def grass(H, seed):
+    """A tuft of marram grass: thin pale blades fanning out from the sand."""
+    r = np.random.default_rng(seed)
+    h, w = H * SS, int(H * 1.4) * SS
+    y, x = np.mgrid[0:h, 0:w] + 0.5
+    hit = np.zeros((h, w), dtype=bool)
+    shade = np.zeros((h, w))
+    for k in range(26):
+        lean = r.uniform(-0.9, 0.9)
+        tall = h * r.uniform(0.45, 1.0)
+        bx = w / 2 + r.uniform(-0.18, 0.18) * w
+        t = np.clip((h - y) / tall, 0, 1)
+        cxl = bx + lean * (h - y) * 0.6 + lean * t * t * tall * 0.4
+        thick = SS * (1.1 - t * 0.7)
+        blade = (np.abs(x - cxl) < thick) & (y > h - tall)
+        hit |= blade
+        shade = np.where(blade, 0.45 + 0.45 * t + (0.15 if lean < 0 else -0.1) + r.uniform(-0.1, 0.1), shade)
+    return finish(H, [(hit, 'oob', np.clip(shade, 0, 1))], (w / 2 / SS, h / SS), lrng)
+
+
+def links_backdrop(width, height, seed):
+    """The links backdrop: the sea along the horizon, distant hills across
+    part of the turn, and a town with a kirk spire on the far shore. Repeats
+    twice in a full turn. The bottom rows are sea, so the terrain's far edge
+    meets it."""
+    h, w = height * SS, width * SS
+    y, x = np.mgrid[0:h, 0:w] + 0.5
+    u = x[0] / w * 2 * math.pi
+    r = np.random.default_rng(seed)
+
+    def wave(freqs):
+        out = np.zeros_like(u)
+        for f, amp in freqs:
+            out += amp * np.sin(u * f + r.random() * 2 * math.pi)
+        return out
+    sea_top = h * 0.80
+    # hills over about half the strip, fading to nothing at their ends
+    env = np.clip(np.sin(u - 0.6) * 1.6, 0, 1) ** 0.8
+    hills = sea_top - env * h * (0.40 + wave([(3, 0.08), (7, 0.05), (19, 0.025)]))
+    near = sea_top - np.clip(np.sin(u * 1.0 + 2.2) * 1.3, 0, 1) * h * (0.18 + wave([(5, 0.04), (23, 0.02)]))
+    fine = lrng.random((h, w)) - 0.5
+    hill = (y >= hills[None, :]) & (y < sea_top)
+    hs = np.clip(0.85 - (y - hills[None, :]) / h * 0.5 + (vnoise((h, w), SS * 3, seed) - 0.5) * 0.25 + fine * 0.1, 0, 1)
+    nh = (y >= near[None, :]) & (y < sea_top)
+    ns = np.clip(0.55 - (y - near[None, :]) / h * 0.6 + (vnoise((h, w), SS * 2, seed + 1) - 0.5) * 0.3 + fine * 0.15, 0, 1)
+    # the town: a row of houses with a kirk tower and spire, on the near shore
+    town = np.zeros((h, w), dtype=bool)
+    ts = np.zeros((h, w))
+    tx0 = w * 0.30
+    k = 0
+    xx = tx0
+    while xx < w * 0.36:
+        bw = SS * r.uniform(2.5, 5)
+        bh = h * r.uniform(0.06, 0.13)
+        m = (x >= xx) & (x < xx + bw) & (y >= sea_top - bh) & (y < sea_top)
+        town |= m
+        ts = np.where(m, 0.35 + 0.4 * (k % 2) + fine * 0.1, ts)
+        xx += bw + SS * r.uniform(0, 1.5)
+        k += 1
+    kx = w * 0.335
+    tower = (np.abs(x - kx) < SS * 1.6) & (y >= sea_top - h * 0.30) & (y < sea_top)
+    spire = (np.abs(x - kx) < SS * 1.6 * np.clip((y - (sea_top - h * 0.48)) / (h * 0.18), 0, 1)) & \
+            (y >= sea_top - h * 0.48) & (y < sea_top - h * 0.30)
+    kirk = tower | spire
+    ks = np.where(x < kx, 0.7, 0.35) + fine * 0.1
+    sea = y >= sea_top
+    ss = np.clip(0.45 + (y - sea_top) / (h - sea_top) * 0.3 +
+                 np.where(((y // SS) % 2 == 0) & (fine > 0.3), 0.25, 0) + fine * 0.1, 0, 1)
+    idx = np.zeros((height, width), dtype=np.uint8)
+    for mask, name, s in ((hill, 'far', hs * 0.45 + 0.55), (nh, 'far', ns * 0.7),
+                          (town, 'wall', ts), (kirk, 'wall', ks), (sea, 'water', ss)):
+        cov = shrink(mask.astype(float), SS)
+        sh = shrink(np.where(mask, s, 0), SS) / np.maximum(cov, 1e-6)
+        on = cov >= 0.5
+        kk = ramp_index(name, np.clip(sh, 0, 1), (lrng.random(idx.shape) - 0.5) * 0.9)
+        idx[on] = kk[on]
+    return idx
+
+
+def links_art(res, prev):
+    makers = {OBJ_HOUSE: house, OBJ_WALL: wall, OBJ_GORSE: gorse, OBJ_GRASS: grass}
+    for t, sizes in LINKS_SIZES.items():
+        for k, H in enumerate(sizes):
+            idx, ax, ay = makers[t](H, 100 * t + k)
+            rid = 1000 + t * 10 + k
+            res.append(('Spr8', rid, spr8(idx, ax, ay)))
+            if prev:
+                preview(idx, prev / f'spr-{rid}.png', 4)
+    # Scenery 1, the links: Bkd8 1010 and 1011.
+    big = links_backdrop(968, 40, 11)
+    for k, idx in enumerate((big.reshape(20, 2, 484, 2)[:, 0, :, 0], big)):
+        res.append(('Bkd8', 1010 + k, bkd8(idx)))
+        if prev:
+            preview(idx, prev / f'backdrop-{1010 + k}.png', 2)
+
+
 def main():
     out = Path(sys.argv[1])
     prev = Path(sys.argv[2]) if len(sys.argv) > 2 else None
@@ -315,6 +525,7 @@ def main():
         res.append(('Bkd8', 1000 + k, bkd8(idx)))
         if prev:
             preview(idx, prev / f'backdrop-{1000 + k}.png', 2)
+    links_art(res, prev)
     rcp = ['/* Made by tools/mkobj.py. */']
     total = 0
     for typ, rid, data in res:

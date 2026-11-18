@@ -18,12 +18,14 @@ Points in records are in quarter yards (u16), and must lie on the hole (0 to wid
 
 | Bytes | What |
 |---|---|
-| u16 | version, 1 |
+| u16 | version, 1 or 2 |
 | u8 | holes, 1 to 36 |
 | u8 | tee sets, 1 to 4 |
 | name | course name, 1 to 31 characters |
 | name × tee sets | tee set names, 1 to 15 characters each |
 | per hole: u8, u16 | par, yards from the longest tee |
+| u8 | version 2 only: scenery, the sky and backdrop art (0 trees, 1 links) |
+| u8 × holes | version 2 only: each hole's map turned against the course, 256 a turn, which moves the backdrop |
 
 A name is a length byte and that many Latin-1 characters, no nul.
 
@@ -54,7 +56,7 @@ The test hole is 2816 bytes. A 32 × 64 heightmap is 2 KB of that, and it doesn'
 
 Surface types: 0 rough, 1 first cut, 2 fairway, 3 deep rough, 4 green, 5 fringe, 6 bunker, 7 water, 8 cart path, 9 out of bounds, 10 tee box.
 
-Object types: 1 tree, 2 pine, 3 palm, 4 bush, 5 rock, 6 house, 7 stand, 8 wall. Other numbers load and are left for later.
+Object types: 1 tree, 2 pine, 3 palm, 4 bush, 5 rock, 6 house, 7 stand, 8 wall (a dry-stone section 6 yd long at scale 64), 9 gorse, 10 grass (dune grass). Other numbers load and are left for later. Palm and stand have no sprites yet.
 
 ## Surface grid
 
@@ -71,6 +73,7 @@ name Test
 tee Blue          # tee sets, longest first
 tee White
 holes 18          # reads hole-01.txt to hole-18.txt
+scenery 1         # optional, makes a version 2 header
 ```
 
 `hole-NN.txt`, yards with decimals allowed, `#` starts a comment and an indented line carries on the one above:
@@ -83,6 +86,7 @@ heightmap hole-01.png 8       # greyscale PNG, yards between pixels
 height 0 0.0625               # yards at black, yards per grey step
 base rough                    # surface where no shape is
 aim 62 240
+turn 90                       # optional, degrees, makes a version 2 header
 tee Blue 60 12 [yards]        # yards left out: tee to aim to the middle of the pins
 pin 140 405                   # four of these
 poly fairway 50,50 78,50 84,120 ...
@@ -91,6 +95,8 @@ ellipse bunker 38 236 7 10 [points] [degrees]
 object pine 16 60 [variant] [scale]
 ```
 
-Surface names: rough, first-cut, fairway, deep-rough, green, fringe, bunker, water, path, oob, tee. Object names: tree, pine, palm, bush, rock, house, stand, wall, or a number.
+Surface names: rough, first-cut, fairway, deep-rough, green, fringe, bunker, water, path, oob, tee. Object names: tree, pine, palm, bush, rock, house, stand, wall, gorse, grass, or a number.
+
+Auld Kirk (`courses/auldkirk/`) is made by `tools/mkauldkirk.py` (`make auldkirk`), which writes the hole files and heightmaps from a table of centre lines, greens and features.
 
 The heightmap's top row is the far end of the hole, so the PNG looks like a course map.
