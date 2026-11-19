@@ -46,10 +46,11 @@ STYLES = {
             items=[(OBJ_TREE, 0, 24, 42, 26), (mkstyle.OBJ_LANDMARK, 0, 174, 30, 18),
                    (OBJ_TREE, 1, 196, 46, 22), (mkstyle.OBJ_ANIMAL, 0, 40, 33, 6),
                    (OBJ_BUSH, 0, 90, 34, 6), (OBJ_TREE, 0, 104, 29, 9)]),
-    5: dict(sky=((120, 150, 190), (236, 222, 196)), far=('hills', (120, 112, 80), 6),
-            grass=(110, 150, 62), rough=(150, 132, 80),
-            items=[(mkstyle.OBJ_LANDMARK, 0, 180, 36, 22), (OBJ_TREE, 0, 26, 40, 16),
-                   (mkobj_palm := 3, 0, 60, 32, 12), (mkstyle.OBJ_HOUSE, 0, 148, 30, 7)]),
+    5: dict(sky=((104, 144, 198), (244, 216, 168)), far=('escarpment', (128, 136, 150), 10),
+            grass=(112, 158, 64), rough=(92, 112, 56), river=(37, 2.6),
+            items=[(OBJ_TREE, 0, 24, 44, 24), (mkstyle.OBJ_LANDMARK, 0, 194, 34, 20),
+                   (OBJ_TREE, 1, 150, 30, 8), (OBJ_TREE, 0, 64, 31, 9), (OBJ_TREE, 0, 120, 28, 5),
+                   (mkstyle.OBJ_ANIMAL, 1, 82, 38, 5), (mkstyle.OBJ_ANIMAL, 0, 132, 41, 3)]),
     6: dict(sky=((40, 90, 180), (180, 204, 228)), far=('peak', (110, 120, 136), 20),
             grass=(82, 150, 66), rough=(46, 96, 46),
             items=[(OBJ_PINE, 0, 22, 44, 28), (OBJ_PINE, 1, 190, 46, 30), (OBJ_PINE, 0, 170, 32, 14),
@@ -166,6 +167,30 @@ def paint(s):
                   (mkobj.vnoise((H, W), 9, 780 + s) > 0.62 + 0 * xs[None, :])
         img[shimmer] = mix(img[shimmer], np.asarray(haze, float), 0.6)
         lab[hills] = FAR
+    elif kind == 'escarpment':
+        # a far escarpment on the left, flat on top with a rust cliff band
+        # under its rim, a granite koppie on the right, low bush between
+        # with flat-topped acacias standing out of it
+        xs = np.arange(W)
+        esc = np.clip((xs - 6) / 8, 0, 1) * np.clip((126 - xs) / 7, 0, 1)
+        etop = HORIZON - 1 - esc * (bh + 0.6 * np.sin(xs * 0.17))
+        e_m = (y >= etop[None, :]) & (y < HORIZON) & (esc[None, :] > 0.05)
+        img[e_m] = far
+        cliff = e_m & (y < (etop + (HORIZON - etop) * 0.4)[None, :])
+        img[cliff] = mix((176, 112, 72), haze, 0.35)[None, :] * np.broadcast_to(0.94 + 0.1 * (y % 2 == 0), (H, W))[cliff][:, None]
+        kop = np.clip(1 - np.abs(xs - 152) / 22, 0, 1) ** 0.6
+        ktop = HORIZON - 1 - kop * 6
+        k_m = (y >= ktop[None, :]) & (y < HORIZON) & (kop[None, :] > 0.05)
+        shade = 0.9 + 0.25 * (mkobj.vnoise((H, W), 2, 790 + s) - 0.5) + np.clip((152 - x) / 60, -0.15, 0.15)
+        img = np.where(k_m[..., None], mix((150, 146, 136), haze, 0.3)[None, None] * shade[..., None], img)
+        bush = (y >= HORIZON - 1 - (mkobj.vnoise((1, W), 3, 795 + s)[0] > 0.6)[None, :]) & (y < HORIZON)
+        img[bush] = mix((70, 84, 48), haze, 0.35)
+        for ax in r.choice(np.arange(4, W - 4), 16, replace=False):
+            cy = HORIZON - 3 - int(r.integers(0, 2))
+            img[cy, ax - 2:ax + 3] = mix((44, 70, 34), haze, 0.3)
+            img[cy + 1:HORIZON, ax] = mix((70, 56, 40), haze, 0.3)
+            lab[cy:HORIZON, ax - 2:ax + 3] = FAR
+        lab[e_m | k_m | bush] = FAR
     else:
         img[band] = mix(far, haze, 0.2 * (HORIZON - y) / max(1, bh))[band] if False else far
     # ground: rough everywhere, a fairway narrowing to the horizon with mown
@@ -186,6 +211,17 @@ def paint(s):
     img = np.where(ground[..., None], g, img)
     lab[np.broadcast_to(ground, (H, W))] = ROUGH
     lab[ground & fw] = FAIRWAY
+    # a river winding across the ground (middle row, half thickness), with
+    # a light glint along it
+    if st.get('river'):
+        ry, rt = st['river']
+        mid = ry + 1.6 * np.sin(x / 23.0 + 0.8)
+        wet = (np.abs(y - mid) < rt * (0.8 + 0.4 * (y - HORIZON) / (H - HORIZON))) & ground
+        img = np.where(wet[..., None], np.asarray(mix((52, 92, 132), haze, 0.25))[None, None] *
+                       (1 + 0.12 * ((y - mid) < -rt * 0.4))[..., None], img)
+        bankd = wet & ((y - mid) > rt * 0.5)
+        img[bankd] = img[bankd] * 0.85
+        lab[wet] = FAR
     # a green (x, y, half width, half height), then big ragged bunkers
     # with a dark lip, cut into it
     if st.get('green'):

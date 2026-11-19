@@ -1,0 +1,9 @@
+# Crocodile Bend, a South African bush course beside a river.
+# Made by tools/mkcroc.py.
+name Crocodile Bend
+tee Black
+tee Green
+tee Gold
+holes 18
+scenery 5         # the bush backdrop: acacias, a far escarpment and a koppie under a warm sky
+wind 9            # light to moderate

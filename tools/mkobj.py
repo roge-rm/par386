@@ -23,7 +23,9 @@ scenery + 0 or 1. Scenery 0 is the tree line, 1 the links (sea, hills and a
 town with a kirk), 2 the Irish clifftop (the Atlantic, a far headland with
 its lighthouse, the mainland and clouds), 3 the Japanese bay (the sea, a
 snow-capped volcano, wooded ridges with a pagoda and thin cloud), 4 the
-sandbelt (low sandy hills, scrub and gums in the heat haze).
+sandbelt (low sandy hills, scrub and gums in the heat haze), 5 the bush
+(a far escarpment, a granite koppie and flat-topped acacias under a warm
+sky).
 
 Usage: mkobj.py OUT [PREVIEW]
 """
@@ -805,6 +807,117 @@ def banksia_art(res, prev):
             preview(idx, prev / f'backdrop-{1040 + k}.png', 2)
 
 
+# Crocodile Bend (scenery 5): the bush under a warm sky, flat-topped
+# acacias, a far escarpment and a granite koppie, from their own random
+# numbers.
+krng = np.random.default_rng(2386 + 5)
+
+
+def croc_backdrop(width, height, seed):
+    """The bush backdrop, half a turn wide (it repeats twice a turn). Across
+    it in degrees: a long flat-topped escarpment far off with a cliff band
+    under its rim and a gorge cut in it (12 to 100), low hills (100 to 125),
+    a granite koppie of piled boulders (128 to 152), then low hills again.
+    Bush along the bottom rows so the terrain's far edge meets it, with
+    flat-topped acacias standing out of it, and a warm glow low in the sky."""
+    h, w = height * SS, width * SS
+    y, x = np.mgrid[0:h, 0:w] + 0.5
+    u = x[0] / w * 180.0
+    ur = np.radians(u) * 2          # a whole turn across the strip, for waves that wrap
+    fine = krng.random((h, w)) - 0.5
+    ground = h - SS * 3.0             # the bush meets the terrain here
+    land_h = h * 0.62
+
+    def bump(c, half, p=1.0):
+        return np.clip(1 - np.abs(u - c) / half, 0, 1) ** p
+
+    # the escarpment: steep ends, a flat rim with a gorge, a talus slope below
+    esc = np.clip((u - 12) / 7, 0, 1) ** 0.8 * np.clip((100 - u) / 6, 0, 1) ** 0.8
+    esc *= 0.62 + 0.015 * np.sin(ur * 9 + 1) + 0.01 * np.sin(ur * 27)
+    esc -= bump(58, 2.4, 0.6) * 0.16
+    # low hills and the koppie
+    hills = (0.13 + 0.03 * np.sin(ur * 5 + 0.7) + 0.015 * np.sin(ur * 13 + 2)) * (1 - bump(56, 60, 0.5) * 0.6)
+    kop = bump(140, 13, 0.5) * 0.44
+    prof = np.maximum(np.maximum(esc, hills), kop)
+    top = ground - prof * land_h
+    land = y >= top[None, :]
+    esc_m = land & (esc >= np.maximum(hills, kop))[None, :] & (esc > 0.02)[None, :]
+    rim = top + (ground - top) * 0.34
+    cliff = esc_m & (y < rim[None, :])
+    strata = ((y / SS) % 2.6 < 0.7) & cliff
+    es = np.clip(0.80 - (y - top[None, :]) / h * 0.5 + (pnoise(h, w, SS * 3, seed + 1, SS * 8) - 0.5) * 0.2, 0, 1)
+    cs = np.clip(0.62 + np.clip((u - 58) / 30, -0.3, 0.3)[None, :] * 0.4 + fine * 0.1, 0, 1)
+    # the koppie: boulders piled in a dome, lit from the left, dark cracks
+    kop_m = land & (kop >= np.maximum(esc, hills))[None, :] & (kop > 0.02)[None, :]
+    ks = np.zeros((h, w))
+    cracks = np.zeros((h, w), dtype=bool)
+    kx = 140 / 180 * w
+    for b in range(34):
+        bx = kx + krng.normal(0, w * 8 / 180)
+        r = SS * krng.uniform(2.0, 4.2)
+        by = ground - np.interp(bx, x[0], kop * land_h) + r * krng.uniform(0.3, 2.5)
+        dd = np.hypot((x - bx) / r, (y - by) / (r * 0.8))
+        shade = np.clip(0.75 - ((x - bx) - (y - by)) / r * 0.25, 0, 1)
+        ks = np.where(dd < 1, shade, ks)
+        cracks |= (dd > 0.86) & (dd < 1.0)
+    cracks &= kop_m
+    hill_m = land & ~esc_m & ~kop_m
+    hs = np.clip(0.55 - (y - top[None, :]) / h * 0.8 + (pnoise(h, w, SS * 3, seed + 2, SS * 5) - 0.5) * 0.3, 0, 1)
+    # the bush along the bottom: a bumpy line of low scrub
+    bush_top = ground - SS * (1.2 + 1.6 * pnoise(1, w, 1, seed + 3, SS * 2)[0])
+    bush = y >= bush_top[None, :]
+    bs = np.clip(0.40 + (pnoise(h, w, SS * 1, seed + 4, SS * 2) - 0.5) * 0.6 + fine * 0.2, 0, 1)
+    # flat-topped acacias: a thin trunk forking under a wide flat crown
+    crowns = np.zeros((h, w), dtype=bool)
+    trunk = np.zeros((h, w), dtype=bool)
+    for c in np.arange(2, 180, 1.0)[krng.random(178) < 0.16]:
+        for k in range(int(krng.integers(1, 3))):
+            cx = (c + krng.normal(0, 1.0)) / 180 * w
+            big = krng.uniform(0.7, 1.4) * (1.5 if krng.random() < 0.2 else 1.0)
+            cw, ch = SS * 3.2 * big, SS * 0.9 * big
+            cy = ground - SS * krng.uniform(3.5, 6.0) * big
+            crowns |= (((x - cx) / cw) ** 2 + ((y - cy) / ch) ** 4 < 1) & (y < cy + ch * 0.5)
+            fork = cy + ch * 1.6
+            trunk |= (np.abs(x - cx) < SS * 0.45) & (y > fork) & (y < ground)
+            for sd in (-1, 1):
+                t_ = np.clip((fork - y) / (fork - cy), 0, 1)
+                trunk |= (np.abs(x - (cx + sd * t_ * cw * 0.5)) < SS * 0.35) & (y <= fork) & (y > cy)
+    gs = np.clip(0.30 + (pnoise(h, w, SS * 1, seed + 5, SS * 1) - 0.5) * 0.4 + fine * 0.2, 0, 1)
+    # the warm glow low in the sky: solid near the ground, then long
+    # streaks thinning upward, whole rows so the strip packs small
+    glow_t = np.clip((y - h * 0.12) / (ground - h * 0.12), 0, 1)
+    streak = pnoise(h, w, SS, seed + 6, SS * 40)
+    row = (y // SS) % 2 == 0
+    warm = ((glow_t > 0.72) | ((streak < glow_t * 1.1 - 0.15) & (row | (glow_t > 0.5)))) & ~land
+    ws = np.clip(0.55 + glow_t * 0.45, 0, 1)
+    idx = np.zeros((height, width), dtype=np.uint8)
+    for mask, name, sh_, dith in ((warm, 'sand', ws, 0.0),
+                                  (hill_m, 'far', hs * 0.45 + 0.30, 0.9),
+                                  (esc_m, 'far', es * 0.35 + 0.55, 0.9),
+                                  (cliff, 'wood', cs * 0.35 + 0.55, 0.9),
+                                  (strata, 'wood', cs * 0.3 + 0.35, 0.6),
+                                  (kop_m, 'rock', ks * 0.55 + 0.35, 0.9),
+                                  (cracks, 'rock', np.full((h, w), 0.1), 0.3),
+                                  (bush, 'oob', bs * 0.6 + 0.1, 0.9),
+                                  (trunk, 'bark', np.full((h, w), 0.35), 0.3),
+                                  (crowns, 'tree', gs, 0.9)):
+        cov = shrink(mask.astype(float), SS)
+        shd = shrink(np.where(mask, sh_, 0), SS) / np.maximum(cov, 1e-6)
+        on = cov >= 0.5
+        kk = ramp_index(name, np.clip(shd, 0, 1), (krng.random(idx.shape) - 0.5) * dith)
+        idx[on] = kk[on]
+    return idx
+
+
+def croc_art(res, prev):
+    """Scenery 5, Crocodile Bend: Bkd8 1050 and 1051."""
+    big = croc_backdrop(968, 64, 51)
+    for k, idx in enumerate((big.reshape(32, 2, 484, 2)[:, 0, :, 0], big)):
+        res.append(('Bkd8', 1050 + k, bkd8(idx)))
+        if prev:
+            preview(idx, prev / f'backdrop-{1050 + k}.png', 2)
+
+
 def main():
     out = Path(sys.argv[1])
     prev = Path(sys.argv[2]) if len(sys.argv) > 2 else None
@@ -839,6 +952,7 @@ def main():
     carrig_art(res, prev)
     sakura_art(res, prev)
     banksia_art(res, prev)
+    croc_art(res, prev)
     import mkstyle
     mkstyle.make(res, prev)
     rcp = ['/* Made by tools/mkobj.py. */']

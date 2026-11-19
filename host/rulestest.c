@@ -1790,14 +1790,17 @@ static int cpu_course(const char *path, int rounds)
 			}
 		}
 	}
-	/* a spread of tee shots on every hole: those in the water are dropped
-	 * on dry ground in bounds, and some of every carry hole's shots find it */
-	printf("tee shots in the water, of 168 (7 clubs, 4 powers, 6 snaps), and where they were dropped:\n");
-	for (k = 0; k < c.hole_count; k++) {
+	/* a spread of tee shots on every hole, and on par 4s and 5s of shots
+	 * from the aim point at the pin: those in the water are dropped on dry
+	 * ground in bounds */
+	printf("shots in the water, of 168 (7 clubs, 4 powers, 6 snaps) from the tee and 168 from the aim point,\n"
+	       "and where they were dropped:\n");
+	for (k = 0; k < c.hole_count * 2; k++) {
 		static const uint8_t clubs[7] = { CLUB_DR, CLUB_3W, CLUB_3I, CLUB_5I, CLUB_7I, CLUB_9I, CLUB_SW };
-		const Hole *h = &holes[k].h;
-		int nw = 0, bad = 0, again = 0, ci, pi, si;
+		const Hole *h = &holes[k >> 1].h;
+		int nw = 0, bad = 0, again = 0, ci, pi, si, from_aim = k & 1;
 		double far = 0;
+		if (from_aim && h->par == 3) continue;
 		for (ci = 0; ci < 7; ci++)
 			for (pi = 0; pi < 4; pi++)
 				for (si = 0; si < 6; si++) {
@@ -1806,30 +1809,30 @@ static int cpu_course(const char *path, int rounds)
 					uint8_t sf;
 					memset(&in, 0, sizeof in);
 					in.hole = h;
-					in.grid = &holes[k].g;
-					in.pos = h->tees[0].pos;
+					in.grid = &holes[k >> 1].g;
+					in.pos = from_aim ? h->aim : h->tees[0].pos;
 					in.pin = h->pins[0];
-					in.aim = vec2_angle(vec2_sub(h->par == 3 ? h->pins[0] : h->aim, in.pos));
+					in.aim = vec2_angle(vec2_sub(h->par == 3 || from_aim ? h->pins[0] : h->aim, in.pos));
 					in.power = FIX_ONE * (4 + pi * 2) / 10;
 					in.snap = (fixed)(si - 3) * (FIX_ONE / 5) + FIX_ONE / 10;
 					in.club = clubs[ci];
-					in.lie = LIE_TEE;
+					in.lie = from_aim ? LIE_FAIRWAY : LIE_TEE;
 					ball_shot(&in, &o);
 					if (o.result != SHOT_WATER) continue;
 					nw++;
-					sf = surface_at(&holes[k].g, o.stop.x, o.stop.y);
+					sf = surface_at(&holes[k >> 1].g, o.stop.x, o.stop.y);
 					if (sf == SURF_WATER || sf == SURF_OOB || o.stop.x < 0 || o.stop.y < 0 ||
 					    o.stop.x > ((fixed)h->width << 16) || o.stop.y > ((fixed)h->length << 16)) bad++;
 					if (o.stop.x == in.pos.x && o.stop.y == in.pos.y) {
-						/* no dry ground back from the pin through where it went in: played again from the tee */
+						/* no dry ground back from the pin through where it went in: played again from where it was hit */
 						again++;
 					} else {
 						double dx = (o.stop.x - o.land.x) / 65536.0, dy = (o.stop.y - o.land.y) / 65536.0;
 						if (sqrt(dx * dx + dy * dy) > far) far = sqrt(dx * dx + dy * dy);
 					}
 				}
-		if (nw) printf("  hole %2d: %3d in the water, dropped up to %.0f yd from where they landed, %d from the tee again, %d on a bad spot\n",
-		               k + 1, nw, far, again, bad);
+		if (nw) printf("  hole %2d %s: %3d in the water, dropped up to %.0f yd from where they landed, %d played again, %d on a bad spot\n",
+		               (k >> 1) + 1, from_aim ? "aim" : "tee", nw, far, again, bad);
 		CHECK(bad == 0);
 	}
 	printf("%s, par %d, wind %d, %d rounds of 4 computer golfers\n", c.name, par, c.wind ? c.wind : 10, rounds);
