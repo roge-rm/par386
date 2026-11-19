@@ -221,15 +221,15 @@ const char *ball_shape_name(uint8_t shape)
 	return shapes[shape < SHAPE_COUNT ? shape : SHAPE_NORMAL].name;
 }
 
-void ball_wind(uint32_t seed, uint8_t hole, uint8_t *mph, angle *dir)
+void ball_wind(uint32_t seed, uint8_t hole, uint8_t avg, uint8_t *mph, angle *dir)
 {
 	uint32_t r = seed * 1103515245UL + (uint32_t)hole * 2654435761UL + 12345UL;
-	uint8_t a, b;
+	uint8_t a, b, n = (uint8_t)(avg ? 2 * avg + 1 : 21);
 	r ^= r >> 15;
 	r *= 2246822519UL;
 	r ^= r >> 13;
-	a = (uint8_t)((r >> 8) % 21);
-	b = (uint8_t)((r >> 16) % 21);
+	a = (uint8_t)((r >> 8) % n);
+	b = (uint8_t)((r >> 16) % n);
 	/* the mean of two draws, so calm and gentle days come up more than 20 mph */
 	*mph = (uint8_t)((a + b + 1) / 2);
 	*dir = (angle)(r * 40503UL >> 16);

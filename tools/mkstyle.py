@@ -10,8 +10,8 @@ art (Spr8 1000 + type * 10 + size). Set sprites are
 size 0 small (160 wide screens and far off), 1 big (twice the small).
 
   1 links (Auld Kirk Links): the kirk, sheep, a sea-worn rock, broom, a whitewashed cottage
-  2 Irish clifftop (Carrig Head): wind-bent hawthorn, gorse, cliff rock,
-    thatched cottage, pale stone wall, marram, the lighthouse, sheep
+  2 Irish clifftop (Carrig Head): wind-bent hawthorn, gorse, cliff rock
+    and a layered rock face for the foot of the cliffs, thatched cottage, pale stone wall, marram, the lighthouse, sheep
   3 Japanese seaside (Sakura Bay): cherry and maple, black pine, clipped
     azalea, garden rock, tea house, bamboo fence, pagoda, crane
   4 Australian sandbelt (Banksia Heath): gum trees, she-oak, banksia shrub,
@@ -326,6 +326,27 @@ def boulder(H, seed, ratio=1.5, ramp='rock', facets=3.0, bright=0.0, layered=Fal
     crack = np.abs(vnoise((h, w), SS * 4, seed + 7) - 0.5) < 0.03
     shade = np.where(crack, shade - 0.35, shade)
     return finish(H, [(hit, ramp, np.clip(shade, 0, 1))], (cx / SS, h / SS), srng)
+
+
+def cliff_rock(H, seed, ratio=1.7):
+    """A slab of layered dark rock for the foot of a sea cliff: a broad
+    block with a ragged top, steep sides and ledges, wet and dark at the
+    bottom."""
+    r = np.random.default_rng(seed)
+    h, w = H * SS, int(H * ratio) * SS
+    y, x = grid(h, w)
+    u = x / w
+    top = h * (0.12 + 0.18 * (vnoise((1, w), SS * 3, seed)[0] - 0.5) + 0.25 * np.abs(u[0] - 0.45) ** 1.5)
+    side = np.clip(np.minimum(u, 1 - u) / 0.12, 0, 1)
+    hit = (y >= top[None, :] + (1 - side) * h * 0.5) & (y < h)
+    fine = r.random((h, w)) - 0.5
+    ledge = ((y + vnoise((h, w), SS * 4, seed + 2) * SS * 3) // (SS * 2.2)) % 3 == 0
+    lit = 0.62 - (u - 0.3) * 0.35
+    shade = lit + fine * 0.18 + tex((h, w), SS, seed + 3, 0.3) - ledge * 0.22 - np.clip((y / h - 0.75) * 1.6, 0, 1) * 0.35
+    crack = np.abs(vnoise((h, w), SS * 3, seed + 7) - 0.5) < 0.025
+    shade = np.where(crack, shade - 0.3, shade)
+    # its own grain numbers, so the sets after it come out as before
+    return finish(H, [(hit, 'rock', np.clip(shade, 0, 1))], (w / 2 / SS, h / SS), np.random.default_rng(seed + 11))
 
 
 def tuft(H, seed, ratio=1.4, ramp='oob', blades=26, spread=0.9, bright=0.0, heads=False):
@@ -787,6 +808,7 @@ SETS = {
     2: [(OBJ_TREE, 0, lambda H, s: crown_tree(H, s, 1.1, 0.15, 0.62, 'tree', 50, 0.7, lean=-0.9, sparse=0.3), 20),
         (OBJ_BUSH, 0, lambda H, s: shrub(H, s, 1.6, 'pine', 22, 'gold', 0.6, 0.85, spiky=True), 12),
         (OBJ_ROCK, 0, lambda H, s: boulder(H, s, 1.3, 'rock', 2.5, -0.05), 10),
+        (OBJ_ROCK, 1, cliff_rock, 12),
         (OBJ_HOUSE, 0, lambda H, s: cottage(H, s, 1.6, 'grey', 0.95, 'thatch', 'wood'), 22),
         (OBJ_WALL, 0, lambda H, s: mkobj.wall(H, s), 8),
         (OBJ_GRASS, 0, lambda H, s: tuft(H, s, 1.4, 'oob', 28, 1.0, 0.1), 8),

@@ -1,0 +1,189 @@
+# Carrig Head, hole 1. Made by tools/mkcarrig.py; edit that and run it again.
+name The Well
+par 4
+size 220 468
+heightmap hole-01.png 8
+height 0 0.09375
+base rough
+aim 114 250
+turn 35
+
+tee Head 110 14 398
+tee Cliff 119.4 35.8 376
+tee Forward 100.9 69.2 343
+
+pin 116.8 406.2
+pin 134.2 405.3
+pin 133.1 420.6
+pin 117.8 419.7
+
+poly deep-rough 61.7,200 58.8,225.3 51.6,245.2 41.5,255.4 31.3,247.2 20.8,244.1 15.1,223.2 13.6,200 15.6,177.4 21.8,159 30.9,148.3 40.6,153.6 52.2,153.2 58.8,174.7
+poly deep-rough 60.8,360 59.8,377.4 53.8,391.4 44.4,395.1 35.9,392.8 26.7,390.3 22.8,375.1 20.8,360 22.2,344.4 27.6,331.7 35.9,327.7 44.8,321.5 51.4,333.9 59.8,342.7
+poly first-cut 78.7,53.5 69.6,74 70.6,94.3 69.8,114.7 66.7,135 73,155.3 74.7,175.6 78.4,195.8 76,216.2 70.3,236.6 76.2,259 79,279.2 87.5,298.9 83.2,319.6 90.4,339.5 89.6,359.9 92.9,380 93.9,400.3 153.3,395.9 150.9,375.7 155.8,355 148.5,335.2 150.1,314.7 148.8,294.4 151.8,273.8 145.8,253.9 161.2,235.1 144.6,215 146.6,194.7 152.4,174.2 150.1,154 158.1,133.5 156.7,113.2 155.4,92.9 147.9,72.7 147.3,52.4
+poly fairway 79.2,59.5 79.7,80.5 78,101.5 75.4,122.5 77.4,143.4 77.8,164.4 77.4,185.4 82.6,206.3 79.8,227.3 79.8,248.3 87,270.7 90.4,291.5 88.5,312.6 91.5,333.4 96.9,354.1 99.4,374.9 100.9,395.8 150.7,392.1 150.6,371.1 148,350.3 147.4,329.3 148.2,308.2 147.6,287.2 143.4,266.5 149.4,247.1 154.8,226 146.2,205.2 150.9,184.1 153.4,163.1 151.3,142.2 148.8,121.3 150.3,100.3 148.6,79.3 143.7,58.4
+poly fringe 146.5,412 145.5,418 142.6,423.5 138,427.8 132.3,430.5 126,431.5 119.7,430.5 114,427.8 109.4,423.5 106.5,418 105.5,412 106.5,406 109.4,400.5 114,396.2 119.7,393.5 126,392.5 132.3,393.5 138,396.2 142.6,400.5 145.5,406
+poly green 143,412 142.2,416.9 139.8,421.4 136,424.9 131.3,427.2 126,428 120.7,427.2 116,424.9 112.2,421.4 109.8,416.9 109,412 109.8,407.1 112.2,402.6 116,399.1 120.7,396.8 126,396 131.3,396.8 136,399.1 139.8,402.6 142.2,407.1
+poly bunker 81.4,241.7 79.6,239.4 78.6,236.7 79.2,233.8 81.2,231.6 83.8,229.9 86.4,230.8 88.7,232.4 88.8,235.3 88.6,238.2 86.8,240.6 84.2,241.7
+poly bunker 144,262.7 145.2,260.2 147,258.4 149.4,257.2 152,257.8 154.1,259.2 155.8,261.3 155.3,263.9 153.5,266.1 150.7,267.5 147.8,266.5 145.3,265.2
+poly bunker 100.7,395.1 101.8,392.8 102.5,390.4 105.2,390 107.7,389.6 109.9,390.8 111.3,392.9 110.8,395.4 108.9,397 107,398.9 104.3,398.5 101.8,397.4
+poly bunker 150.2,421.3 148.9,422.9 147.1,424.1 144.9,423.7 143.1,422.5 141.9,420.8 142.2,418.8 143.2,417.2 144.9,415.6 147.3,415.8 149.3,417.1 150.4,419.1
+poly tee 103,8 117,8 117,20 103,20
+poly tee 114.4,29.8 124.4,29.8 124.4,41.8 114.4,41.8
+poly tee 95.9,63.2 105.9,63.2 105.9,75.2 95.9,75.2
+poly oob 196,0 220,0 220,460 196,460
+
+object wall 193 22 0 64
+object wall 193 26 0 64
+object wall 193 30 0 64
+object wall 193 34 0 64
+object wall 193 38 0 64
+object wall 193 42 0 64
+object wall 193 46 0 64
+object wall 193 50 0 64
+object wall 193 54 0 64
+object wall 193 58 0 64
+object bush 43.2 58.1 0 84
+object wall 193 62 0 64
+object gorse 51.8 63.6 0 92
+object gorse 57.7 65.4 0 78
+object wall 193 66 0 64
+object wall 193 70 0 64
+object bush 45.9 71.1 0 92
+object wall 193 74 0 64
+object gorse 45.5 75.7 0 71
+object gorse 51.4 75.9 0 76
+object bush 58 77.9 0 85
+object wall 193 78 0 64
+object tree 186 80 0 75
+object gorse 64.1 80.9 0 89
+object wall 193 82 0 64
+object wall 193 86 0 64
+object wall 193 90 0 64
+object wall 193 94 0 64
+object wall 193 98 0 64
+object wall 193 102 0 64
+object wall 193 106 0 64
+object wall 193 110 0 64
+object wall 193 114 0 64
+object wall 193 118 0 64
+object animal 30 120 0 64
+object house 206 120 0 64
+object wall 193 122 0 64
+object wall 193 126 0 64
+object wall 193 130 0 64
+object wall 193 134 0 64
+object wall 193 138 0 64
+object wall 193 142 0 64
+object wall 193 146 0 64
+object wall 193 150 0 64
+object wall 193 154 0 64
+object wall 193 158 0 64
+object grass 55.5 158.1 0 73
+object wall 193 162 0 64
+object grass 39.9 164.4 0 88
+object wall 193 166 0 64
+object wall 193 170 0 64
+object grass 49.9 172.5 0 106
+object wall 193 174 0 64
+object grass 27 175.1 0 113
+object grass 17.4 177.9 0 114
+object wall 193 178 0 64
+object wall 193 182 0 64
+object grass 53.1 182.2 0 79
+object wall 193 186 0 64
+object wall 193 190 0 64
+object grass 41.7 190.8 0 96
+object wall 193 194 0 64
+object wall 193 198 0 64
+object wall 193 202 0 64
+object grass 36.5 202.6 0 73
+object wall 193 206 0 64
+object wall 193 210 0 64
+object wall 193 214 0 64
+object grass 31.8 215.8 0 73
+object wall 193 218 0 64
+object grass 50.8 219.8 0 118
+object grass 55.5 222 0 100
+object wall 193 222 0 64
+object wall 193 226 0 64
+object grass 26 227.9 0 86
+object wall 193 230 0 64
+object grass 44.2 230.7 0 71
+object wall 193 234 0 64
+object wall 193 238 0 64
+object tree 184 240 0 67
+object wall 193 242 0 64
+object wall 193 246 0 64
+object wall 193 250 0 64
+object bush 167.2 250.3 0 80
+object bush 167.5 251.2 0 72
+object wall 193 254 0 64
+object gorse 156.1 257.6 0 68
+object wall 193 258 0 64
+object wall 193 262 0 64
+object gorse 170.3 263.9 0 73
+object gorse 156.2 265.8 0 85
+object wall 193 266 0 64
+object wall 193 270 0 64
+object wall 193 274 0 64
+object wall 193 278 0 64
+object wall 193 282 0 64
+object wall 193 286 0 64
+object wall 193 290 0 64
+object wall 193 294 0 64
+object wall 193 298 0 64
+object house 208 300 0 64
+object wall 193 302 0 64
+object wall 193 306 0 64
+object wall 193 310 0 64
+object wall 193 314 0 64
+object wall 193 318 0 64
+object wall 193 322 0 64
+object wall 193 326 0 64
+object grass 34.7 329.2 0 77
+object wall 193 330 0 64
+object gorse 170.9 331.5 0 71
+object wall 193 334 0 64
+object grass 39.8 336.5 0 79
+object wall 193 338 0 64
+object wall 193 342 0 64
+object gorse 161.2 342.8 0 73
+object gorse 177.4 343.7 0 86
+object wall 193 346 0 64
+object gorse 170.1 346.3 0 62
+object bush 180.7 349.6 0 61
+object wall 193 350 0 64
+object grass 32 350.1 0 88
+object grass 32.3 353.2 0 75
+object bush 164.2 353.6 0 80
+object wall 193 354 0 64
+object grass 37.3 354.6 0 85
+object gorse 170.9 355 0 93
+object wall 193 358 0 64
+object wall 193 362 0 64
+object bush 173.3 363.6 0 77
+object wall 193 366 0 64
+object wall 193 370 0 64
+object grass 28.7 373.8 0 113
+object wall 193 374 0 64
+object wall 193 378 0 64
+object wall 193 382 0 64
+object grass 39 385.9 0 104
+object wall 193 386 0 64
+object wall 193 390 0 64
+object wall 193 394 0 64
+object wall 193 398 0 64
+object wall 193 402 0 64
+object wall 193 406 0 64
+object wall 193 410 0 64
+object wall 193 414 0 64
+object wall 193 418 0 64
+object wall 193 422 0 64
+object wall 193 426 0 64
+object wall 193 430 0 64
+object wall 193 434 0 64
+object wall 193 438 0 64
+object wall 193 442 0 64
+object wall 193 446 0 64
+object wall 193 450 0 64
+object wall 193 454 0 64

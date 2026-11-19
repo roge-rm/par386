@@ -6,7 +6,7 @@
 
 #include "vec.h"
 
-#define COURSE_VERSION    2      /* 1 is read too: scenery 0 */
+#define COURSE_VERSION    3      /* 1 and 2 are read too: scenery 0, the usual wind */
 #define HOLE_VERSION      1
 #define COURSE_MAX_HOLES  36
 #define COURSE_MAX_TEES   4
@@ -49,6 +49,7 @@ typedef struct {
 	uint8_t hole_count, tee_count;
 	uint8_t scenery;    /* which sky and backdrop art, 0 the parkland one */
 	uint8_t turn[COURSE_MAX_HOLES];       /* each hole's map turned against the course, 256 a turn */
+	uint8_t wind;       /* average wind in mph, 0 for the usual 10 */
 } Course;
 
 typedef struct {
@@ -74,6 +75,7 @@ typedef struct {
 	uint16_t width, length;    /* yards */
 	uint16_t object_count;
 	uint16_t turn;             /* Course.turn << 8 for the backdrop; hole_parse leaves it 0, the caller sets it */
+	uint8_t wind;              /* Course.wind, set by the caller as turn is */
 	uint8_t number, par, hm_w, hm_h, hm_shift, base_surface, tee_count, shape_count;
 	char name[HOLE_NAME_MAX + 1];
 } Hole;
@@ -104,7 +106,7 @@ void SEC_CORE surface_size(const Hole *h, SurfaceGrid *g);
 /* Draws the shapes into the grid a row at a time, from row 0, through put.
  * row needs SURF_ROW_MAX bytes. */
 void SEC_CORE surface_raster(const Hole *h, uint8_t *row, SurfaceRowFn put, void *ctx);
-/* Surface at (x, y), out of bounds off the grid. */
+/* Surface at (x, y). Off the grid it's out of bounds, or water past a water cell on the edge. */
 uint8_t SEC_CORE surface_at(const SurfaceGrid *g, fixed x, fixed y);
 
 #endif

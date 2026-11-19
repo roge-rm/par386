@@ -1,0 +1,9 @@
+# Carrig Head, an Irish clifftop links out along a headland and back.
+# Made by tools/mkcarrig.py.
+name Carrig Head
+tee Head
+tee Cliff
+tee Forward
+holes 18
+scenery 2         # the clifftop backdrop: the Atlantic, the far headland and its lighthouse
+wind 15           # off the Atlantic, harder than the usual 10

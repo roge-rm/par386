@@ -202,14 +202,32 @@ static void wind_tests(void)
 		uint8_t mph, m2, h, same = 0, top = 0;
 		angle dir, d2;
 		for (h = 1; h <= 18; h++) {
-			ball_wind(12345, h, &mph, &dir);
-			ball_wind(12345, h, &m2, &d2);
+			ball_wind(12345, h, 0, &mph, &dir);
+			ball_wind(12345, h, 0, &m2, &d2);
 			CHECK(mph <= 20 && mph == m2 && dir == d2);
-			ball_wind(12345, (uint8_t)(h + 1), &m2, &d2);
+			ball_wind(12345, (uint8_t)(h + 1), 0, &m2, &d2);
 			same += mph == m2 && dir == d2;
 			if (mph > top) top = mph;
 		}
 		CHECK(same < 3 && top > 5);
+	}
+	/* a course's average: 10 is the usual, 15 blows harder and up to 30 */
+	{
+		uint8_t mph, m2, h;
+		angle dir, d2;
+		int sum0 = 0, sum15 = 0, top = 0;
+		for (h = 1; h <= 200; h++) {
+			ball_wind(777, h, 0, &mph, &dir);
+			ball_wind(777, h, 10, &m2, &d2);
+			CHECK(mph == m2 && dir == d2);
+			sum0 += mph;
+			ball_wind(777, h, 15, &m2, &d2);
+			CHECK(m2 <= 30 && d2 == dir);
+			sum15 += m2;
+			if (m2 > top) top = m2;
+		}
+		printf("wind: mean of 200 holes %.1f mph usual, %.1f at average 15 (top %d)\n", sum0 / 200.0, sum15 / 200.0, top);
+		CHECK(sum15 > sum0 + 600 && top > 24);
 	}
 }
 

@@ -555,7 +555,15 @@ static void SEC_RENDER terrain(R *r)
 					cx = (int16_t)(sx >> (16 + SURF_CELL_SHIFT));
 					cy = (int16_t)(sy >> (16 + SURF_CELL_SHIFT));
 					if (sx < 0 || sy < 0 || (uint16_t)cx >= gw || (uint16_t)cy >= gh) {
-						surf = SURF_OOB;
+						/* off the hole: out of bounds, or the sea carrying on past a water edge */
+						uint8_t c;
+						if (sx < 0) cx = 0;
+						else if ((uint16_t)cx >= gw) cx = (int16_t)(gw - 1);
+						if (sy < 0) cy = 0;
+						else if ((uint16_t)cy >= gh) cy = (int16_t)(gh - 1);
+						c = cells[MULU16(cy, gs) + ((uint16_t)cx >> 1)];
+						surf = (cx & 1) ? (c & 15) : (c >> 4);
+						if (surf != SURF_WATER) surf = SURF_OOB;
 					} else {
 						uint8_t c = cells[MULU16(cy, gs) + ((uint16_t)cx >> 1)];
 						surf = (cx & 1) ? (c & 15) : (c >> 4);

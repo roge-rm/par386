@@ -97,10 +97,15 @@ int course_parse(Course *c, const uint8_t *buf, uint32_t len)
 		if (c->par[i] < 3 || c->par[i] > 6) ok = 0;
 	}
 	c->scenery = 0;
+	c->wind = 0;
 	for (i = 0; i < COURSE_MAX_HOLES; i++) c->turn[i] = 0;
 	if (ok && v >= 2) {
 		c->scenery = rd8(&r);
 		for (i = 0; i < c->hole_count; i++) c->turn[i] = rd8(&r);
+	}
+	if (ok && v >= 3) {
+		c->wind = rd8(&r);
+		if (c->wind > 40) ok = 0;
 	}
 	return finish(&r, ok);
 }
@@ -125,6 +130,7 @@ int hole_parse(Hole *h, const uint8_t *buf, uint32_t len)
 	r.err = 0;
 	if (rd16(&r) != HOLE_VERSION) return r.err ? r.err : HOLE_ERR_VERSION;
 	h->turn = 0;
+	h->wind = 0;
 	h->number = rd8(&r);
 	h->par = rd8(&r);
 	h->width = rd16(&r);
@@ -291,9 +297,15 @@ void surface_raster(const Hole *h, uint8_t *row, SurfaceRowFn put, void *ctx)
 uint8_t surface_at(const SurfaceGrid *g, fixed x, fixed y)
 {
 	int32_t cx = x >> (16 + SURF_CELL_SHIFT), cy = y >> (16 + SURF_CELL_SHIFT);
-	uint8_t b;
+	uint8_t b, s, off = 0;
 
-	if (x < 0 || y < 0 || cx >= g->w || cy >= g->h) return SURF_OOB;
+	/* past the edge it's out of bounds, unless the edge is water: the sea carries on */
+	if (x < 0) { cx = 0; off = 1; }
+	if (y < 0) { cy = 0; off = 1; }
+	if (cx >= g->w) { cx = g->w - 1; off = 1; }
+	if (cy >= g->h) { cy = g->h - 1; off = 1; }
 	b = g->cells[MULU16(cy, g->stride) + (cx >> 1)];
-	return (cx & 1) ? (b & 15) : (b >> 4);
+	s = (cx & 1) ? (b & 15) : (b >> 4);
+	if (off && s != SURF_WATER) return SURF_OOB;
+	return s;
 }

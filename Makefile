@@ -10,10 +10,13 @@
 #   make ui-test     draws the title and menu with the core UI kit on the host, to PNGs
 #   make render-test draws the test hole from 3 places and compares with host/ref/
 #   make course-render draws every hole of Auld Kirk from the tee, the landing area and near the green
+#                    (CR=carrighead for Carrig Head)
 #   make auldkirk    writes courses/auldkirk/ again from tools/mkauldkirk.py
+#   make carrighead  writes courses/carrighead/ again from tools/mkcarrig.py
 #   make render-ref  makes host/ref/ again from the current renderer
 #   make physics-test plays shots on the host and checks carries, wind, lies, water and the meter
 #   make rules-test  turn order, honour, scores, the scorecard and the saved round
+#   make cpu-round   computer golfers play a course (CR=carrighead) and the scores are shown
 # Both flavours write build/Par386.prc, so build one at a time.
 
 SDK      = ../palm-os-sdk/sdk-5r3
@@ -126,10 +129,14 @@ build/courses/Par386-%.pdb: tools/coursec.py
 
 build/courses/Par386-Test.pdb: $(wildcard courses/test/*)
 build/courses/Par386-Auldkirk.pdb: $(wildcard courses/auldkirk/*)
+build/courses/Par386-Carrighead.pdb: $(wildcard courses/carrighead/*)
 
 # The Auld Kirk sources are made by a script; run it after editing it.
 auldkirk:
 	python3 tools/mkauldkirk.py courses/auldkirk
+
+carrighead:
+	python3 tools/mkcarrig.py courses/carrighead
 
 # Compiles the test course, dumps it to text, compiles the dump and checks
 # both load the same. The surface grid picture goes to $(DEBUGDIR).
@@ -190,16 +197,20 @@ render-ref: build/rendertest build/courses/Par386-Test.pdb $(ART)/obj.rcp
 build/courserender: host/courserender.c $(HOSTSRC) src/core/*.h | $(BUILD)
 	$(HOSTCC) host/courserender.c $(HOSTSRC) -lm -o $@
 
-# Every hole of Auld Kirk from the tee, the landing area and near the green,
-# and its map, at 160 2-bit and 320 8-bit, to $(DEBUGDIR)/m8/. Round-trips
-# the course through the dump and checks every hole loads.
-course-render: build/courserender build/coursetest build/courses/Par386-Auldkirk.pdb $(ART)/obj.rcp
-	rm -rf build/course-render build/course-dump/auldkirk && mkdir -p build/course-render
-	python3 tools/coursec.py dump build/courses/Par386-Auldkirk.pdb build/course-dump/auldkirk
-	python3 tools/coursec.py build build/course-dump/auldkirk build/course-dump/Par386-Auldkirk.pdb
-	build/coursetest --course build/courses/Par386-Auldkirk.pdb build/course-dump/Par386-Auldkirk.pdb
-	build/courserender build/courses/Par386-Auldkirk.pdb $(ART) build/course-render
-	python3 tools/refcmp.py build/course-render $(DEBUGDIR)/m8 -
+# Every hole of a course (CR, Auld Kirk unless set) from the tee, the landing
+# area and near the green, and its map, at 160 2-bit and 320 8-bit, to
+# $(DEBUGDIR)/m8/ (Carrig Head to m13-carrig/). Round-trips the course
+# through the dump and checks every hole loads.
+CR       ?= auldkirk
+CRPDB    = Par386-$(shell echo $(CR) | sed 's/./\u&/').pdb
+CROUT    = $(if $(filter auldkirk,$(CR)),m8,$(if $(filter carrighead,$(CR)),m13-carrig,course-$(CR)))
+course-render: build/courserender build/coursetest build/courses/$(CRPDB) $(ART)/obj.rcp
+	rm -rf build/course-render build/course-dump/$(CR) && mkdir -p build/course-render
+	python3 tools/coursec.py dump build/courses/$(CRPDB) build/course-dump/$(CR)
+	python3 tools/coursec.py build build/course-dump/$(CR) build/course-dump/$(CRPDB)
+	build/coursetest --course build/courses/$(CRPDB) build/course-dump/$(CRPDB)
+	build/courserender build/courses/$(CRPDB) $(ART) build/course-render
+	python3 tools/refcmp.py build/course-render $(DEBUGDIR)/$(CROUT) -
 
 build/physicstest: host/physicstest.c $(HOSTSRC) src/core/*.h | $(BUILD)
 	$(HOSTCC) host/physicstest.c $(HOSTSRC) -lm -o $@
@@ -224,6 +235,12 @@ rules-test: build/rulestest build/courses/Par386-Test.pdb $(ART)/art.rcp
 	build/rulestest build/courses/Par386-Test.pdb $(ART) build/rules
 	python3 tools/topng.py build/rules $(DEBUGDIR)/m7 host-
 
+# Computer golfers (Easy, Fair, Good, Pro) play 8 rounds of a course (CR, as
+# course-render) with its wind: mean scores per hole, water, out of bounds
+# and pick-ups. Fails if a round doesn't finish or Good or Pro picks up.
+cpu-round: build/rulestest build/courses/$(CRPDB)
+	build/rulestest --cpu build/courses/$(CRPDB) 8
+
 tables:
 	python3 tools/mktrig.py
 	python3 tools/mkfont.py
@@ -234,4 +251,4 @@ clean:
 
 sounds: $(SND)/snd.rcp
 
-.PHONY: sounds all release clean host-test course-test course-render auldkirk ui-test ui-ref render-test render-ref physics-test rules-test courses tables art
+.PHONY: sounds all release clean host-test course-test course-render cpu-round auldkirk carrighead ui-test ui-ref render-test render-ref physics-test rules-test courses tables art

@@ -6,6 +6,7 @@
  * scorecard, the strips and the clubhouse with Continue round and the
  * players screen at 160x160 2-bit and 320x320 8-bit to OUTDIR as PPMs.
  * Last, the sounds hole 1 of the test course makes and the menu clicks. */
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1720,12 +1721,141 @@ static void sound_tests(void)
 	while (snd_take() != SND_NONE) {}
 }
 
+/* Computer golfers round a whole course: Easy, Fair, Good and Pro in
+ * stroke play, quick shots, over a few seeds with the course's own wind.
+ * Prints each hole's mean score per level, shots in the water or out of
+ * bounds and pick-ups (5 over par), and fails if a round doesn't finish
+ * or a Good or Pro golfer picks up. */
+static int cpu_course(const char *path, int rounds)
+{
+	static const uint8_t four[4] = { CPU_EASY, CPU_FAIR, CPU_GOOD, CPU_PRO };
+	static const char *lv[4] = { "Easy", "Fair", "Good", "Pro" };
+	static Play p;
+	Course c;
+	Round r;
+	Surface s, bg;
+	int k, i, seed, sum[4][COURSE_MAX_HOLES], wet[COURSE_MAX_HOLES], oob[COURSE_MAX_HOLES], up[4][COURSE_MAX_HOLES];
+	int tot[4] = { 0 }, best[4], worst[4], par = 0;
+
+	if (!load_course(path, &c)) { printf("FAIL can't load %s\n", path); return 1; }
+	for (k = 0; k < c.hole_count; k++) {
+		holes[k].h.turn = (uint16_t)(c.turn[k] << 8);
+		holes[k].h.wind = c.wind;
+		par += c.par[k];
+	}
+	memset(sum, 0, sizeof sum);
+	memset(up, 0, sizeof up);
+	memset(wet, 0, sizeof wet);
+	memset(oob, 0, sizeof oob);
+	for (i = 0; i < 4; i++) { best[i] = 999; worst[i] = 0; }
+	surface(&s, 1);
+	surface(&bg, 1);
+	for (seed = 1; seed <= rounds; seed++) {
+		uint32_t t = 0;
+		long n = 0;
+		int lastc = -1, lasth = -1, lasts = -1, f;
+		rules_init(&r, c.name, 4, c.hole_count, c.par, (uint32_t)seed * 7919);
+		rules_mode(&r, MODE_STROKE, four, 0);
+		memset(&p, 0, sizeof p);
+		p.quick = 1;
+		play_start(&p, &holes[r.hole].h, &holes[r.hole].g, &r);
+		while (!r.over && n < 2000000L) {
+			n++;
+			t += 20;
+			if (p.have_shot && (p.cur != lastc || r.hole != lasth || p.stroke != lasts)) {
+				lastc = p.cur;
+				lasth = r.hole;
+				lasts = p.stroke;
+				if (p.shot.result == SHOT_WATER) wet[r.hole]++;
+				if (p.shot.result == SHOT_OOB) oob[r.hole]++;
+				if (getenv("CPU_TRACE") && seed == 1)
+					printf("  h%d %s s%d club %d from %.0f,%.0f land %.0f,%.0f (surf %d) stop %.0f,%.0f lie %d result %d\n",
+					       r.hole + 1, lv[p.cur], p.stroke, p.club, p.shot.start.x / 65536.0, p.shot.start.y / 65536.0,
+					       p.shot.land.x / 65536.0, p.shot.land.y / 65536.0, p.shot.land_surf,
+					       p.shot.stop.x / 65536.0, p.shot.stop.y / 65536.0, p.shot.lie, p.shot.result);
+			}
+			f = p.view == PLAY_CARD ? play_key(&p, KEY_SELECT, t) : play_frame(&p, &s, &bg, t);
+			if (f & PL_BACK) break;
+			if (f & PL_NEXT) play_start(&p, &holes[r.hole].h, &holes[r.hole].g, &r);
+		}
+		CHECK(r.over);
+		for (i = 0; i < 4; i++) {
+			int st = rules_strokes(&r, (uint8_t)i, 0, r.holes);
+			tot[i] += st;
+			if (st < best[i]) best[i] = st;
+			if (st > worst[i]) worst[i] = st;
+			for (k = 0; k < c.hole_count; k++) {
+				sum[i][k] += r.pl[i].score[k];
+				if (r.pl[i].score[k] >= c.par[k] + 5) up[i][k]++;
+			}
+		}
+	}
+	/* a spread of tee shots on every hole: those in the water are dropped
+	 * on dry ground in bounds, and some of every carry hole's shots find it */
+	printf("tee shots in the water, of 168 (7 clubs, 4 powers, 6 snaps), and where they were dropped:\n");
+	for (k = 0; k < c.hole_count; k++) {
+		static const uint8_t clubs[7] = { CLUB_DR, CLUB_3W, CLUB_3I, CLUB_5I, CLUB_7I, CLUB_9I, CLUB_SW };
+		const Hole *h = &holes[k].h;
+		int nw = 0, bad = 0, again = 0, ci, pi, si;
+		double far = 0;
+		for (ci = 0; ci < 7; ci++)
+			for (pi = 0; pi < 4; pi++)
+				for (si = 0; si < 6; si++) {
+					static Shot o;
+					ShotIn in;
+					uint8_t sf;
+					memset(&in, 0, sizeof in);
+					in.hole = h;
+					in.grid = &holes[k].g;
+					in.pos = h->tees[0].pos;
+					in.pin = h->pins[0];
+					in.aim = vec2_angle(vec2_sub(h->par == 3 ? h->pins[0] : h->aim, in.pos));
+					in.power = FIX_ONE * (4 + pi * 2) / 10;
+					in.snap = (fixed)(si - 3) * (FIX_ONE / 5) + FIX_ONE / 10;
+					in.club = clubs[ci];
+					in.lie = LIE_TEE;
+					ball_shot(&in, &o);
+					if (o.result != SHOT_WATER) continue;
+					nw++;
+					sf = surface_at(&holes[k].g, o.stop.x, o.stop.y);
+					if (sf == SURF_WATER || sf == SURF_OOB || o.stop.x < 0 || o.stop.y < 0 ||
+					    o.stop.x > ((fixed)h->width << 16) || o.stop.y > ((fixed)h->length << 16)) bad++;
+					if (o.stop.x == in.pos.x && o.stop.y == in.pos.y) {
+						/* no dry ground back from the pin through where it went in: played again from the tee */
+						again++;
+					} else {
+						double dx = (o.stop.x - o.land.x) / 65536.0, dy = (o.stop.y - o.land.y) / 65536.0;
+						if (sqrt(dx * dx + dy * dy) > far) far = sqrt(dx * dx + dy * dy);
+					}
+				}
+		if (nw) printf("  hole %2d: %3d in the water, dropped up to %.0f yd from where they landed, %d from the tee again, %d on a bad spot\n",
+		               k + 1, nw, far, again, bad);
+		CHECK(bad == 0);
+	}
+	printf("%s, par %d, wind %d, %d rounds of 4 computer golfers\n", c.name, par, c.wind ? c.wind : 10, rounds);
+	printf("hole par   easy  fair  good   pro  water oob  pick-ups (e f g p)\n");
+	for (k = 0; k < c.hole_count; k++) {
+		printf("%4d %3d ", k + 1, c.par[k]);
+		for (i = 0; i < 4; i++) printf(" %5.2f", sum[i][k] / (double)rounds);
+		printf("  %5d %3d  %d %d %d %d\n", wet[k], oob[k], up[0][k], up[1][k], up[2][k], up[3][k]);
+		CHECK(up[2][k] == 0 && up[3][k] == 0);
+	}
+	for (i = 0; i < 4; i++)
+		printf("%-4s mean %.1f (%+.1f), best %d, worst %d\n", lv[i], tot[i] / (double)rounds, tot[i] / (double)rounds - par,
+		       best[i], worst[i]);
+	free(s.bits);
+	free(bg.bits);
+	printf("rules-test --cpu: %d checks, %d failed\n", checks, fails);
+	return fails != 0;
+}
+
 int main(int argc, char **argv)
 {
 	uint32_t len;
 	uint8_t *p;
 
-	if (argc < 4) { fprintf(stderr, "usage: rulestest COURSE.pdb ARTDIR OUTDIR\n"); return 2; }
+	if (argc >= 3 && strcmp(argv[1], "--cpu") == 0) return cpu_course(argv[2], argc > 3 ? atoi(argv[3]) : 8);
+	if (argc < 4) { fprintf(stderr, "usage: rulestest COURSE.pdb ARTDIR OUTDIR, or rulestest --cpu COURSE.pdb [ROUNDS]\n"); return 2; }
 	artdir = argv[2];
 	outdir = argv[3];
 	p = load_art("Pal8-1000.bin", &len);

@@ -100,9 +100,9 @@ uint8_t SEC_BALL ball_shape_next(uint8_t club, uint8_t shape);
 /* Short names for the strip, at most 5 characters; normal is "Shape". */
 const char *SEC_BALL ball_shape_name(uint8_t shape);
 
-/* Wind for a hole from the round's seed: 0 to 20 mph, from any direction.
- * dir is the way it blows. */
-void SEC_BALL ball_wind(uint32_t seed, uint8_t hole, uint8_t *mph, angle *dir);
+/* Wind for a hole from the round's seed: 0 to twice avg mph (avg 0 is 10),
+ * from any direction. dir is the way it blows. */
+void SEC_BALL ball_wind(uint32_t seed, uint8_t hole, uint8_t avg, uint8_t *mph, angle *dir);
 /* The wind as yards a second. */
 vec2 SEC_BALL ball_wind_vec(uint8_t mph, angle dir);
 

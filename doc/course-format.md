@@ -18,14 +18,15 @@ Points in records are in quarter yards (u16), and must lie on the hole (0 to wid
 
 | Bytes | What |
 |---|---|
-| u16 | version, 1 or 2 |
+| u16 | version, 1, 2 or 3 |
 | u8 | holes, 1 to 36 |
 | u8 | tee sets, 1 to 4 |
 | name | course name, 1 to 31 characters |
 | name × tee sets | tee set names, 1 to 15 characters each |
 | per hole: u8, u16 | par, yards from the longest tee |
-| u8 | version 2 only: scenery, the sky, backdrop and object art (0 parkland, 1 links, 2 Irish clifftop, 3 Japanese seaside, 4 Australian sandbelt, 5 South African bush, 6 Canadian Rockies) |
-| u8 × holes | version 2 only: each hole's map turned against the course, 256 a turn, which moves the backdrop |
+| u8 | version 2 and up: scenery, the sky, backdrop and object art (0 parkland, 1 links, 2 Irish clifftop, 3 Japanese seaside, 4 Australian sandbelt, 5 South African bush, 6 Canadian Rockies) |
+| u8 × holes | version 2 and up: each hole's map turned against the course, 256 a turn, which moves the backdrop |
+| u8 | version 3 only: the average wind in mph, 0 to 40, 0 for the usual 10. Each hole's wind is 0 to twice that |
 
 A name is a length byte and that many Latin-1 characters, no nul.
 
@@ -58,11 +59,11 @@ Surface types: 0 rough, 1 first cut, 2 fairway, 3 deep rough, 4 green, 5 fringe,
 
 Object types: 1 tree, 2 pine, 3 palm, 4 bush, 5 rock, 6 house, 7 stand (a grandstand), 8 wall (a dry-stone section 6 yd long at scale 64), 9 gorse, 10 grass (dune grass), 11 landmark (16 yd high: the course's kirk, lighthouse, pagoda, windmill, baobab or hotel), 12 animal (1.5 yd: sheep, kangaroo, crane, crocodile, hippo or elk). Other numbers load and are left for later.
 
-Each scenery number has its own sprites for some types (tools/mkstyle.py lists them), in variant 0 and sometimes 1, such as the cherry and the maple for Sakura Bay trees; types it has none for use the shared art, and a variant it has no art for draws as variant 0. Scenery 2 to 6 have object art but no sky or backdrop yet.
+Each scenery number has its own sprites for some types (tools/mkstyle.py lists them), in variant 0 and sometimes 1, such as the cherry and the maple for Sakura Bay trees; types it has none for use the shared art, and a variant it has no art for draws as variant 0. Scenery 1 and 2 have their own backdrop; 3 to 6 have object art but no backdrop yet.
 
 ## Surface grid
 
-When a hole loads, its shapes are drawn into a grid of 2 yard cells, 4 bits each (two to a byte, even column in the high nibble), row 0 at y = 0. Shapes are filled even-odd at the cell centres, in record order, so later shapes win. The biggest hole makes a 128 × 320 cell grid, 20 KB, written a row at a time so the Palm can keep it in a storage record. Off the grid counts as out of bounds.
+When a hole loads, its shapes are drawn into a grid of 2 yard cells, 4 bits each (two to a byte, even column in the high nibble), row 0 at y = 0. Shapes are filled even-odd at the cell centres, in record order, so later shapes win. The biggest hole makes a 128 × 320 cell grid, 20 KB, written a row at a time so the Palm can keep it in a storage record. Off the grid counts as out of bounds, except past a water cell on the edge, where the water carries on (the sea off a clifftop hole).
 
 ## Course source
 
@@ -76,6 +77,7 @@ tee Blue          # tee sets, longest first
 tee White
 holes 18          # reads hole-01.txt to hole-18.txt
 scenery 1         # optional, makes a version 2 header
+wind 15           # optional, average mph, makes a version 3 header
 ```
 
 `hole-NN.txt`, yards with decimals allowed, `#` starts a comment and an indented line carries on the one above:

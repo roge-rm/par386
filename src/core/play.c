@@ -114,7 +114,7 @@ void play_init(Play *p, const Hole *h, const SurfaceGrid *g, uint32_t seed)
 	p->view = PLAY_SCENE;
 	p->geo.lw = p->geo.lh = 160;
 	p->geo.scale = 1;
-	ball_wind(seed, h->number, &p->wind_mph, &p->wind_dir);
+	ball_wind(seed, h->number, h->wind, &p->wind_mph, &p->wind_dir);
 	setup(p);
 }
 

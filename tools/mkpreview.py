@@ -32,9 +32,9 @@ STYLES = {
             grass=(120, 158, 74), rough=(130, 128, 70),
             items=[(mkstyle.OBJ_LANDMARK, 0, 168, 28, 16), (OBJ_BUSH, 0, 24, 44, 12),
                    (mkstyle.OBJ_HOUSE, 1, 46, 30, 8), (mkstyle.OBJ_ANIMAL, 0, 186, 46, 6)]),
-    2: dict(sky=((84, 104, 140), (196, 204, 212)), far=('sea', (56, 84, 116), 4),
+    2: dict(sky=((84, 104, 140), (196, 204, 212)), far=('cliff', (56, 84, 116), 4),
             grass=(86, 150, 62), rough=(70, 110, 52),
-            items=[(mkstyle.OBJ_LANDMARK, 0, 180, 28, 20), (OBJ_TREE, 0, 26, 42, 18),
+            items=[(mkstyle.OBJ_LANDMARK, 0, 176, 17, 11), (OBJ_TREE, 0, 26, 42, 18),
                    (mkstyle.OBJ_HOUSE, 0, 58, 30, 8), (OBJ_BUSH, 0, 192, 48, 10)]),
     3: dict(sky=((110, 150, 206), (232, 226, 226)), far=('peak', (110, 130, 160), 14),
             grass=(98, 158, 70), rough=(64, 116, 50),
@@ -91,7 +91,7 @@ def paint(s):
     if kind == 'peak':
         prof = np.clip(0.7 * mkobj.vnoise((1, W), 40, 700 + s)[0] + 0.3 * mkobj.vnoise((1, W), 9, 710 + s)[0], 0, 1)
     prof = (prof - prof.min()) / max(1e-6, prof.max() - prof.min())
-    if kind == 'sea':
+    if kind in ('sea', 'cliff'):
         top_y = np.full(W, HORIZON - bh)
     elif kind == 'peak':
         top_y = HORIZON - bh * (0.15 + 0.85 * prof ** 1.3)
@@ -108,10 +108,24 @@ def paint(s):
         snowy = (y < np.minimum(top_y[None, :] + 3 + 2 * prof[None, :], HORIZON - bh * 0.45)) & band
         img = np.where(band[..., None], rock, img)
         img = np.where(snowy[..., None], mix((236, 240, 248), haze, 0.25)[None, None] * np.clip(lit, 0.8, 1.05), img)
-    elif kind == 'sea':
+    elif kind in ('sea', 'cliff'):
         img[band] = far
         glint = band & (y > top_y[None, :]) & (r.random((H, W)) > 0.9)
         img[glint] = mix(far, (230, 236, 240), 0.5)
+    if kind == 'cliff':
+        # a headland across the bay on the right: grass on top over a sheer
+        # rock face down to the sea, the lighthouse on its point
+        xs = np.arange(W)
+        rise = np.clip((xs - 112) / 30, 0, 1) ** 0.7 * (xs < 190)
+        ctop = HORIZON - 1 - rise * (9 + 1.2 * np.sin(xs * 0.21))
+        head = (y >= ctop[None, :]) & (y < HORIZON) & (rise[None, :] > 0.02)
+        face = head & (y >= (ctop + (HORIZON - ctop) * 0.4)[None, :])
+        grass_c = mix((70, 104, 66), haze, 0.3)
+        rock_c = mix((120, 116, 108), haze, 0.25)
+        img[head] = grass_c
+        shade = 0.85 + 0.25 * (mkobj.vnoise((H, W), 3, 720 + s) - 0.5) - ((y % 3) == 0) * 0.08
+        img = np.where(face[..., None], rock_c[None, None] * shade[..., None], img)
+        lab[head] = FAR
     else:
         img[band] = mix(far, haze, 0.2 * (HORIZON - y) / max(1, bh))[band] if False else far
     # ground: rough everywhere, a fairway narrowing to the horizon with mown

@@ -728,6 +728,7 @@ static Boolean LoadHole(UInt16 n)
 	gHoleH = h;
 	if (hole_parse(&gHole, MemHandleLock(h), MemHandleSize(h)) != HOLE_OK) return false;
 	if (n >= 1 && n <= COURSE_MAX_HOLES) gHole.turn = (UInt16)gCourseHdr.turn[n - 1] << 8;
+	gHole.wind = gCourseHdr.wind;
 	surface_size(&gHole, &gGrid);
 	if ((h = DmNewRecord(gScratchDb, &at, (UInt32)gGrid.stride * gGrid.h)) == NULL) return false;
 	surface_raster(&gHole, row, GridRow, MemHandleLock(h));

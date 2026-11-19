@@ -20,7 +20,8 @@ art per course style is in tools/mkstyle.py.
 
 Backdrops come in sets by the course's scenery number: Bkd8 1000 + 10 *
 scenery + 0 or 1. Scenery 0 is the tree line, 1 the links (sea, hills and a
-town with a kirk).
+town with a kirk), 2 the Irish clifftop (the Atlantic, a far headland with
+its lighthouse, the mainland and clouds).
 
 Usage: mkobj.py OUT [PREVIEW]
 """
@@ -497,6 +498,121 @@ def links_art(res, prev):
             preview(idx, prev / f'backdrop-{1010 + k}.png', 2)
 
 
+# Carrig Head (scenery 2): the Atlantic, a far headland with its lighthouse,
+# the mainland hills and the clouds above, from their own random numbers.
+crng = np.random.default_rng(2386 + 2)
+
+
+def pnoise(h, w, cell, seed, cellx=None):
+    """Value noise that wraps round left to right, about cell pixels a step
+    down and cellx across."""
+    r = np.random.default_rng(seed)
+    cellx = cellx or cell
+    gh, gw = h // cell + 2, max(1, round(w / cellx))
+    g = r.random((gh, gw + 1))
+    g[:, gw] = g[:, 0]
+    y = np.arange(h)[:, None] / cell
+    x = np.arange(w)[None, :] * (gw / w)
+    y0, x0 = np.floor(y).astype(int), np.floor(x).astype(int)
+    fy, fx = y - y0, x - x0
+    fy, fx = fy * fy * (3 - 2 * fy), fx * fx * (3 - 2 * fx)
+    a = g[y0, x0] * (1 - fx) + g[y0, x0 + 1] * fx
+    b = g[y0 + 1, x0] * (1 - fx) + g[y0 + 1, x0 + 1] * fx
+    return a * (1 - fy) + b * fy
+
+
+def carrig_backdrop(width, height, seed):
+    """The clifftop backdrop, half a turn wide (it repeats twice a turn).
+    Across it in degrees: open Atlantic with a far sea stack (0 to 55), a
+    far headland with sheer cliffs and the lighthouse on its tip (55 to
+    100), the mainland's green hills with white cottages (105 to 175), then
+    the sea again. Sea along the bottom rows so the terrain's far edge
+    meets it, and a band of Atlantic cumulus in the rows above."""
+    h, w = height * SS, width * SS
+    y, x = np.mgrid[0:h, 0:w] + 0.5
+    u = x[0] / w * 180.0
+    ur = np.radians(u) * 2          # a whole turn across the strip, for waves that wrap
+    fine = crng.random((h, w)) - 0.5
+    land_h = h * 40 / 72              # the bottom 40 rows hold the land and sea
+    sea_top = h - land_h * 0.2
+
+    def bump(c, half, p=1.0):
+        return np.clip(1 - np.abs(u - c) / half, 0, 1) ** p
+
+    # the far headland: rises from the sea, a long rolling top, sheer at the tip
+    head = np.clip((u - 55) / 12, 0, 1) ** 0.7 * np.where(u < 100.5, 1.0, 0.0)
+    head *= 0.34 + 0.05 * np.sin(ur * 7 + 1) + 0.025 * np.sin(ur * 23)
+    head *= np.clip((100.5 - u) / 4, 0.6, 1)       # the point dips before the sheer end
+    # the mainland: rolling hills, highest in the middle
+    hills = (bump(140, 36, 0.8) * (0.36 + 0.06 * np.sin(ur * 5 + 2) + 0.03 * np.sin(ur * 19))
+             + bump(112, 12, 1.5) * 0.12)
+    stack = bump(30, 1.6, 0.4) * 0.16
+    prof = np.maximum(np.maximum(head, hills), stack)
+    top = sea_top - prof * land_h
+    land = (y >= top[None, :]) & (y < sea_top)
+    # cliffs: the lower part of the headland and the stack are bare rock faces
+    cliff_line = sea_top - np.where(u < 101, head, stack) * land_h * 0.6
+    rocky = land & (((u > 62) & (u < 100.6)) | (np.abs(u - 30) < 2))[None, :] & (y >= cliff_line[None, :])
+    tip = (u > 98.6)[None, :] & land
+    rocky |= tip & (y >= (top + (sea_top - top) * 0.12)[None, :])
+    # grass on top, lit from the left, darker further down
+    gs = np.clip(0.8 - (y - top[None, :]) / land_h * 1.4 + (pnoise(h, w, SS * 4, seed) - 0.5) * 0.25, 0, 1)
+    rs = np.clip(0.6 + (pnoise(h, w, SS * 2, seed + 1, SS * 6) - 0.5) * 0.4 - np.where(tip, 0.12, 0), 0, 1)
+    rs -= ((y // (SS * 2)) % 3 == 0) * 0.1
+    # white cottages on the mainland
+    cot = np.zeros((h, w), dtype=bool)
+    for c in (118, 127, 131, 146, 158, 163):
+        cx = c / 180 * w
+        yy = sea_top - np.interp(cx, x[0], prof) * land_h + SS * 3
+        cot |= (np.abs(x - cx) < SS * 1.2) & (y >= yy) & (y < yy + SS * 1.6)
+    # the lighthouse on the tip of the headland
+    lx = 97.6 / 180 * w
+    lbase = sea_top - np.interp(lx, x[0], prof) * land_h + SS
+    lt = lbase - SS * 11
+    tower = (np.abs(x - lx) < SS * (1.1 + 0.5 * (y - lt) / (lbase - lt))) & (y >= lt) & (y < lbase)
+    lband = tower & ((np.abs(y - (lt + SS * 4.5)) < SS * 1.0) | (np.abs(y - (lt + SS * 8)) < SS * 1.0))
+    lamp = (np.abs(x - lx) < SS * 0.8) & (y >= lt - SS * 2) & (y < lt)
+    # the sea, a little lighter to the horizon with streaks of swell
+    sea = y >= sea_top
+    ss = np.clip(0.42 + (y - sea_top) / (h - sea_top) * 0.25 +
+                 np.where(((y // SS) % 2 == 0) & (fine > 0.32), 0.25, 0) + fine * 0.1, 0, 1)
+    foot = sea & (np.abs(y - sea_top) < SS * 1.2) & ((rocky.any(axis=0))[None, :])
+    # cumulus: heaps with flat grey bases in a band above the horizon,
+    # more over the open sea, the sky kept clear over the lighthouse
+    base = h * (0.50 + 0.06 * np.sin(ur * 3 + 0.5))[None, :]
+    heap = pnoise(h, w, SS * 9, seed + 5, SS * 30) * 0.7 + pnoise(h, w, SS * 4, seed + 6, SS * 9) * 0.3
+    over_sea = np.clip(np.cos(ur - np.radians(70)) * 0.5 + 0.5, 0, 1)[None, :]
+    rise = (base - y) / h                          # how far above the base
+    want = 0.50 - over_sea * 0.12 + np.clip(rise - 0.12, 0, 1) * 1.2 + np.clip(-rise, 0, 1) * 9
+    want += bump(97.6, 9)[None, :] * 0.6
+    cloud = (heap > want) & ~land & (y < sea_top - SS * 2)
+    cs = 0.62 + np.clip(rise, 0, 0.4) * 0.9 - np.clip(heap - want, 0, 1) * 0.5
+    cs = np.round(np.clip(cs, 0, 1) * 5) / 5
+    idx = np.zeros((height, width), dtype=np.uint8)
+    for mask, name, sh, dith in ((cloud, 'grey', 0.74 + cs * 0.26, 0.2),
+                                 (land, 'far', gs * 0.55 + 0.25, 0.9),
+                                 (rocky, 'rock', rs * 0.8 + 0.1, 0.9),
+                                 (cot, 'wall', np.full((h, w), 0.95), 0.3),
+                                 (sea, 'water', ss, 0.9), (foot, 'grey', np.full((h, w), 0.9), 0.5),
+                                 (tower, 'grey', np.full((h, w), 0.97), 0.1), (lband, 'red', np.full((h, w), 0.6), 0.1),
+                                 (lamp, 'gold', np.full((h, w), 0.9), 0.1)):
+        cov = shrink(mask.astype(float), SS)
+        shd = shrink(np.where(mask, sh, 0), SS) / np.maximum(cov, 1e-6)
+        on = cov >= 0.5
+        kk = ramp_index(name, np.clip(shd, 0, 1), (crng.random(idx.shape) - 0.5) * dith)
+        idx[on] = kk[on]
+    return idx
+
+
+def carrig_art(res, prev):
+    """Scenery 2, Carrig Head: Bkd8 1020 and 1021."""
+    big = carrig_backdrop(968, 72, 21)
+    for k, idx in enumerate((big.reshape(36, 2, 484, 2)[:, 0, :, 0], big)):
+        res.append(('Bkd8', 1020 + k, bkd8(idx)))
+        if prev:
+            preview(idx, prev / f'backdrop-{1020 + k}.png', 2)
+
+
 def main():
     out = Path(sys.argv[1])
     prev = Path(sys.argv[2]) if len(sys.argv) > 2 else None
@@ -528,6 +644,7 @@ def main():
         if prev:
             preview(idx, prev / f'backdrop-{1000 + k}.png', 2)
     links_art(res, prev)
+    carrig_art(res, prev)
     import mkstyle
     mkstyle.make(res, prev)
     rcp = ['/* Made by tools/mkobj.py. */']
