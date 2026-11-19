@@ -43,6 +43,36 @@ void rules_init(Round *r, const char *course, uint8_t players, uint8_t holes, co
 	reset_hole(r);
 }
 
+/* Names for computer golfers in each slot. */
+static const char cpu_names[RULES_PLAYERS][RULES_NAME_MAX + 1] = { "Hamish", "Angus", "Moira", "Fergus" };
+
+void rules_mode(Round *r, uint8_t mode, const uint8_t *cpu, uint8_t h)
+{
+	uint8_t i, k;
+
+	r->mode = mode < MODE_COUNT ? mode : MODE_STROKE;
+	for (i = 0; i < r->players; i++) {
+		r->pl[i].cpu = cpu && cpu[i] < CPU_LEVELS ? cpu[i] : CPU_HUMAN;
+		if (r->pl[i].cpu)
+			for (k = 0; k <= RULES_NAME_MAX; k++) r->pl[i].name[k] = cpu_names[i][k];
+	}
+	if (MODE_PRACTICE(r->mode) && h < r->holes) {
+		r->hole = h;
+		reset_hole(r);
+	}
+}
+
+uint8_t rules_mode_ok(uint8_t mode, uint8_t players)
+{
+	switch (mode) {
+	case MODE_MATCH: return players == 2;
+	case MODE_BEST: return players == 4;
+	case MODE_SKINS: return players >= 2 && players <= RULES_PLAYERS;
+	case MODE_RANGE: case MODE_GREEN: return players == 1;
+	}
+	return mode < MODE_COUNT && players >= 1 && players <= RULES_PLAYERS;
+}
+
 int rules_next(const Round *r, vec2 pin)
 {
 	int best = -1;
@@ -98,7 +128,143 @@ void rules_advance(Round *r)
 	}
 	if (h + 1 >= r->holes) r->over = 1;
 	else r->hole = (uint8_t)(h + 1);
+	if (r->mode == MODE_MATCH || r->mode == MODE_BEST) {
+		/* the match is over once one side can't be caught */
+		uint8_t left;
+		int8_t up = rules_match(r, &left);
+		if (up > (int8_t)left || -up > (int8_t)left) r->over = 1;
+	}
 	reset_hole(r);
+}
+
+uint8_t rules_done(const Round *r)
+{
+	uint8_t h, i;
+	for (h = 0; h < r->holes; h++)
+		for (i = 0; i < r->players; i++)
+			if (!r->pl[i].score[h]) return h;
+	return h;
+}
+
+uint8_t rules_side(const Round *r, uint8_t i)
+{
+	return (uint8_t)(r->mode == MODE_BEST ? i >> 1 : i & 1);
+}
+
+uint8_t rules_hole_win(const Round *r, uint8_t h)
+{
+	uint8_t best[2] = { 255, 255 }, i;
+
+	if (h >= r->holes) return 3;
+	for (i = 0; i < r->players; i++) {
+		uint8_t v = r->pl[i].score[h], sd = rules_side(r, i);
+		if (!v) return 3;
+		if (v < best[sd]) best[sd] = v;
+	}
+	return (uint8_t)(best[0] < best[1] ? 0 : best[1] < best[0] ? 1 : 2);
+}
+
+int8_t rules_match(const Round *r, uint8_t *left)
+{
+	uint8_t h, n = rules_done(r);
+	int8_t up = 0;
+	for (h = 0; h < n; h++) {
+		uint8_t w = rules_hole_win(r, h);
+		if (w == 0) up++;
+		else if (w == 1) up--;
+	}
+	*left = (uint8_t)(r->holes - n);
+	return up;
+}
+
+void rules_skins(const Round *r, uint8_t *won, uint8_t *carry)
+{
+	uint8_t h, i, n = rules_done(r), c = 0;
+
+	for (i = 0; i < RULES_PLAYERS; i++) won[i] = 0;
+	for (h = 0; h < n; h++) {
+		uint8_t lo = 255, who = 0, ties = 0;
+		for (i = 0; i < r->players; i++) {
+			uint8_t v = r->pl[i].score[h];
+			if (v < lo) { lo = v; who = i; ties = 0; }
+			else if (v == lo) ties++;
+		}
+		c++;
+		if (!ties) {
+			won[who] = (uint8_t)(won[who] + c);
+			c = 0;
+		}
+	}
+	*carry = c;
+}
+
+/* A 32 bit hash for the random draws: field scores and computer golfers' shots. */
+static uint32_t SEC_CORE mix(uint32_t r)
+{
+	r ^= r >> 15;
+	r *= 2246822519UL;
+	r ^= r >> 13;
+	r *= 3266489917UL;
+	r ^= r >> 16;
+	return r;
+}
+
+/* The field's strength: chances out of 256 of a score at or under par - 2,
+ * - 1, par, + 1, + 2, and + 3 for the rest, by level, strongest first. */
+static const uint8_t field_odds[4][5] = {
+	{ 3, 63, 213, 251, 255 },
+	{ 2, 50, 200, 248, 255 },
+	{ 2, 42, 188, 246, 254 },
+	{ 1, 33, 173, 241, 253 },
+};
+
+static const char field_names[RULES_FIELD][9] = {
+	"MacLeod", "Tanaka", "Kruger", "O'Brien", "Murray", "Berg", "Okafor", "Ferreira"
+};
+
+uint8_t rules_field_score(const Round *r, uint8_t g, uint8_t h)
+{
+	uint8_t v = (uint8_t)(mix(r->seed * 69069UL + (uint32_t)g * 2654435761UL + (uint32_t)h * 40503UL + 1UL) >> 24), k, par;
+
+	if (h >= r->holes) return 0;
+	par = r->pars[h];
+	for (k = 0; k < 5 && v >= field_odds[(g >> 1) & 3][k]; k++) {}
+	/* no eagles on a par 3: a hole in one is too rare to give out */
+	if (k == 0 && par <= 3) k = 1;
+	return (uint8_t)(par + k - 2);
+}
+
+const char *rules_field_name(uint8_t g)
+{
+	return field_names[g < RULES_FIELD ? g : 0];
+}
+
+uint8_t rules_board(const Round *r, BoardLine *lines)
+{
+	uint8_t n = 0, i, j, h, done = rules_done(r);
+
+	for (i = 0; i < r->players + RULES_FIELD; i++) {
+		BoardLine b;
+		b.to_par = 0;
+		b.who = i < r->players ? i : (uint8_t)(RULES_PLAYERS + i - r->players);
+		for (h = 0; h < done; h++)
+			b.to_par += (int16_t)(i < r->players ? r->pl[i].score[h] : rules_field_score(r, (uint8_t)(b.who - RULES_PLAYERS), h)) - r->pars[h];
+		/* insertion: ties keep the order they came in, players first */
+		for (j = n; j > 0 && lines[j - 1].to_par > b.to_par; j--) lines[j] = lines[j - 1];
+		lines[j] = b;
+		n++;
+	}
+	for (i = 0; i < n; i++) {
+		lines[i].pos = (uint8_t)(i && lines[i].to_par == lines[i - 1].to_par ? lines[i - 1].pos : i + 1);
+		lines[i].tied = (uint8_t)((i && lines[i].to_par == lines[i - 1].to_par) || (i + 1 < n && lines[i + 1].to_par == lines[i].to_par));
+	}
+	return n;
+}
+
+uint32_t rules_shot_seed(const Round *r, uint8_t i)
+{
+	return mix(r->seed * 1103515245UL + (uint32_t)r->hole * 2654435761UL + (uint32_t)i * 40503UL +
+	           (uint32_t)r->pl[i < RULES_PLAYERS ? i : 0].taken * 97UL + (uint32_t)r->balls * 7919UL + 12345UL);
 }
 
 int16_t rules_strokes(const Round *r, uint8_t i, uint8_t from, uint8_t to)
@@ -185,6 +351,9 @@ uint16_t rules_pack(const Round *r, uint8_t *buf)
 	*b++ = r->turn;
 	for (i = 0; i < RULES_PLAYERS; i++) *b++ = r->order[i];
 	for (h = 0; h < r->holes; h++) *b++ = r->pars[h];
+	*b++ = r->mode;
+	*b++ = (uint8_t)(r->balls >> 8);
+	*b++ = (uint8_t)r->balls;
 	for (i = 0; i < r->players; i++) {
 		const RoundPlayer *p = &r->pl[i];
 		b = put_name(b, p->name, RULES_NAME_MAX + 1);
@@ -193,6 +362,7 @@ uint16_t rules_pack(const Round *r, uint8_t *buf)
 		*b++ = p->lie;
 		*b++ = p->taken;
 		*b++ = p->holed;
+		*b++ = p->cpu;
 		for (h = 0; h < r->holes; h++) *b++ = p->score[h];
 	}
 	return (uint16_t)(b - buf);
@@ -201,16 +371,19 @@ uint16_t rules_pack(const Round *r, uint8_t *buf)
 int rules_unpack(Round *r, const uint8_t *buf, uint32_t len)
 {
 	const uint8_t *b = buf;
-	uint8_t i, h, seen = 0, players, holes;
+	uint8_t i, h, seen = 0, players, holes, v2;
 	uint8_t *z = (uint8_t *)r;
-	uint16_t k;
+	uint16_t k, ver;
 
 	if (len < 2 + 32 + 4 + 9) return -1;
-	if (((uint16_t)b[0] << 8 | b[1]) != RULES_SAVE_VERSION) return -1;
+	ver = (uint16_t)((uint16_t)b[0] << 8 | b[1]);
+	if (ver != 1 && ver != RULES_SAVE_VERSION) return -1;
+	/* version 1 has no mode, practice count or computer golfers */
+	v2 = ver == RULES_SAVE_VERSION;
 	players = b[2 + 32 + 4];
 	holes = b[2 + 32 + 4 + 1];
 	if (players < 1 || players > RULES_PLAYERS || holes < 1 || holes > COURSE_MAX_HOLES) return -1;
-	if (len != 2 + 32 + 4 + 9 + (uint32_t)holes + (uint32_t)players * (RULES_NAME_MAX + 1 + 11 + holes)) return -1;
+	if (len != 2 + 32 + 4 + 9 + (uint32_t)holes + (v2 ? 3 : 0) + (uint32_t)players * (RULES_NAME_MAX + 1 + 11 + v2 + holes)) return -1;
 
 	for (k = 0; k < sizeof(Round); k++) z[k] = 0;
 	b += 2;
@@ -235,6 +408,12 @@ int rules_unpack(Round *r, const uint8_t *buf, uint32_t len)
 		r->pars[h] = *b++;
 		if (r->pars[h] < 1 || r->pars[h] > 9) return -1;
 	}
+	if (v2) {
+		r->mode = *b++;
+		r->balls = (uint16_t)((uint16_t)b[0] << 8 | b[1]);
+		b += 2;
+		if (!rules_mode_ok(r->mode, players)) return -1;
+	}
 	for (i = 0; i < players; i++) {
 		RoundPlayer *p = &r->pl[i];
 		if (get_name(p->name, b, RULES_NAME_MAX + 1, 1)) return -1;
@@ -245,7 +424,8 @@ int rules_unpack(Round *r, const uint8_t *buf, uint32_t len)
 		p->lie = *b++;
 		p->taken = *b++;
 		p->holed = *b++;
-		if (p->lie >= LIE_COUNT || p->holed > 1) return -1;
+		if (v2) p->cpu = *b++;
+		if (p->lie >= LIE_COUNT || p->holed > 1 || p->cpu >= CPU_LEVELS) return -1;
 		/* a ball well off any hole */
 		if (p->ball.x < -(64L << 16) || p->ball.y < -(64L << 16) ||
 		    p->ball.x > ((fixed)(HOLE_MAX_WIDTH + 64) << 16) || p->ball.y > ((fixed)(HOLE_MAX_LENGTH + 64) << 16)) return -1;

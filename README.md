@@ -2,6 +2,26 @@
 
 A golf game for Palm OS in the style of early 90s PC golf games. Runs on the Palm IIIx and up. Early work, it only shows a blank form so far. See PLAN.md.
 
+## Games
+
+Play a round, pick the game, then set each of the four player slots to Human, a computer golfer (CPU Easy, Fair, Good or Pro) or Off, and Tee off.
+
+| Game | Players | How it's scored |
+|---|---|---|
+| Stroke play | 1 to 4 | Fewest strokes |
+| Match play | 2 | Each hole won, lost or halved; the match ends once one side is more holes up than there are left, as "3 & 2" |
+| Skins | 2 to 4 | The lowest score alone wins the hole's skin; a tie carries it to the next hole |
+| Best ball | 4 | P1 and P2 against P3 and P4, a match on each side's better score |
+| Tournament | 1 to 4 | Stroke play against a field of eight computer golfers; the leaderboard shows after each hole and from the card |
+
+The panel's middle box shows how you stand: holes up or down in match play and best ball, the skins carried over in skins, and your score to par otherwise.
+
+Computer golfers aim, pick a club and shot shape and swing through the same physics as you, with more error the lower their level. In Settings, CPU: Quick shows only where their shot finished on the map, and CPU: Full shows the whole shot. A tap or any key hurries them on.
+
+Practice has a driving range (the first par 5, each ball from the tee) and a putting green (a ball somewhere on the first green each time you hole out).
+
+Your best score on each course shows under its picture on the Courses board. Only rounds played through by a person count.
+
 ## Controls
 
 While you play, the four app buttons belong to the game, so they don't open Date Book and the rest. To leave, use the Home (Applications) button.

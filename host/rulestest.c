@@ -12,6 +12,8 @@
 #include "play.h"
 #include "sound.h"
 #include "front.h"
+#include "records.h"
+#include "card.h"
 
 static int fails, checks;
 
@@ -240,7 +242,7 @@ static void save_tests(void)
 	memset(r.pl[3].name, 0, sizeof r.pl[3].name);
 	strcpy(r.pl[3].name, "Dan");
 	len = rules_pack(&r, buf);
-	CHECK(len == 2 + 32 + 4 + 9 + 18 + 4 * (9 + 11 + 18));
+	CHECK(len == 2 + 32 + 4 + 9 + 18 + 3 + 4 * (9 + 12 + 18));
 	CHECK(buf[0] == 0 && buf[1] == RULES_SAVE_VERSION);
 	memset(&q, 0x55, sizeof q);
 	CHECK(rules_unpack(&q, buf, len) == 0);
@@ -249,8 +251,30 @@ static void save_tests(void)
 	/* a short round for 2 */
 	rules_init(&r, "Par386 Test", 2, 3, pars, 0xDEADBEEFUL);
 	len = rules_pack(&r, buf);
-	CHECK(len == 2 + 32 + 4 + 9 + 3 + 2 * (9 + 11 + 3));
+	CHECK(len == 2 + 32 + 4 + 9 + 3 + 3 + 2 * (9 + 12 + 3));
 	CHECK(rules_unpack(&q, buf, len) == 0 && memcmp(&q, &r, sizeof r) == 0);
+
+	/* a version 1 record, before the modes: the same without the mode, the
+	 * practice count and each player's computer level, loads as stroke play */
+	{
+		uint8_t v1[RULES_SAVE_MAX];
+		uint16_t n = 0, i;
+		r.pl[1].taken = 2; r.pl[1].ball = vec2_make(YD(70), YD(200)); r.pl[1].lie = LIE_ROUGH;
+		r.pl[0].score[0] = 0;
+		len = rules_pack(&r, buf);
+		for (i = 0; i < 50; i++) v1[n++] = buf[i];
+		for (i = 53; i < len; i++)
+			if (i != 53 + 20 && i != 53 + 24 + 20) v1[n++] = buf[i];
+		v1[1] = 1;
+		CHECK(n == len - 3 - 2);
+		memset(&q, 0x55, sizeof q);
+		CHECK(rules_unpack(&q, v1, n) == 0 && memcmp(&q, &r, sizeof r) == 0 && q.mode == MODE_STROKE && !q.pl[1].cpu);
+		CHECK(rules_unpack(&q, v1, n - 1) == -1);
+		v1[1] = 2;
+		CHECK(rules_unpack(&q, v1, n) == -1);
+		r.pl[1].taken = 0; r.pl[1].ball = vec2_make(0, 0); r.pl[1].lie = LIE_TEE;
+		len = rules_pack(&r, buf);
+	}
 
 	/* bad ones */
 	CHECK(rules_unpack(&q, buf, len - 1) == -1);
@@ -271,16 +295,23 @@ static void save_tests(void)
 	BAD(43, 1);                               /* player 1 twice in the order */
 	BAD(45, 0);
 	BAD(47, 0);                               /* par 0 */
-	BAD(47 + 3 + 9 + 8, LIE_COUNT);           /* a lie past the last */
-	BAD(47 + 3 + 9 + 8 + 2, 2);               /* holed isn't 0 or 1 */
-	BAD(47 + 3 + 8, 'x');                     /* a name with no end */
-	BAD(47 + 3 + 9, 0x7F);                    /* a ball far off the hole */
-	BAD(47 + 3 + 9 + 8 + 2, 1);               /* the turn is a holed player's */
-	BAD(47 + 3 + 9 + 11 + 1, 4);              /* strokes on a hole not reached */
+	BAD(50, MODE_COUNT);                      /* a mode past the last */
+	BAD(50, MODE_BEST);                       /* best ball for 2 */
+	BAD(50, MODE_RANGE);                      /* practice for 2 */
+	BAD(53 + 9 + 8, LIE_COUNT);               /* a lie past the last */
+	BAD(53 + 9 + 8 + 2, 2);                   /* holed isn't 0 or 1 */
+	BAD(53 + 9 + 8 + 3, CPU_LEVELS);          /* a computer level past the last */
+	BAD(53 + 8, 'x');                         /* a name with no end */
+	BAD(53 + 9, 0x7F);                        /* a ball far off the hole */
+	BAD(53 + 9 + 8 + 2, 1);                   /* the turn is a holed player's */
+	BAD(53 + 9 + 12 + 1, 4);                  /* strokes on a hole not reached */
+	memcpy(bad, buf, len);                    /* match play for 2, player 2 a computer golfer: fine */
+	bad[50] = MODE_MATCH; bad[53 + 24 + 20] = CPU_PRO;
+	CHECK(rules_unpack(&q, bad, len) == 0 && q.mode == MODE_MATCH && q.pl[1].cpu == CPU_PRO);
 	memcpy(bad, buf, len);                    /* player 1 holed, player 2 to play: fine */
-	bad[42] = 1; bad[69] = 1;
+	bad[42] = 1; bad[53 + 19] = 1;
 	CHECK(rules_unpack(&q, bad, len) == 0);
-	bad[92] = 1;                              /* everyone holed but the hole not over */
+	bad[53 + 24 + 19] = 1;                    /* everyone holed but the hole not over */
 	CHECK(rules_unpack(&q, bad, len) == -1);
 	bad[41] = 1;                              /* over but the last hole's players still holed */
 	CHECK(rules_unpack(&q, bad, len) == -1);
@@ -472,6 +503,8 @@ static void resume_tests(const Course *c)
 	CHECK(p.cur == 1 && r.turn == 1);
 }
 
+static void mode_tests(const Course *c);
+
 static void round_tests(const char *pdb)
 {
 	static Play p, q;
@@ -492,6 +525,7 @@ static void round_tests(const char *pdb)
 	surface(&s2, 2);
 
 	resume_tests(&c);
+	mode_tests(&c);
 
 	rules_init(&r, "Par386 Test", 2, c.hole_count, c.par, 3);
 	play_start(&p, &holes[0].h, &holes[0].g, &r);
@@ -775,6 +809,612 @@ static void card_tests(void)
 	free(s2.bits);
 }
 
+/* ---- game modes, computer golfers and records (milestone 12) ---- */
+
+/* Every player's score on the hole being played, then on to the next. */
+static void hole_scores(Round *r, const uint8_t *sc)
+{
+	uint8_t i;
+	for (i = 0; i < r->players; i++) rules_hole_out(r, i, sc[i]);
+	rules_advance(r);
+}
+
+static const char *card_title_of(const Round *r, uint8_t mode)
+{
+	static UiDialog d;
+	card_layout(&d, r, mode, 0);
+	return d.title;
+}
+
+static void match_tests(void)
+{
+	Round r;
+	uint8_t pars[18], k, left;
+	static const uint8_t win1[2] = { 3, 4 }, win2[2] = { 5, 4 }, half[2] = { 4, 4 };
+
+	memset(pars, 4, sizeof pars);
+	/* 3 up after 3, halved to the 16th: "3 and 2" */
+	rules_init(&r, "x", 2, 18, pars, 1);
+	rules_mode(&r, MODE_MATCH, NULL, 0);
+	for (k = 0; k < 3; k++) hole_scores(&r, win1);
+	CHECK(rules_match(&r, &left) == 3 && left == 15 && !r.over);
+	CHECK(rules_hole_win(&r, 0) == 0 && rules_hole_win(&r, 3) == 3);
+	CHECK(strcmp(card_title_of(&r, CARD_VIEW), "P1 3 up") == 0);
+	for (k = 3; k < 15; k++) hole_scores(&r, half);
+	CHECK(rules_hole_win(&r, 4) == 2);
+	CHECK(rules_match(&r, &left) == 3 && left == 3 && !r.over && r.hole == 15);
+	hole_scores(&r, half);
+	CHECK(r.over && rules_match(&r, &left) == 3 && left == 2 && rules_done(&r) == 16);
+	CHECK(strcmp(card_title_of(&r, CARD_FINAL), "P1 wins 3 & 2") == 0);
+	CHECK(r.pl[0].score[16] == 0);
+
+	/* all square to the end: halved; won on the last: "1 up" */
+	rules_init(&r, "x", 2, 18, pars, 1);
+	rules_mode(&r, MODE_MATCH, NULL, 0);
+	for (k = 0; k < 17; k++) hole_scores(&r, k & 1 ? win1 : win2);
+	CHECK(rules_match(&r, &left) == -1 && left == 1 && !r.over);
+	CHECK(strcmp(card_title_of(&r, CARD_VIEW), "P2 1 up") == 0);
+	hole_scores(&r, win1);
+	CHECK(r.over && rules_match(&r, &left) == 0);
+	CHECK(strcmp(card_title_of(&r, CARD_FINAL), "Match halved") == 0);
+	rules_init(&r, "x", 2, 18, pars, 1);
+	rules_mode(&r, MODE_MATCH, NULL, 0);
+	for (k = 0; k < 17; k++) hole_scores(&r, half);
+	CHECK(strcmp(card_title_of(&r, CARD_VIEW), "All square") == 0);
+	hole_scores(&r, win2);
+	CHECK(r.over && strcmp(card_title_of(&r, CARD_FINAL), "P2 wins 1 up") == 0);
+	/* dormie isn't over: 2 up with 2 to play */
+	rules_init(&r, "x", 2, 4, pars, 1);
+	rules_mode(&r, MODE_MATCH, NULL, 0);
+	hole_scores(&r, win1);
+	hole_scores(&r, win1);
+	CHECK(!r.over && rules_match(&r, &left) == 2 && left == 2);
+	hole_scores(&r, win1);
+	CHECK(r.over && strcmp(card_title_of(&r, CARD_FINAL), "P1 wins 3 & 1") == 0);
+
+	/* best ball: each side's better score */
+	{
+		static const uint8_t a[4] = { 5, 3, 4, 4 }, b[4] = { 4, 4, 4, 5 }, c[4] = { 6, 6, 4, 6 };
+		rules_init(&r, "x", 4, 3, pars, 1);
+		rules_mode(&r, MODE_BEST, NULL, 0);
+		CHECK(rules_side(&r, 0) == 0 && rules_side(&r, 1) == 0 && rules_side(&r, 2) == 1 && rules_side(&r, 3) == 1);
+		hole_scores(&r, a);
+		CHECK(rules_hole_win(&r, 0) == 0);
+		hole_scores(&r, b);
+		CHECK(rules_hole_win(&r, 1) == 2 && rules_match(&r, &left) == 1 && left == 1 && !r.over);
+		CHECK(strcmp(card_title_of(&r, CARD_VIEW), "P1+P2 1 up") == 0);
+		hole_scores(&r, c);
+		CHECK(r.over && rules_match(&r, &left) == 0 && strcmp(card_title_of(&r, CARD_FINAL), "Match halved") == 0);
+		rules_init(&r, "x", 4, 3, pars, 1);
+		rules_mode(&r, MODE_BEST, NULL, 0);
+		hole_scores(&r, c);
+		hole_scores(&r, c);
+		CHECK(r.over && strcmp(card_title_of(&r, CARD_FINAL), "P3+P4 win 2 & 1") == 0);
+	}
+	CHECK(rules_mode_ok(MODE_MATCH, 2) && !rules_mode_ok(MODE_MATCH, 3) && rules_mode_ok(MODE_BEST, 4) &&
+	      !rules_mode_ok(MODE_BEST, 2) && !rules_mode_ok(MODE_SKINS, 1) && rules_mode_ok(MODE_SKINS, 3) &&
+	      rules_mode_ok(MODE_TOURN, 1) && rules_mode_ok(MODE_RANGE, 1) && !rules_mode_ok(MODE_GREEN, 2));
+}
+
+static void skins_tests(void)
+{
+	Round r;
+	uint8_t pars[6], won[RULES_PLAYERS], carry;
+	static const uint8_t h1[3] = { 4, 4, 5 }, h2[3] = { 3, 4, 4 }, h3[3] = { 4, 4, 4 }, h4[3] = { 5, 4, 3 }, h5[3] = { 4, 3, 3 };
+
+	memset(pars, 4, sizeof pars);
+	rules_init(&r, "x", 3, 6, pars, 1);
+	rules_mode(&r, MODE_SKINS, NULL, 0);
+	hole_scores(&r, h1);
+	rules_skins(&r, won, &carry);
+	CHECK(carry == 1 && won[0] == 0 && won[1] == 0);
+	CHECK(strcmp(card_title_of(&r, CARD_VIEW), "Skins, 1 carried") == 0);
+	hole_scores(&r, h2);
+	rules_skins(&r, won, &carry);
+	CHECK(carry == 0 && won[0] == 2);
+	CHECK(strcmp(card_title_of(&r, CARD_VIEW), "Scorecard") == 0);
+	hole_scores(&r, h3);
+	hole_scores(&r, h4);
+	rules_skins(&r, won, &carry);
+	CHECK(carry == 0 && won[0] == 2 && won[1] == 0 && won[2] == 2);
+	/* a tie for the lowest carries, even with a higher score alone */
+	hole_scores(&r, h5);
+	rules_skins(&r, won, &carry);
+	CHECK(carry == 1 && won[2] == 2);
+	hole_scores(&r, h5);
+	rules_skins(&r, won, &carry);
+	CHECK(r.over && carry == 2 && won[0] == 2 && won[1] == 0 && won[2] == 2);
+	CHECK(strcmp(card_title_of(&r, CARD_FINAL), "Final card") == 0);
+	{
+		Surface s;
+		static Play p;
+		surface(&s, 1);
+		memset(&p, 0, sizeof p);
+		p.round = &r;
+		p.view = PLAY_CARD;
+		p.card = CARD_FINAL;
+		backdrop(&s);
+		play_card(&s, &p);
+		save(&s, "m12-card-skins");
+		free(s.bits);
+	}
+}
+
+static void tournament_tests(void)
+{
+	Round r, q;
+	BoardLine b[RULES_PLAYERS + RULES_FIELD];
+	uint8_t pars[18] = { 4, 4, 3, 5, 4, 4, 3, 4, 5, 4, 3, 4, 5, 4, 4, 3, 5, 4 }, n, i, h, g;
+	long sum[RULES_FIELD] = { 0 }, all = 0;
+	int diff = 0;
+	uint32_t seed;
+	static const uint8_t sc[2] = { 4, 5 };
+
+	/* the same seed, the same field; another seed, another */
+	rules_init(&r, "x", 2, 18, pars, 77);
+	rules_init(&q, "x", 2, 18, pars, 78);
+	for (g = 0; g < RULES_FIELD; g++)
+		for (h = 0; h < 18; h++) {
+			uint8_t v = rules_field_score(&r, g, h);
+			CHECK(v == rules_field_score(&r, g, h));
+			CHECK(v >= pars[h] - 2 && v <= pars[h] + 3 && (pars[h] > 3 || v >= pars[h] - 1));
+			diff += v != rules_field_score(&q, g, h);
+		}
+	CHECK(diff > 40);
+	/* the stronger the golfer, the lower: the first two average under par, the last two over */
+	for (seed = 1; seed <= 300; seed++) {
+		rules_init(&q, "x", 1, 18, pars, seed);
+		for (g = 0; g < RULES_FIELD; g++)
+			for (h = 0; h < 18; h++) {
+				int d = rules_field_score(&q, g, h) - pars[h];
+				sum[g] += d;
+				all += d;
+			}
+	}
+	CHECK(sum[0] + sum[1] < 0 && sum[6] + sum[7] > 0 && sum[0] + sum[1] < sum[6] + sum[7]);
+	printf("field: mean to par a round by strength %.2f %.2f %.2f %.2f\n", (sum[0] + sum[1]) / 600.0,
+	       (sum[2] + sum[3]) / 600.0, (sum[4] + sum[5]) / 600.0, (sum[6] + sum[7]) / 600.0);
+	CHECK(all > -300L * 18 && all < 300L * 18 * 2);
+
+	/* the board: everyone, best first, ties sharing a place */
+	rules_mode(&r, MODE_TOURN, NULL, 0);
+	n = rules_board(&r, b);
+	CHECK(n == 2 + RULES_FIELD);
+	for (i = 0; i < n; i++) CHECK(b[i].to_par == 0 && b[i].pos == 1 && b[i].tied);
+	CHECK(b[0].who == 0 && b[1].who == 1 && b[2].who == RULES_PLAYERS);
+	for (h = 0; h < 9; h++) hole_scores(&r, sc);
+	n = rules_board(&r, b);
+	for (i = 1; i < n; i++) {
+		CHECK(b[i].to_par >= b[i - 1].to_par);
+		CHECK(b[i].pos == (b[i].to_par == b[i - 1].to_par ? b[i - 1].pos : i + 1));
+	}
+	for (i = 0; i < n; i++) {
+		int16_t want = 0;
+		for (h = 0; h < 9; h++)
+			want += (b[i].who < RULES_PLAYERS ? r.pl[b[i].who].score[h] : rules_field_score(&r, b[i].who - RULES_PLAYERS, h)) - pars[h];
+		CHECK(b[i].to_par == want);
+		if (b[i].who == 1) CHECK(want == 9);
+	}
+	CHECK(strcmp(rules_field_name(0), "MacLeod") == 0 && strlen(rules_field_name(7)) <= 8);
+	{
+		Surface s, s2;
+		static Play p;
+		UiDialog d;
+		surface(&s, 1);
+		surface(&s2, 2);
+		memset(&p, 0, sizeof p);
+		p.round = &r;
+		p.view = PLAY_CARD;
+		p.card = CARD_HOLE;
+		p.board = 1;
+		p.geo.lw = p.geo.lh = 160;
+		backdrop(&s);
+		play_card(&s, &p);
+		save(&s, "m12-board");
+		backdrop(&s2);
+		play_card(&s2, &p);
+		save(&s2, "m12-board");
+		board_layout(&d, &r, CARD_HOLE, n);
+		CHECK(d.box.x >= 0 && d.box.y >= 0 && d.box.x + d.box.w <= 160 && d.box.y + d.box.h <= 160);
+		CHECK(strcmp(d.title, "Leaders after 9") == 0 && d.count == 2);
+		/* the board's Card button shows the card, whose Next hole goes on */
+		CHECK(play_key(&p, KEY_RIGHT, 0) == PL_CARD && p.csel == 1);
+		CHECK(play_key(&p, KEY_SELECT, 0) == PL_CARD && !p.board);
+		CHECK(play_tap(&p, 1, 1, 0) == 0);
+		CHECK(play_key(&p, KEY_SELECT, 0) == PL_NEXT);
+		/* from the map's card in a tournament: OK, the other nine and the board */
+		p.card = CARD_VIEW;
+		p.board = 0;
+		p.csel = 0;
+		CHECK(card_buttons(&r, CARD_VIEW) == 3 && card_board_button(&r, CARD_VIEW) == 2);
+		CHECK(card_board_button(&r, CARD_HOLE) == 0xFF);
+		card_layout(&d, &r, CARD_VIEW, 0);
+		CHECK(d.box.x + d.box.w <= 160 && d.btn[2].x + d.btn[2].w <= d.box.x + d.box.w);
+		CHECK(play_tap(&p, d.btn[2].x + 2, d.btn[2].y + 2, 0) == PL_CARD && p.board);
+		backdrop(&s);
+		play_card(&s, &p);
+		save(&s, "m12-board-view");
+		CHECK(play_key(&p, KEY_SELECT, 0) == PL_SCENE && p.view == PLAY_SCENE);
+		/* the last: Final leaders */
+		for (h = 9; h < 18; h++) hole_scores(&r, sc);
+		board_layout(&d, &r, CARD_FINAL, n);
+		CHECK(r.over && strcmp(d.title, "Final leaders") == 0);
+		free(s.bits);
+		free(s2.bits);
+	}
+}
+
+/* Plays the round from where it is to the end through play.c, every player
+ * a computer golfer, as the platform would: frames every 20 ms, the card's
+ * first button at the end of each hole. With every, the round is left that
+ * often (settled, packed, unpacked into a new round) and started again, as
+ * leaving the app and coming back. Returns the frames run. */
+static long auto_round(Round *r, uint8_t quick, int every)
+{
+	static Play p;
+	Surface s, bg;
+	uint32_t t = 0;
+	long n = 0;
+	int f, resumes = 0;
+
+	surface(&s, 1);
+	surface(&bg, 1);
+	memset(&p, 0, sizeof p);
+	p.quick = quick;
+	play_start(&p, &holes[r->hole].h, &holes[r->hole].g, r);
+	while (!r->over && n < 1000000L) {
+		n++;
+		t += 20;
+		/* the flight overlays draw over whatever is there */
+		f = p.view == PLAY_CARD ? play_key(&p, KEY_SELECT, t) : play_frame(&p, &s, &bg, t);
+		if (f & PL_BACK) break;
+		if (f & PL_NEXT) {
+			play_start(&p, &holes[r->hole].h, &holes[r->hole].g, r);
+			continue;
+		}
+		if (every && n % every == 0 && p.view != PLAY_CARD) {
+			uint8_t buf[RULES_SAVE_MAX];
+			uint16_t len;
+			Round q;
+			play_settle(&p);
+			if (r->over) break;
+			len = rules_pack(r, buf);
+			memset(&q, 0xA5, sizeof q);
+			CHECK(rules_unpack(&q, buf, len) == 0);
+			CHECK(q.mode == r->mode && q.pl[0].cpu == r->pl[0].cpu);
+			*r = q;
+			play_start(&p, &holes[r->hole].h, &holes[r->hole].g, r);
+			resumes++;
+		}
+	}
+	CHECK(r->over);
+	CHECK(!every || resumes > 3);
+	free(s.bits);
+	free(bg.bits);
+	return n;
+}
+
+static void same_scores(const Round *a, const Round *b)
+{
+	uint8_t i;
+	for (i = 0; i < a->players; i++) CHECK(memcmp(a->pl[i].score, b->pl[i].score, a->holes) == 0);
+	CHECK(a->over == b->over && a->hole == b->hole);
+}
+
+/* A computer golfer's first shot at the start of a round, saved (settled) while
+ * the result shows on the map: the round carries on to the next player, with
+ * the shot counted once. */
+static void cpu_start_save_test(const Course *c)
+{
+	static Play p, q;
+	static const uint8_t lv[2] = { CPU_FAIR, CPU_HUMAN };
+	Round r, o;
+	Surface s, bg;
+	uint32_t t = 0;
+	int k, f;
+
+	surface(&s, 1);
+	surface(&bg, 1);
+	rules_init(&r, "Par386 Test", 2, c->hole_count, c->par, 5);
+	rules_mode(&r, MODE_STROKE, lv, 0);
+	o = r;
+	memset(&q, 0, sizeof q);
+	q.quick = 1;
+	play_start(&q, &holes[0].h, &holes[0].g, &o);
+	memset(&p, 0, sizeof p);
+	p.quick = 1;
+	play_start(&p, &holes[0].h, &holes[0].g, &r);
+	CHECK(p.state == PS_RESULT && p.view == PLAY_MAP && r.pl[0].taken == 0);
+	play_settle(&p);
+	play_settle(&p);
+	CHECK(r.pl[0].taken >= 1 && p.state == PS_RESULT && p.view == PLAY_MAP);
+	for (k = 0; k < 200 && p.cur == 0; k++) {
+		t += 20;
+		f = play_frame(&p, &s, &bg, t);
+		(void)f;
+	}
+	CHECK(p.cur == 1 && p.view == PLAY_SCENE && r.turn == 1);
+	/* the same as a round that wasn't saved */
+	for (k = 0; k < 200 && q.cur == 0; k++) {
+		t += 20;
+		play_frame(&q, &s, &bg, t);
+	}
+	CHECK(q.cur == 1 && r.pl[0].taken == o.pl[0].taken && r.pl[0].ball.x == o.pl[0].ball.x && r.pl[0].ball.y == o.pl[0].ball.y);
+	free(s.bits);
+	free(bg.bits);
+}
+
+static void cpu_tests(const Course *c)
+{
+	Round a, b;
+	static const uint8_t four[4] = { CPU_EASY, CPU_FAIR, CPU_GOOD, CPU_PRO };
+	static const uint8_t pros[4] = { CPU_PRO, CPU_PRO, CPU_PRO, CPU_PRO }, easy[4] = { CPU_EASY, CPU_EASY, CPU_EASY, CPU_EASY };
+	long frames;
+	int lvl, tot[5] = { 0 }, seed, k, n = 0;
+	uint8_t m;
+
+	/* the same round twice; left and picked up again on the way; the full flight instead of the quick result */
+	rules_init(&a, "Par386 Test", 4, c->hole_count, c->par, 11);
+	rules_mode(&a, MODE_STROKE, four, 0);
+	CHECK(strcmp(a.pl[1].name, "Angus") == 0 && a.pl[3].cpu == CPU_PRO);
+	b = a;
+	frames = auto_round(&a, 1, 0);
+	auto_round(&b, 1, 0);
+	same_scores(&a, &b);
+	printf("cpu: 4 computer golfers, 3 holes quick: %ld frames (%.0f s), scores", frames, frames * 0.02);
+	for (k = 0; k < 4; k++) printf(" %d", rules_strokes(&a, k, 0, a.holes));
+	printf("\n");
+	rules_init(&b, "Par386 Test", 4, c->hole_count, c->par, 11);
+	rules_mode(&b, MODE_STROKE, four, 0);
+	auto_round(&b, 1, 37);
+	same_scores(&a, &b);
+	rules_init(&b, "Par386 Test", 4, c->hole_count, c->par, 11);
+	rules_mode(&b, MODE_STROKE, four, 0);
+	frames = auto_round(&b, 0, 0);
+	same_scores(&a, &b);
+	printf("cpu: the same with the flight: %ld frames (%.0f s)\n", frames, frames * 0.02);
+	rules_init(&b, "Par386 Test", 4, c->hole_count, c->par, 11);
+	rules_mode(&b, MODE_STROKE, four, 0);
+	auto_round(&b, 0, 53);
+	same_scores(&a, &b);
+
+	/* save and resume in every mode gives the same round as playing it through */
+	for (m = MODE_MATCH; m <= MODE_TOURN; m++) {
+		uint8_t pl = m == MODE_MATCH ? 2 : m == MODE_BEST ? 4 : 3;
+		rules_init(&a, "Par386 Test", pl, c->hole_count, c->par, 5 + m);
+		rules_mode(&a, m, four, 0);
+		b = a;
+		auto_round(&a, 1, 0);
+		auto_round(&b, 1, 29 + m);
+		same_scores(&a, &b);
+		CHECK(b.mode == m);
+	}
+
+	/* skill shows: pros score lower than the easy ones over a few rounds */
+	for (seed = 1; seed <= 6; seed++)
+		for (lvl = 0; lvl < 2; lvl++) {
+			rules_init(&a, "Par386 Test", 4, c->hole_count, c->par, (uint32_t)seed * 101);
+			rules_mode(&a, MODE_STROKE, lvl ? pros : easy, 0);
+			auto_round(&a, 1, 0);
+			for (k = 0; k < 4; k++) tot[lvl ? CPU_PRO : CPU_EASY] += rules_strokes(&a, k, 0, a.holes);
+			n++;
+		}
+	printf("cpu: test course (par %d), mean of 24 rounds: easy %.2f, pro %.2f\n", rules_par(&a, 0, a.holes),
+	       tot[CPU_EASY] / 24.0, tot[CPU_PRO] / 24.0);
+	CHECK(tot[CPU_PRO] < tot[CPU_EASY]);
+	CHECK(tot[CPU_PRO] <= 24 * (rules_par(&a, 0, a.holes) + 3));
+	(void)n;
+}
+
+/* The panel's row B in each mode while aiming, and a computer golfer's result on the map. */
+static void panel_tests(const Course *c)
+{
+	static Play p;
+	Round r;
+	Surface s, bg, s2;
+	uint8_t m;
+	static const uint8_t cpu2[2] = { CPU_HUMAN, CPU_FAIR };
+	static const char *names[MODE_COUNT] = { "stroke", "match", "skins", "best", "tourn", "range", "green" };
+
+	surface(&s, 1);
+	surface(&bg, 1);
+	surface(&s2, 2);
+	for (m = 0; m < MODE_COUNT; m++) {
+		uint8_t pl = m == MODE_MATCH || m == MODE_TOURN ? 2 : m == MODE_BEST ? 4 : m == MODE_SKINS ? 3 : 1;
+		char name[32];
+		rules_init(&r, "Par386 Test", pl, c->hole_count, c->par, 3);
+		rules_mode(&r, m, NULL, m == MODE_RANGE ? 2 : 0);
+		if (!MODE_PRACTICE(m)) {
+			/* the first hole played: player 1 won it by 2, the others tied */
+			uint8_t sc[4] = { 3, 5, 5, 5 };
+			if (m == MODE_SKINS) sc[0] = 5;
+			hole_scores(&r, sc);
+		} else {
+			r.balls = 4;
+		}
+		memset(&p, 0, sizeof p);
+		play_start(&p, &holes[r.hole].h, &holes[r.hole].g, &r);
+		gfx_fill(&s, 0, 0, 160, 160, UIC_BAR);
+		play_frame(&p, &s, &bg, 0);
+		snprintf(name, sizeof name, "m12-rowb-%s", names[m]);
+		save(&s, name);
+		gfx_fill(&s2, 0, 0, 320, 320, UIC_BAR);
+		play_frame(&p, &s2, &bg, 0);
+		p.redraw = 8;
+		p.cam_ok = 0;
+		play_frame(&p, &s2, NULL, 0);
+		save(&s2, name);
+		if (m == MODE_RANGE) CHECK(p.rv.hole->par == 5 && p.lie == LIE_TEE);
+		if (m == MODE_GREEN) CHECK(p.lie == LIE_GREEN && p.club == CLUB_PT);
+	}
+
+	/* a computer golfer's tee shot on the map, then the score after they hole out */
+	rules_init(&r, "Par386 Test", 2, c->hole_count, c->par, 3);
+	rules_mode(&r, MODE_MATCH, cpu2, 0);
+	r.order[0] = 1;
+	r.order[1] = 0;
+	r.turn = 1;
+	memset(&p, 0, sizeof p);
+	p.quick = 1;
+	play_start(&p, &holes[0].h, &holes[0].g, &r);
+	CHECK(p.cur == 1 && p.cpu == CPU_FAIR && p.view == PLAY_MAP && p.state == PS_RESULT && p.have_shot);
+	/* keys don't swing for them; one hurries them on */
+	CHECK(play_key(&p, KEY_SELECT, 0) == PL_ANIM);
+	CHECK(play_frame(&p, &s, NULL, 0) & (PL_RENDER | PL_TURN));
+	CHECK(p.cur == 0 && !p.cpu && p.view == PLAY_SCENE);
+	rules_init(&r, "Par386 Test", 2, c->hole_count, c->par, 3);
+	rules_mode(&r, MODE_MATCH, cpu2, 0);
+	r.order[0] = 1;
+	r.order[1] = 0;
+	r.turn = 1;
+	memset(&p, 0, sizeof p);
+	p.quick = 1;
+	play_start(&p, &holes[0].h, &holes[0].g, &r);
+	CHECK(p.cpu == CPU_FAIR);
+	gfx_fill(&s, 0, 0, 160, 160, UIC_BAR);
+	play_map(&s, &p);
+	play_status(&s, &p, NULL);
+	save(&s, "m12-cpu-map");
+	gfx_fill(&s2, 0, 0, 320, 320, UIC_BAR);
+	play_map(&s2, &p);
+	play_status(&s2, &p, NULL);
+	save(&s2, "m12-cpu-map");
+	CHECK(play_frame(&p, &s, NULL, 0) == PL_ANIM);
+	CHECK(play_frame(&p, &s, NULL, PLAY_CPU_MS - 20) == PL_ANIM);
+	CHECK(play_frame(&p, &s, NULL, PLAY_CPU_MS) & (PL_RENDER | PL_TURN));
+	free(s.bits);
+	free(bg.bits);
+	free(s2.bits);
+}
+
+static void practice_tests(const Course *c)
+{
+	static Play p;
+	Round r, q;
+	Surface s, bg;
+	uint32_t t = 0;
+	uint8_t buf[RULES_SAVE_MAX], club;
+	uint16_t len;
+	vec2 tee, at;
+	int f, k;
+
+	surface(&s, 1);
+	surface(&bg, 1);
+	/* the range: every ball from the tee, the club and aim kept, the scene kept */
+	rules_init(&r, "Par386 Test", 1, c->hole_count, c->par, 9);
+	rules_mode(&r, MODE_RANGE, NULL, 2);
+	CHECK(r.hole == 2 && r.mode == MODE_RANGE);
+	play_start(&p, &holes[2].h, &holes[2].g, &r);
+	tee = p.rv.ball;
+	play_key(&p, KEY_DOWN, t);
+	play_key(&p, KEY_LEFT, t);
+	club = p.club;
+	for (k = 0; k < 3; k++) {
+		angle aim = p.aim;
+		f = shot(&p, &s, &bg, &t);
+		CHECK(f == PL_SCENE);
+		CHECK(r.balls == (uint16_t)(k + 1) && p.rv.ball.x == tee.x && p.rv.ball.y == tee.y && p.lie == LIE_TEE);
+		CHECK(p.club == club && p.aim == aim && p.state == PS_AIM && p.stroke == 1 && !r.over);
+	}
+	/* no card in practice */
+	CHECK(play_key(&p, KEY_CARD, t) == 0 && p.view == PLAY_SCENE);
+	len = rules_pack(&r, buf);
+	CHECK(rules_unpack(&q, buf, len) == 0 && q.balls == 3 && q.mode == MODE_RANGE && q.hole == 2);
+
+	/* the green: a ball 3 to 14 yd out on the green, putted out, then the next */
+	rules_init(&r, "Par386 Test", 1, c->hole_count, c->par, 9);
+	rules_mode(&r, MODE_GREEN, NULL, 0);
+	memset(&p, 0, sizeof p);
+	play_start(&p, &holes[0].h, &holes[0].g, &r);
+	at = p.rv.ball;
+	{
+		fixed d = vec2_len(vec2_sub(at, holes[0].h.pins[0]));
+		CHECK(p.lie == LIE_GREEN && p.club == CLUB_PT && d >= YD(3) - 2 && d <= YD(14) + 2);
+		CHECK(surface_at(&holes[0].g, at.x, at.y) == SURF_GREEN);
+	}
+	/* the same ball after saving */
+	len = rules_pack(&r, buf);
+	CHECK(rules_unpack(&q, buf, len) == 0);
+	memset(&p, 0, sizeof p);
+	play_start(&p, &holes[0].h, &holes[0].g, &q);
+	CHECK(p.rv.ball.x == at.x && p.rv.ball.y == at.y);
+	for (k = 0; k < 10 && q.balls == 0; k++) {
+		f = shot(&p, &s, &bg, &t);
+		CHECK(f == PL_RENDER);
+	}
+	CHECK(q.balls == 1 && p.stroke == 1 && p.lie == LIE_GREEN && (p.rv.ball.x != at.x || p.rv.ball.y != at.y));
+	printf("practice green: first ball putted out in %d\n", k);
+	free(s.bits);
+	free(bg.bits);
+}
+
+static void record_tests(void)
+{
+	Records rs, back;
+	Round r;
+	uint8_t pars[3] = { 4, 3, 5 }, buf[REC_SAVE_MAX + 4], k;
+	static const uint8_t cpu[2] = { CPU_HUMAN, CPU_PRO };
+	static const uint8_t s1[2] = { 5, 3 }, s2[2] = { 3, 3 }, s3[2] = { 5, 4 };
+	uint16_t len;
+	const CourseRecord *c;
+
+	rec_init(&rs);
+	rules_init(&r, "Par386 Test", 2, 3, pars, 1);
+	rules_mode(&r, MODE_STROKE, cpu, 0);
+	hole_scores(&r, s1);
+	hole_scores(&r, s2);
+	/* not finished: nothing */
+	CHECK(rec_round(&rs, &r, 0) == 0 && !rec_find(&rs, "Par386 Test", 0));
+	hole_scores(&r, s3);
+	/* the person only, not the computer golfer, though they scored lower */
+	CHECK(rec_round(&rs, &r, 0) == 1);
+	c = rec_find(&rs, "Par386 Test", 0);
+	CHECK(c && c->strokes == 13 && c->to_par == 1 && c->holes == 3 && strcmp(c->name, "Player 1") == 0);
+	CHECK(!rec_find(&rs, "Par386 Test", 1) && !rec_find(&rs, "Par386 Other", 0));
+	/* the same score again isn't a new one; a better one is */
+	CHECK(rec_round(&rs, &r, 0) == 0);
+	r.pl[0].score[0] = 4;
+	CHECK(rec_round(&rs, &r, 0) == 1 && rec_find(&rs, "Par386 Test", 0)->strokes == 12);
+	r.pl[0].score[0] = 6;
+	CHECK(rec_round(&rs, &r, 0) == 0 && rec_find(&rs, "Par386 Test", 0)->strokes == 12);
+	/* another tee keeps its own */
+	CHECK(rec_round(&rs, &r, 1) == 1 && rs.n == 2);
+	/* practice sets none */
+	r.mode = MODE_RANGE;
+	r.players = 1;
+	CHECK(rec_round(&rs, &r, 2) == 0);
+	r.mode = MODE_STROKE;
+	/* full: a new course replaces the oldest */
+	for (k = 0; k < REC_MAX + 2; k++) {
+		snprintf(r.course, sizeof r.course, "Par386 C%d", k);
+		rec_round(&rs, &r, 0);
+	}
+	CHECK(rs.n == REC_MAX && !rec_find(&rs, "Par386 Test", 0) && !rec_find(&rs, "Par386 C1", 0) && rec_find(&rs, "Par386 C2", 0) && rec_find(&rs, "Par386 C13", 0) && rec_find(&rs, "Par386 C12", 0));
+	len = rec_pack(&rs, buf);
+	CHECK(len == 3 + REC_MAX * REC_ITEM && len <= REC_SAVE_MAX);
+	CHECK(rec_unpack(&back, buf, len) == 0 && memcmp(&back, &rs, sizeof rs) == 0);
+	CHECK(rec_unpack(&back, buf, len - 1) == -1 && back.n == 0);
+	buf[1] = 2;
+	CHECK(rec_unpack(&back, buf, len) == -1);
+	buf[1] = REC_VERSION;
+	buf[3 + RULES_COURSE_MAX] = 'x';
+	CHECK(rec_unpack(&back, buf, len) == -1);
+	rec_init(&rs);
+	CHECK(rec_unpack(&back, buf, rec_pack(&rs, buf)) == 0 && back.n == 0);
+}
+
+static void mode_tests(const Course *c)
+{
+	match_tests();
+	skins_tests();
+	tournament_tests();
+	record_tests();
+	panel_tests(c);
+	practice_tests(c);
+	cpu_start_save_test(c);
+	cpu_tests(c);
+}
+
 /* ---- the clubhouse ---- */
 
 static void draw_front(Surface *s, const Front *f)
@@ -793,6 +1433,15 @@ static void draw_front(Surface *s, const Front *f)
 	}
 	CHECK(k > 0);
 	front_draw(f, s);
+	if ((id = front_preview(f)) != 0)
+		for (k = 0; ; k++) {
+			uint32_t len;
+			uint8_t *d;
+			snprintf(name, sizeof name, "Pic%d-%d.bin", s->depth, id + k);
+			if (!(d = load_art(name, &len))) break;
+			CHECK(front_preview_band(s, d, len) == 0);
+			free(d);
+		}
 }
 
 static void front_tests(void)
@@ -800,23 +1449,78 @@ static void front_tests(void)
 	Front f;
 	Surface s;
 	uint8_t scale;
+	static const char *names[2] = { "Auldkirk", "Test" };
+	static const uint8_t scenery[2] = { 1, 0 };
 
-	/* no save: as before, Play a round goes to the players */
+	/* no save: Play a round goes to the games, then the players */
 	front_init(&f);
 	front_clubhouse(&f, 0);
 	CHECK(f.menu.count == 5 && front_action(&f, 0) == MAIN_PLAY);
-	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_PLAYERS && f.menu.sel == 0);
-	CHECK(front_key(&f, KEY_DOWN) == (FR_REDRAW | FR_LINES));
-	CHECK(front_key(&f, KEY_SELECT) == FR_PLAY && f.players == 2);
-	/* Back goes back to the clubhouse */
-	front_clubhouse(&f, 0);
-	front_key(&f, KEY_SELECT);
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_GAMES && f.menu.sel == 0 && f.menu.count == 6);
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_PLAYERS && f.mode == MODE_STROKE);
+	CHECK(f.menu.sel == 4 && f.menu.count == 6);
+	CHECK(strcmp(f.players_list, "P1  Human|P2  Off|P3  Off|P4  Off|Tee off|Back") == 0);
+	/* a slot goes round on select and right, back on left; the first is never off */
+	f.menu.sel = 1;
+	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_LINES) && f.slot[1] == CPU_HUMAN && f.menu.sel == 1);
+	CHECK(front_key(&f, KEY_RIGHT) == (FR_REDRAW | FR_LINES) && f.slot[1] == CPU_EASY);
+	CHECK(front_key(&f, KEY_RIGHT) && f.slot[1] == CPU_FAIR);
+	f.menu.sel = 0;
+	CHECK(front_key(&f, KEY_LEFT) && f.slot[0] == CPU_PRO);
+	CHECK(front_key(&f, KEY_RIGHT) && f.slot[0] == CPU_HUMAN);
+	f.menu.sel = 3;
+	CHECK(front_key(&f, KEY_LEFT) && f.slot[3] == CPU_PRO);
+	CHECK(front_key(&f, KEY_RIGHT) && f.slot[3] == SLOT_OFF);
+	f.menu.sel = 2;
+	CHECK(front_key(&f, KEY_LEFT) && f.slot[2] == CPU_PRO);
+	CHECK(strcmp(f.players_list, "P1  Human|P2  CPU Fair|P3  CPU Pro|P4  Off|Tee off|Back") == 0);
+	/* Tee off: the slots not off, in order */
 	f.menu.sel = 4;
-	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_MENU && f.menu.count == 5);
-	/* taps pick a number */
+	CHECK(front_key(&f, KEY_SELECT) == FR_PLAY && f.players == 3 && f.mode == MODE_STROKE);
+	CHECK(f.cpu[0] == CPU_HUMAN && f.cpu[1] == CPU_FAIR && f.cpu[2] == CPU_PRO);
+	CHECK(rules_mode_ok(f.mode, f.players));
+	/* Back goes back to the games, and from there the clubhouse */
+	f.menu.sel = 5;
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_GAMES && f.menu.sel == MODE_STROKE);
+	CHECK(front_key(&f, KEY_BACK) == FR_REDRAW && f.screen == SCR_MENU && f.menu.count == 5);
+
+	/* match play: two slots, neither off */
+	f.slot[1] = SLOT_OFF;
 	front_key(&f, KEY_SELECT);
-	CHECK(front_tap(&f, 60, f.menu.y + 3 * f.menu.lineH + 2) & FR_PLAY);
-	CHECK(f.players == 4);
+	f.menu.sel = MODE_MATCH;
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_PLAYERS && f.mode == MODE_MATCH);
+	CHECK(strcmp(f.players_list, "P1  Human|P2  CPU Fair|Tee off|Back") == 0 && f.menu.sel == 2);
+	f.menu.sel = 1;
+	CHECK(front_key(&f, KEY_LEFT) && f.slot[1] == CPU_EASY);
+	CHECK(front_key(&f, KEY_LEFT) && f.slot[1] == CPU_HUMAN);
+	CHECK(front_key(&f, KEY_LEFT) && f.slot[1] == CPU_PRO);
+	f.menu.sel = 2;
+	CHECK(front_key(&f, KEY_SELECT) == FR_PLAY && f.players == 2 && f.cpu[1] == CPU_PRO && rules_mode_ok(f.mode, f.players));
+	/* best ball: four, none off; skins: at least two; a tap on Tee off */
+	CHECK(front_key(&f, KEY_BACK) == FR_REDRAW && f.screen == SCR_GAMES && f.menu.sel == MODE_MATCH);
+	f.menu.sel = MODE_BEST;
+	front_key(&f, KEY_SELECT);
+	CHECK(f.slot[1] == CPU_PRO && f.slot[2] == CPU_PRO && f.slot[3] == CPU_FAIR);
+	CHECK(front_tap(&f, 60, f.menu.y + 4 * f.menu.lineH + 2) & FR_PLAY);
+	CHECK(f.players == 4 && rules_mode_ok(MODE_BEST, f.players));
+	front_key(&f, KEY_BACK);
+	f.menu.sel = MODE_SKINS;
+	f.slot[2] = f.slot[3] = SLOT_OFF;
+	front_key(&f, KEY_SELECT);
+	f.menu.sel = 1;
+	CHECK(front_key(&f, KEY_RIGHT) && f.slot[1] == CPU_HUMAN);
+	f.menu.sel = 4;
+	CHECK(front_key(&f, KEY_SELECT) == FR_PLAY && f.players == 2 && f.mode == MODE_SKINS);
+
+	/* Practice: the range and the green, one player */
+	front_clubhouse(&f, 0);
+	f.menu.sel = MAIN_PRACTICE;
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_PRACTICE && f.menu.count == 3);
+	CHECK(front_key(&f, KEY_SELECT) == FR_PLAY && f.mode == MODE_RANGE && f.players == 1 && f.cpu[0] == CPU_HUMAN);
+	f.menu.sel = 1;
+	CHECK(front_key(&f, KEY_SELECT) == FR_PLAY && f.mode == MODE_GREEN);
+	f.menu.sel = 2;
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_MENU && f.menu.sel == MAIN_PRACTICE);
 
 	/* with a save: Continue round first, the rest a line down */
 	front_clubhouse(&f, 1);
@@ -826,17 +1530,29 @@ static void front_tests(void)
 	CHECK(front_key(&f, KEY_SELECT) == FR_CONTINUE);
 	f.menu.sel = 5;
 	CHECK(front_key(&f, KEY_SELECT) == FR_QUIT);
-	/* a new round asks first: Cancel keeps the save, OK goes on to the players */
+	/* a new round asks first: Cancel keeps the save, OK goes on to the games */
 	f.menu.sel = 1;
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.dialog == DLG_NEW_ROUND && f.dlg.count == 2);
 	CHECK(front_key(&f, KEY_RIGHT) == FR_REDRAW && f.dlg.sel == 1);
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && !f.dialog && f.screen == SCR_MENU);
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.dialog == DLG_NEW_ROUND);
-	CHECK(front_tap(&f, f.dlg.btn[0].x + 4, f.dlg.btn[0].y + 4) == FR_REDRAW && f.screen == SCR_PLAYERS);
-	/* Practice still opens its message */
+	CHECK(front_tap(&f, f.dlg.btn[0].x + 4, f.dlg.btn[0].y + 4) == FR_REDRAW && f.screen == SCR_GAMES);
+	/* and practice asks too, then goes to the practice screen */
 	front_clubhouse(&f, 1);
 	f.menu.sel = 2;
-	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.dialog == DLG_MESSAGE);
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.dialog == DLG_NEW_ROUND);
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_PRACTICE);
+
+	/* course records under the preview */
+	front_courses(&f, names, scenery, 2, 0);
+	front_record(&f, 0, 71, -1);
+	front_record(&f, 1, 0, 0);
+	CHECK(strcmp(f.record[0], "Record 71 (-1)") == 0 && f.record[1][0] == 0);
+	front_record(&f, 1, 13, 1);
+	CHECK(strcmp(f.record[1], "Record 13 (+1)") == 0);
+	front_record(&f, 1, 12, 0);
+	CHECK(strcmp(f.record[1], "Record 12 (E)") == 0);
+	front_record(&f, 1, 0, 0);
 
 	for (scale = 1; scale <= 2; scale++) {
 		surface(&s, scale);
@@ -849,7 +1565,30 @@ static void front_tests(void)
 		save(&s, "new-round");
 		front_key(&f, KEY_SELECT);
 		draw_front(&s, &f);
-		save(&s, "players");
+		save(&s, "m12-games");
+		f.menu.sel = MODE_STROKE;
+		f.slot[1] = CPU_FAIR; f.slot[2] = CPU_PRO; f.slot[3] = SLOT_OFF;
+		front_key(&f, KEY_SELECT);
+		draw_front(&s, &f);
+		save(&s, "m12-players");
+		front_clubhouse(&f, 0);
+		f.menu.sel = MAIN_PRACTICE;
+		front_key(&f, KEY_SELECT);
+		draw_front(&s, &f);
+		save(&s, "m12-practice");
+		front_clubhouse(&f, 0);
+		f.menu.sel = MAIN_COURSES;
+		front_key(&f, KEY_SELECT);
+		draw_front(&s, &f);
+		save(&s, "m12-courses-record");
+		front_key(&f, KEY_DOWN);
+		draw_front(&s, &f);
+		save(&s, "m12-courses-none");
+		front_clubhouse(&f, 0);
+		f.menu.sel = MAIN_SETTINGS;
+		front_key(&f, KEY_SELECT);
+		draw_front(&s, &f);
+		save(&s, "m12-settings");
 		free(s.bits);
 	}
 }
@@ -955,17 +1694,22 @@ static void sound_tests(void)
 	CHECK(front_key(&f, KEY_DOWN) & FR_LINES);
 	CHECK(snd_log_n == 1 && snd_log[0] == SND_MENU_MOVE);
 	f.menu.sel = MAIN_SETTINGS;
-	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_SETTINGS && f.menu.count == 2);
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_SETTINGS && f.menu.count == 3);
 	CHECK(snd_log_n == 2 && snd_log[1] == SND_MENU_SELECT);
-	CHECK(strcmp(f.settings_list, "Sound: On|Back") == 0);
+	CHECK(strcmp(f.settings_list, "Sound: On|CPU: Quick|Back") == 0);
 	draw_front(&s, &f);
 	save(&s, "settings");
 	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_SOUND) && f.sound == SOUND_FX && f.menu.sel == 0);
-	CHECK(strcmp(f.settings_list, "Sound: Effects|Back") == 0);
+	CHECK(strcmp(f.settings_list, "Sound: Effects|CPU: Quick|Back") == 0);
 	draw_front(&s, &f);
 	save(&s, "settings-fx");
 	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_SOUND) && f.sound == SOUND_OFF);
 	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_SOUND) && f.sound == SOUND_ON);
+	/* the computer golfers' shots: quick or the full flight */
+	CHECK(front_key(&f, KEY_DOWN) & FR_LINES);
+	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_CPU) && !f.quick && f.menu.sel == 1);
+	CHECK(strcmp(f.settings_list, "Sound: On|CPU: Full|Back") == 0);
+	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_CPU) && f.quick);
 	CHECK(front_key(&f, KEY_DOWN) & FR_LINES);
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_MENU && f.menu.sel == MAIN_SETTINGS);
 	front_key(&f, KEY_SELECT);

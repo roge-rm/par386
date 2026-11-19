@@ -134,6 +134,8 @@ static void screens(uint8_t scale)
 	draw(&s, &f);
 	save(&s, "menu");
 	CHECK((front_key(&f, KEY_DOWN) & FR_REDRAW) && f.menu.sel == 1);
+	CHECK((front_key(&f, KEY_DOWN) & FR_REDRAW) && f.menu.sel == MAIN_COURSES);
+	/* no courses: a message */
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.dialog);
 	draw(&s, &f);
 	save(&s, "dialog");
@@ -160,6 +162,8 @@ static void screens_at(int w, int h, uint8_t scale, uint8_t depth, const char *n
 	snprintf(t, sizeof t, "%s-menu", name);
 	save(&s, t);
 	CHECK((front_key(&f, KEY_DOWN) & FR_REDRAW) && f.menu.sel == 1);
+	CHECK((front_key(&f, KEY_DOWN) & FR_REDRAW) && f.menu.sel == MAIN_COURSES);
+	/* no courses: a message */
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.dialog);
 	draw(&s, &f);
 	snprintf(t, sizeof t, "%s-dialog", name);

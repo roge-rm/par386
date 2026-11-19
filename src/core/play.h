@@ -32,6 +32,10 @@ enum { PS_AIM, PS_UP, PS_DOWN, PS_FLY, PS_RESULT, PS_DONE };
 #define PL_CARD   64    /* put back the kept scene and draw the scorecard over it (play_card) */
 #define PL_NEXT   128   /* load the round's hole and play_start it */
 #define PL_TURN   256   /* another player's turn: show play_turn while the scene draws */
+#define PL_PANEL  512   /* draw the map's panel again (play_status) and show it */
+
+#define PLAY_CPU_MS 900 /* a computer golfer's result stays this long before play goes on */
+#define PLAY_CPU_AIM_MS 600 /* and the scene shows this long before their swing */
 
 #define PLAY_PATCHES 16 /* overlay patches drawn over the scene */
 
@@ -84,13 +88,22 @@ typedef struct {
 	Shot shot;
 	Surface geo;                /* the surface's size and scale as last drawn, for taps */
 	RenderGolfer *golf;         /* the golfer in the scene, set by the platform; 0 for none */
+	/* computer golfers */
+	uint8_t cpu;                /* the skill of the player whose shot it is, CPU_HUMAN for a person */
+	uint8_t quick;              /* their shots show as a result on the map, not a scene and flight; the platform sets it */
+	uint8_t wait;               /* tw is set on the next frame */
+	uint8_t applied;            /* play_settle has already counted the result being shown */
+	uint32_t tw;                /* when their wait started */
+	uint8_t board;              /* the card view shows the tournament leaderboard */
 } Play;
 
 /* A hole on its own with one player, from the tee. seed sets the wind, as
  * from the time the round started. */
 void SEC_UI play_init(Play *p, const Hole *h, const SurfaceGrid *g, uint32_t seed);
 /* The round's hole h: the player whose turn it is, from where their ball
- * lies. The round mustn't be over or have everyone holed. */
+ * lies. The round mustn't be over or have everyone holed. With a computer
+ * golfer to play and quick set, the view is the map with their shot's
+ * result (call play_map and play_status, then play_frame while PL_ANIM). */
 void SEC_UI play_start(Play *p, const Hole *h, const SurfaceGrid *g, Round *r);
 /* Before the round is saved and play left: a shot in the air counts where
  * it ends up, and a finished hole moves the round on to the next. */
@@ -112,12 +125,14 @@ int SEC_UI play_tap(Play *p, int16_t x, int16_t y, uint32_t now);
  * after PL_RENDER or PL_SCENE, and while PL_ANIM is set. */
 int SEC_UI play_frame(Play *p, Surface *s, Surface *bg, uint32_t now);
 /* The panel on the map: hole, par and yards, and below them info if it
- * isn't 0 (the hole's name if it is), with the Card button in a round. */
+ * isn't 0 (the hole's name if it is), with the Card button in a round; or
+ * a computer golfer's shot. */
 void SEC_UI play_status(Surface *s, const Play *p, const char *info);
 /* The panel while the scene is drawn for a new turn or hole: the hole, and
  * who plays. */
 void SEC_UI play_turn(Surface *s, const Play *p);
-/* The scorecard, over whatever is on s, with the panel showing the hole. */
+/* The scorecard or the tournament leaderboard, over whatever is on s,
+ * with the panel showing the hole. */
 void SEC_UI play_card(Surface *s, const Play *p);
 /* The hole map with the yardage by the aim line and the last shot's path. */
 void SEC_UI play_map(Surface *s, const Play *p);

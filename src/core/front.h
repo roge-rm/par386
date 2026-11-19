@@ -5,6 +5,7 @@
 #define FRONT_H
 
 #include "ui.h"
+#include "rules.h"
 
 /* Background pictures. */
 #define PIC_TITLE 1000
@@ -29,15 +30,22 @@ enum { KEY_NONE, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_SELECT, KEY_OTHER, K
 #define FR_QUIT   2
 /* Only the menu highlight moved, from oldSel to menu.sel: redrawing those two lines is enough. */
 #define FR_LINES  4
-/* A new round for Front.players was picked: the platform loads the course and starts play. */
+/* A new round was picked: Front.players with Front.cpu, in Front.mode
+ * (practice too). The platform loads the course and starts play. */
 #define FR_PLAY   8
 /* Continue round was picked: the platform loads the saved round. */
 #define FR_CONTINUE 16
 /* The sound setting changed: the platform saves it and plays by it. */
 #define FR_SOUND  32
+/* The computer golfers' shots setting (Front.quick) changed: the platform saves it. */
+#define FR_CPU    64
 
-/* The players and courses screens are the menu board with a list. */
-enum { SCR_TITLE, SCR_MENU, SCR_PLAYERS, SCR_COURSES, SCR_SETTINGS };
+/* The screens past the title are the menu board with a list. Games picks
+ * the mode, players who plays each slot. */
+enum { SCR_TITLE, SCR_MENU, SCR_PLAYERS, SCR_COURSES, SCR_SETTINGS, SCR_GAMES, SCR_PRACTICE };
+
+/* A player slot nobody plays. Others are CPU_* (rules.h). */
+#define SLOT_OFF 0xFF
 
 /* The sound setting: everything, effects without the tunes and birds, or none. */
 enum { SOUND_ON, SOUND_FX, SOUND_OFF, SOUND_MODES };
@@ -59,33 +67,43 @@ typedef struct {
 	uint8_t oldSel;
 	uint8_t saved;           /* there's a round to continue */
 	uint8_t players;         /* picked on the players screen */
+	uint8_t mode;            /* MODE_*, picked on the games or practice screen */
+	uint8_t slot[RULES_PLAYERS];            /* who plays each slot: CPU_* or SLOT_OFF */
+	uint8_t cpu[RULES_PLAYERS];             /* the round's players in order, without the slots off */
+	uint8_t quick;           /* computer golfers' shots as a result on the map */
+	uint8_t pending;         /* what OK on the new round dialog opens: SCR_GAMES or SCR_PRACTICE */
 	uint8_t courses;         /* how many courses are installed */
 	uint8_t course;          /* the one picked on the courses screen */
 	uint8_t sound;           /* SOUND_* */
-	char settings_list[24];  /* "Sound: On|Back" */
+	char settings_list[40];  /* "Sound: On|CPU: Quick|Back" */
+	char players_list[RULES_PLAYERS * 13 + 14];   /* "P1  Human|P2  CPU Fair|Tee off|Back" */
+	char record[FRONT_COURSES][20];         /* each course's record line, or empty */
 	char course_list[FRONT_COURSE_LIST];    /* their names and Back, "A|B|Back" */
 	uint8_t scenery[FRONT_COURSES];         /* each one's scenery, or SCENERY_UNKNOWN */
 	UiMenu menu;
 	UiDialog dlg;
 } Front;
 
-void SEC_UI front_init(Front *f);
-uint16_t SEC_UI front_picture(const Front *f);
-void SEC_UI front_draw(const Front *f, Surface *s);
-int SEC_UI front_key(Front *f, uint8_t key);
-int SEC_UI front_tap(Front *f, int16_t x, int16_t y);
+void SEC_MENU front_init(Front *f);
+uint16_t SEC_MENU front_picture(const Front *f);
+void SEC_MENU front_draw(const Front *f, Surface *s);
+int SEC_MENU front_key(Front *f, uint8_t key);
+int SEC_MENU front_tap(Front *f, int16_t x, int16_t y);
 /* Opens a dialog with an OK button over the menu, such as when there's no course to play. */
-void SEC_UI front_message(Front *f, const char *title, const char *text);
+void SEC_MENU front_message(Front *f, const char *title, const char *text);
 /* Back to the clubhouse menu, with Continue round if saved isn't 0. */
-void SEC_UI front_clubhouse(Front *f, uint8_t saved);
+void SEC_MENU front_clubhouse(Front *f, uint8_t saved);
 /* Sets the installed courses' names (count of them), their scenery numbers
  * (or NULL if not known) and the one picked. */
-void SEC_UI front_courses(Front *f, const char *const *names, const uint8_t *scenery, uint8_t count, uint8_t pick);
+void SEC_MENU front_courses(Front *f, const char *const *names, const uint8_t *scenery, uint8_t count, uint8_t pick);
 /* The preview picture for the highlighted line of the courses screen, or 0. */
-uint16_t SEC_UI front_preview(const Front *f);
+uint16_t SEC_MENU front_preview(const Front *f);
 /* Draws one band of the preview picture into its box; -1 if it doesn't fit. */
-int SEC_UI front_preview_band(Surface *s, const uint8_t *d, uint32_t len);
+int SEC_MENU front_preview_band(Surface *s, const uint8_t *d, uint32_t len);
+/* Course i's record for the courses screen: strokes over holes against
+ * to_par; strokes 0 for none yet. */
+void SEC_MENU front_record(Front *f, uint8_t i, uint16_t strokes, int16_t to_par);
 /* The main menu action for a line of the menu. */
-uint8_t SEC_UI front_action(const Front *f, uint8_t line);
+uint8_t SEC_MENU front_action(const Front *f, uint8_t line);
 
 #endif

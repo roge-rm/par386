@@ -1,0 +1,10 @@
+# hole1.replay's second shot (95 %, snap on time), started on the aim view once it's drawn.
+0 pen-down 20 150
+60 pen-up
+950 pen-down 80 60
+1010 pen-up
+1660 pen-down 80 60
+1720 pen-up
+3500 snapshot "{out}/{n}-flight.png"
+6500 snapshot "{out}/{n}-roll.png"
+8800 snapshot "{out}/{n}-result.png"

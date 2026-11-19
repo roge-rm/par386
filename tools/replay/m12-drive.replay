@@ -1,0 +1,12 @@
+# A drive at 95 % power with the snap on time, as hole1.replay's first shot,
+# started on the tee view once it's drawn. Screenshots are named by the replay's number.
+0 pen-down 20 150
+60 pen-up
+700 snapshot "{out}/{n}-meter.png"
+950 pen-down 80 60
+1010 pen-up
+1660 pen-down 80 60
+1720 pen-up
+3500 snapshot "{out}/{n}-flight.png"
+6500 snapshot "{out}/{n}-roll.png"
+9000 snapshot "{out}/{n}-result.png"

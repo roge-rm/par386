@@ -1,0 +1,8 @@
+# hole1.replay's second putt, started on the aim view once it's drawn.
+0 pen-down 20 150
+60 pen-up
+390 pen-down 80 60
+450 pen-up
+900 snapshot "{out}/{n}-roll.png"
+1400 snapshot "{out}/{n}-drop.png"
+2300 snapshot "{out}/{n}-result.png"

@@ -33,7 +33,7 @@ CFLAGS   = -O2 -Wall -Wno-unknown-pragmas $(DEFS) $(INCLUDES) -Isrc/core -Isrc/p
 LDFLAGS  = -L$(SDK)/lib/m68k-palmos-coff
 
 PALMSRCS = main screen audio
-CORESRCS = fixed trig vec hole gfx ui front render play ball rules card sound
+CORESRCS = fixed trig vec hole gfx ui front render play ball rules card sound cpu records
 OBJS     = $(addprefix $(BUILD)/,$(addsuffix .o,$(PALMSRCS) $(CORESRCS)))
 
 all: build/$(PRC) courses

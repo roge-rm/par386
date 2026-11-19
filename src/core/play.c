@@ -1,5 +1,6 @@
 #include "play.h"
 #include "sound.h"
+#include "cpu.h"
 
 /* What play_frame draws again. */
 #define R_STRIP  1
@@ -34,6 +35,10 @@
 #define CARD_X    (s->lw - 2 - CARD_W)
 #define S16       (MTR_SNAP * 16)
 #define W16       (MTR_W * 16)
+
+static void SEC_UI launch(Play *p);
+static void SEC_UI stopped(const Play *p);
+static void SEC_UI result(Play *p);
 
 static vec2 SEC_UI pin(const Play *p)
 {
@@ -113,6 +118,69 @@ void play_init(Play *p, const Hole *h, const SurfaceGrid *g, uint32_t seed)
 	setup(p);
 }
 
+static uint8_t SEC_UI practice(const Play *p)
+{
+	return p->round && MODE_PRACTICE(p->round->mode);
+}
+
+/* The practice green's next ball: 3 to 14 yd from the pin on the green,
+ * from the round's seed and the balls played, so a saved round puts it
+ * back in the same place. */
+static void SEC_UI green_spot(Play *p)
+{
+	uint32_t rs = rules_shot_seed(p->round, 0);
+	vec2 to = pin(p), at;
+	uint8_t k;
+
+	for (k = 0; k < 12; k++) {
+		fixed d;
+		angle a;
+		rs = rs * 1664525UL + 1013904223UL;
+		d = (fixed)(3 + (rs >> 24) % 12) << 16;
+		a = (angle)(rs >> 8);
+		at = vec2_make(to.x + fix_mulq14(d, icos(a)), to.y + fix_mulq14(d, isin(a)));
+		if (surface_at(p->rv.grid, at.x, at.y) == SURF_GREEN) break;
+	}
+	if (k == 12) at = vec2_make(to.x - (2L << 16), to.y - (7L << 16));
+	p->rv.ball = at;
+	p->lie = LIE_GREEN;
+}
+
+/* A computer golfer's shot, planned from where their ball lies. With quick
+ * it's played at once and the map shows the result; else the scene is
+ * drawn and they swing once it has shown a moment. */
+static void SEC_UI cpu_turn(Play *p)
+{
+	CpuView v;
+	CpuShot c;
+
+	v.hole = p->rv.hole;
+	v.grid = p->rv.grid;
+	v.ball = p->rv.ball;
+	v.pin = pin(p);
+	if (p->lie == LIE_TEE) v.to = p->rv.hole->aim;
+	else v.to = v.pin;
+	v.lie = p->lie;
+	v.wind_mph = p->wind_mph;
+	v.wind_dir = p->wind_dir;
+	v.range = p->range;
+	cpu_shot(&v, p->cpu, rules_shot_seed(p->round, p->cur), &c);
+	set_club(p, c.club);
+	p->shape = c.shape;
+	p->aim = p->rv.aim = c.aim;
+	p->power = c.power;
+	p->snap = c.snap;
+	p->mishit = 0;
+	p->wait = 1;
+	if (p->quick) {
+		launch(p);
+		stopped(p);
+		result(p);
+		p->state = PS_RESULT;
+		p->view = PLAY_MAP;
+	}
+}
+
 /* Player i's turn: their ball, lie and stroke, and the view behind it. */
 static void SEC_UI take(Play *p, uint8_t i)
 {
@@ -124,21 +192,35 @@ static void SEC_UI take(Play *p, uint8_t i)
 	if (rp->taken) {
 		p->rv.ball = rp->ball;
 		p->lie = rp->lie;
+	} else if (r->mode == MODE_GREEN) {
+		green_spot(p);
 	} else {
 		p->rv.ball = p->rv.hole->tees[0].pos;
 		p->lie = LIE_TEE;
 	}
 	p->stroke = (uint8_t)(rp->taken + 1);
 	p->have_shot = 0;
+	p->applied = 0;
 	p->view = PLAY_SCENE;
+	p->cpu = rp->cpu;
 	setup(p);
+	if (p->cpu) cpu_turn(p);
+}
+
+/* What the platform does for a turn take gave: the map for a quick
+ * computer golfer's result, else the scene drawn with the turn panel. */
+static int SEC_UI turn(const Play *p)
+{
+	return p->view == PLAY_MAP ? PL_MAP | PL_ANIM : PL_RENDER | PL_TURN;
 }
 
 void play_start(Play *p, const Hole *h, const SurfaceGrid *g, Round *r)
 {
 	int n;
+	uint8_t quick = p->quick;
 
 	play_init(p, h, g, r->seed);
+	p->quick = quick;
 	p->round = r;
 	/* r->turn may still be the player who just hit; the rules pick who is next */
 	n = rules_next(r, pin(p));
@@ -156,6 +238,7 @@ static int SEC_UI open_card(Play *p, uint8_t mode)
 	p->card = mode;
 	p->page = (uint8_t)(h / 9);
 	p->csel = 0;
+	p->board = 0;
 	return PL_CARD;
 }
 
@@ -238,16 +321,31 @@ static int SEC_UI after_done(Play *p)
 	n = rules_next(r, pin(p));
 	if (n >= 0) {
 		take(p, (uint8_t)n);
-		return PL_RENDER | PL_TURN;
+		return turn(p);
 	}
 	rules_advance(r);
-	return open_card(p, r->over ? CARD_FINAL : CARD_HOLE);
+	n = open_card(p, r->over ? CARD_FINAL : CARD_HOLE);
+	/* a tournament shows the leaderboard first */
+	p->board = r->mode == MODE_TOURN;
+	return n;
 }
 
 /* The scorecard's button i. */
 static int SEC_UI card_button(Play *p, uint8_t i)
 {
-	if (i == 1) {
+	if (p->board) {
+		/* the leaderboard: its first button does what the card's does, the second shows the card */
+		if (i == 1) {
+			p->board = 0;
+			p->csel = 0;
+			return PL_CARD;
+		}
+	} else if (i == card_board_button(p->round, p->card)) {
+		/* the card's Board button */
+		p->board = 1;
+		p->csel = 0;
+		return PL_CARD;
+	} else if (i == 1) {
 		p->page = (uint8_t)((p->page + 1) % card_pages(p->round));
 		p->csel = 1;
 		return PL_CARD;
@@ -265,18 +363,22 @@ static int SEC_UI card_button(Play *p, uint8_t i)
 
 static int SEC_UI card_key(Play *p, uint8_t key)
 {
-	uint8_t pages = card_pages(p->round);
+	uint8_t pages = card_pages(p->round), n = p->board ? board_buttons(p->round, p->card) : card_buttons(p->round, p->card);
 	switch (key) {
-	case KEY_LEFT: case KEY_RIGHT:
-		if (pages < 2) return 0;
-		p->csel ^= 1;
+	case KEY_LEFT:
+		if (n < 2) return 0;
+		p->csel = (uint8_t)((p->csel + n - 1) % n);
+		return PL_CARD;
+	case KEY_RIGHT:
+		if (n < 2) return 0;
+		p->csel = (uint8_t)((p->csel + 1) % n);
 		return PL_CARD;
 	case KEY_UP:
-		if (pages < 2) return 0;
+		if (pages < 2 || p->board) return 0;
 		p->page = (uint8_t)((p->page + pages - 1) % pages);
 		return PL_CARD;
 	case KEY_DOWN:
-		if (pages < 2) return 0;
+		if (pages < 2 || p->board) return 0;
 		p->page = (uint8_t)((p->page + 1) % pages);
 		return PL_CARD;
 	case KEY_SELECT:
@@ -344,11 +446,23 @@ static int SEC_UI click(Play *p, uint32_t now)
 	return 0;
 }
 
+/* A key or tap on a computer golfer's turn hurries it on: their swing,
+ * result or score goes on now. */
+static int SEC_UI hurry(Play *p, uint32_t now)
+{
+	if (p->state == PS_FLY) return 0;
+	p->wait = 0;
+	p->tw = now - 10000L;
+	p->t0 = now - RESULT_MS;
+	return PL_ANIM;
+}
+
 int play_key(Play *p, uint8_t key, uint32_t now)
 {
 	if (key == KEY_BACK) return PL_BACK;
 	if (p->view == PLAY_CARD) return card_key(p, key);
-	if (key == KEY_CARD && p->round && (p->state == PS_AIM || p->view == PLAY_MAP)) return open_card(p, CARD_VIEW);
+	if (p->cpu) return hurry(p, now);
+	if (key == KEY_CARD && p->round && !practice(p) && (p->state == PS_AIM || p->view == PLAY_MAP)) return open_card(p, CARD_VIEW);
 	if (p->view == PLAY_MAP) {
 		p->view = PLAY_SCENE;
 		p->redraw = R_ALL;
@@ -439,11 +553,13 @@ int play_tap(Play *p, int16_t x, int16_t y, uint32_t now)
 	const Surface *s = &p->geo;
 
 	if (p->view == PLAY_CARD) {
-		int i = card_hit(p->round, p->card, p->page, x - (s->lw - 160) / 2, y - (s->lh - 160) / 2);
+		int16_t cx = x - (s->lw - 160) / 2, cy = y - (s->lh - 160) / 2;
+		int i = p->board ? board_hit(p->round, p->card, cx, cy) : card_hit(p->round, p->card, p->page, cx, cy);
 		return i < 0 ? 0 : card_button(p, (uint8_t)i);
 	}
+	if (p->cpu) return hurry(p, now);
 	if (p->view == PLAY_MAP) {
-		if (p->round && on_box(x, y, CARD_X, ROW_B, CARD_W)) return open_card(p, CARD_VIEW);
+		if (p->round && !practice(p) && on_box(x, y, CARD_X, ROW_B, CARD_W)) return open_card(p, CARD_VIEW);
 		return play_key(p, KEY_SELECT, now);
 	}
 	if (p->state == PS_DONE) return after_done(p);
@@ -692,6 +808,72 @@ static void SEC_UI who(const Play *p, char *t, int16_t room)
 	}
 }
 
+/* Writes a score against par: "E", "+3", "-1". */
+static void SEC_UI to_par(char *t, int16_t *n, int16_t v)
+{
+	if (!v) {
+		add(t, n, "E");
+		return;
+	}
+	add(t, n, v > 0 ? "+" : "-");
+	*n += play_num(t + *n, (uint32_t)(v > 0 ? v : -v));
+}
+
+/* The panel's row B box: in a round, the mode's standing for the player
+ * whose shot it is (the score to par in stroke play and tournaments,
+ * holes up or down in match play and best ball, the skins riding on this
+ * hole, the ball in practice), with "P2 " in front if there's room; for a
+ * hole alone, who() in room characters. */
+static void SEC_UI standing(const Play *p, char *t, int16_t room)
+{
+	const Round *r = p->round;
+	char v[12];
+	int16_t n = 0, k;
+
+	if (!r) {
+		who(p, t, room);
+		return;
+	}
+	switch (r->mode) {
+	case MODE_RANGE: case MODE_GREEN:
+		add(v, &n, room >= 7 ? "Ball " : "#");
+		n += play_num(v + n, r->balls < 998 ? (uint32_t)r->balls + 1 : 999);
+		break;
+	case MODE_MATCH: case MODE_BEST: {
+		uint8_t left;
+		int8_t up = rules_match(r, &left);
+		if (rules_side(r, p->cur)) up = (int8_t)-up;
+		if (!up) {
+			add(v, &n, "AS");
+		} else {
+			n = play_num(v, (uint32_t)(up > 0 ? up : -up));
+			add(v, &n, up > 0 ? " up" : " dn");
+		}
+		break;
+	}
+	case MODE_SKINS: {
+		uint8_t won[RULES_PLAYERS], carry;
+		rules_skins(r, won, &carry);
+		add(v, &n, "Sk ");
+		n += play_num(v + n, (uint32_t)carry + 1);
+		break;
+	}
+	default:
+		to_par(v, &n, rules_to_par(r, p->cur));
+		break;
+	}
+	k = 0;
+	t[0] = 0;
+	if (r->players > 1 && room >= n + 3) {
+		t[0] = 'P';
+		t[1] = (char)('1' + p->cur);
+		t[2] = ' ';
+		t[3] = 0;
+		k = 3;
+	}
+	add(t, &k, v);
+}
+
 static void SEC_UI draw_strip(Play *p, Surface *s)
 {
 	char t[24];
@@ -731,7 +913,7 @@ static void SEC_UI draw_strip(Play *p, Surface *s)
 		readout(s, LIE_X, ROW_B, LIE_W, ball_lie_name(p->lie), -1, UIC_PAPER);
 		n = MAP_X - 1 - WHO_X;
 		if (n > BOX_W(8)) n = BOX_W(8);
-		who(p, t, (n - 3) / UI_CHAR);
+		standing(p, t, (n - 3) / UI_CHAR);
 		readout(s, WHO_X, ROW_B, n, t, 0, UIC_PAPER);
 		if (p->state == PS_AIM) {
 			button(s, MAP_X, ROW_B, MAP_W, "Map");
@@ -812,7 +994,8 @@ static void SEC_UI draw_meter(Play *p, Surface *s, int16_t x0, int16_t x1)
 	else dirty(p, (int16_t)(i0 * s->scale), (int16_t)((y + 1) * s->scale), (int16_t)((i1 - i0) * s->scale), (int16_t)((ROW_H - 2) * s->scale));
 }
 
-/* The hole's done in strokes: the score on the strip, holed or given. */
+/* The hole's done in strokes: the score on the strip, holed or given
+ * (gimme 1), or a computer golfer picked up (gimme 2). */
 static void SEC_UI done(Play *p, uint8_t strokes, uint8_t gimme)
 {
 	int16_t n = 0, d = (int16_t)strokes - p->rv.hole->par;
@@ -825,28 +1008,33 @@ static void SEC_UI done(Play *p, uint8_t strokes, uint8_t gimme)
 		add(a, &n, ": ");
 	} else {
 		/* the panel's line holds 19 characters */
-		add(a, &n, gimme ? "Gimme, " : strokes >= 10 ? "Holed, " : "In the cup, ");
+		add(a, &n, gimme == 2 ? "Picked up, " : gimme ? "Gimme, " : strokes >= 10 ? "Holed, " : "In the cup, ");
 	}
 	/* msg1 holds 20 characters: the count shown stops at 99 */
 	n += play_num(a + n, strokes > 99 ? 99 : strokes);
 	add(a, &n, strokes == 1 ? " shot" : " shots");
 	n = 0;
 	b[0] = 0;
-	if (many && strokes > 1) add(b, &n, gimme ? "Gimme, " : "Holed, ");
-	if (strokes == 1) add(b, &n, "Hole in one!");
-	else if (d <= -3) add(b, &n, "Albatross");
-	else if (d == -2) add(b, &n, "Eagle");
-	else if (d == -1) add(b, &n, "Birdie");
-	else if (d == 0) add(b, &n, "Par");
-	else if (d == 1) add(b, &n, "Bogey");
-	else if (d == 2) add(b, &n, "Double bogey");
-	else if (d == 3) add(b, &n, "Triple bogey");
-	else {
-		n += play_num(b + n, (uint32_t)d);
-		add(b, &n, " over par");
+	if (gimme == 2) {
+		add(b, &n, "Picked up");
+	} else {
+		if (many && strokes > 1) add(b, &n, gimme ? "Gimme, " : "Holed, ");
+		if (strokes == 1) add(b, &n, "Hole in one!");
+		else if (d <= -3) add(b, &n, "Albatross");
+		else if (d == -2) add(b, &n, "Eagle");
+		else if (d == -1) add(b, &n, "Birdie");
+		else if (d == 0) add(b, &n, "Par");
+		else if (d == 1) add(b, &n, "Bogey");
+		else if (d == 2) add(b, &n, "Double bogey");
+		else if (d == 3) add(b, &n, "Triple bogey");
+		else {
+			n += play_num(b + n, (uint32_t)d);
+			add(b, &n, " over par");
+		}
 	}
 	p->score = strokes;
 	p->state = PS_DONE;
+	p->wait = 1;
 	p->redraw |= R_STRIP | R_OVER;
 }
 
@@ -901,6 +1089,23 @@ static void SEC_UI result(Play *p)
 static void SEC_UI apply(Play *p)
 {
 	const Shot *sh = &p->shot;
+	if (practice(p)) {
+		/* the range: every ball from the tee; the green: putt out, then a new ball */
+		RoundPlayer *rp = &p->round->pl[0];
+		p->stroke = (uint8_t)(p->stroke + 1);
+		p->rv.ball = sh->stop;
+		p->lie = sh->lie;
+		if (p->round->mode == MODE_RANGE || sh->result == SHOT_HOLED || (p->lie == LIE_GREEN && pin_feet(p) <= PLAY_GIMME_FT) ||
+		    p->stroke > 9) {
+			p->round->balls++;
+			rp->taken = 0;
+		} else {
+			rp->ball = p->rv.ball;
+			rp->lie = p->lie;
+			rp->taken = (uint8_t)(p->stroke - 1);
+		}
+		return;
+	}
 	if (sh->result == SHOT_HOLED) {
 		done(p, p->stroke, 0);
 	} else {
@@ -908,6 +1113,8 @@ static void SEC_UI apply(Play *p)
 		p->rv.ball = sh->stop;
 		p->lie = sh->lie;
 		if (p->lie == LIE_GREEN && pin_feet(p) <= PLAY_GIMME_FT) done(p, p->stroke, 1);
+		/* a computer golfer picks up at 5 over par */
+		else if (p->cpu && p->stroke > p->rv.hole->par + 4) done(p, (uint8_t)(p->rv.hole->par + 5), 2);
 	}
 	if (p->round) {
 		RoundPlayer *rp = &p->round->pl[p->cur];
@@ -926,15 +1133,32 @@ static void SEC_UI apply(Play *p)
 static int SEC_UI next(Play *p)
 {
 	int n;
-	apply(p);
+	if (p->applied) p->applied = 0;
+	else apply(p);
+	if (practice(p)) {
+		if (p->round->mode == MODE_RANGE) {
+			/* the same club, shape and aim for the next ball, over the scene as kept */
+			uint8_t club = p->club, shape = p->shape;
+			angle aim = p->aim, view = p->rv.aim;
+			take(p, 0);
+			set_club(p, club);
+			if (ball_shape_ok(club, shape)) p->shape = shape;
+			p->aim = aim;
+			p->rv.aim = view;
+			return PL_SCENE;
+		}
+		take(p, 0);
+		return PL_RENDER;
+	}
 	if (p->state == PS_DONE) {
 		int16_t d = (int16_t)p->score - p->rv.hole->par;
-		snd_play(d < 0 ? SND_BIRDIE : d == 0 ? SND_HOLED : SND_BOGEY);
+		/* the tunes are for people's scores */
+		if (!p->cpu) snd_play(d < 0 ? SND_BIRDIE : d == 0 ? SND_HOLED : SND_BOGEY);
 		return 0;
 	}
-	if (p->round && (n = rules_next(p->round, pin(p))) >= 0 && n != p->cur) {
+	if (p->round && (n = rules_next(p->round, pin(p))) >= 0 && (n != p->cur || p->cpu)) {
 		take(p, (uint8_t)n);
-		return PL_RENDER | PL_TURN;
+		return turn(p);
 	}
 	setup(p);
 	return PL_RENDER;
@@ -966,8 +1190,11 @@ void play_settle(Play *p)
 	int n;
 	if (!r) return;
 	if (p->state == PS_FLY || p->state == PS_RESULT) {
-		apply(p);
-		if (p->state != PS_DONE) p->state = PS_AIM;
+		/* a computer golfer's result on the map carries on after the save, counted once */
+		uint8_t live = p->cpu && p->view == PLAY_MAP && p->state == PS_RESULT;
+		if (!p->applied) apply(p);
+		p->applied = live;
+		if (!live && p->state != PS_DONE) p->state = PS_AIM;
 	}
 	if (!r->over && rules_hole_over(r)) rules_advance(r);
 	else if (!r->over && (n = rules_next(r, pin(p))) >= 0) r->turn = (uint8_t)n;
@@ -997,11 +1224,36 @@ static void SEC_UI pose(Play *p, Surface *s, Surface *bg)
 	p->redraw |= R_OVER;
 }
 
+/* Whether a computer golfer's wait is over: it starts on the first frame after wait was set. */
+static uint8_t SEC_UI waited(Play *p, uint32_t now, uint32_t ms)
+{
+	if (p->wait) {
+		p->tw = now;
+		p->wait = 0;
+	}
+	return (uint32_t)(now - p->tw) >= ms;
+}
+
+/* The map showing a quick computer golfer's result: on to the next shot,
+ * then their score, then whoever is next. */
+static int SEC_UI map_frame(Play *p, uint32_t now)
+{
+	int f;
+	if (!p->cpu || (p->state != PS_RESULT && p->state != PS_DONE)) return 0;
+	if (!waited(p, now, PLAY_CPU_MS)) return PL_ANIM;
+	if (p->state == PS_DONE) return after_done(p);
+	f = next(p);
+	if (f) return f;
+	/* holed: the score on the panel */
+	return PL_PANEL | PL_ANIM;
+}
+
 int play_frame(Play *p, Surface *s, Surface *bg, uint32_t now)
 {
 	int flags = 0;
 	uint8_t k;
 
+	if (p->view == PLAY_MAP) return map_frame(p, now);
 	if (p->view != PLAY_SCENE) return 0;
 	camera(p, s);
 	p->dirty.w = 0;
@@ -1012,6 +1264,19 @@ int play_frame(Play *p, Surface *s, Surface *bg, uint32_t now)
 	}
 
 	switch (p->state) {
+	case PS_AIM:
+		/* a computer golfer swings once the scene has shown a moment */
+		if (p->cpu) {
+			if (waited(p, now, PLAY_CPU_AIM_MS)) launch(p);
+			flags |= PL_ANIM;
+		}
+		break;
+	case PS_DONE:
+		if (p->cpu) {
+			if (waited(p, now, PLAY_CPU_MS)) return after_done(p);
+			flags |= PL_ANIM;
+		}
+		break;
 	case PS_UP:
 		p->mpos = meter_pos(p, now);
 		if (p->mpos >= W16) {
@@ -1067,7 +1332,7 @@ int play_frame(Play *p, Surface *s, Surface *bg, uint32_t now)
 		break;
 	}
 	case PS_RESULT:
-		if ((int32_t)(now - p->t0) >= RESULT_MS) {
+		if ((int32_t)(now - p->t0) >= (p->cpu ? PLAY_CPU_MS : RESULT_MS)) {
 			int f = next(p);
 			if (f) return f;
 			break;
@@ -1151,9 +1416,28 @@ void play_status(Surface *s, const Play *p, const char *info)
 {
 	int16_t w = s->lw - 4;
 
+	if (p->cpu && p->state == PS_RESULT) {
+		/* a computer golfer's shot: who and which shot, and where it went */
+		char t[24];
+		int16_t n = 0;
+		face(s);
+		add(t, &n, p->round->pl[p->cur].name);
+		add(t, &n, ", shot ");
+		play_num(t + n, p->stroke);
+		readout(s, 2, ROW_A, s->lw - 4, t, -1, UIC_PAPER);
+		readout(s, 2, ROW_B, s->lw - 4, p->msg1, -1, UIC_TEXT_HI);
+		return;
+	}
+	if (p->cpu && p->state == PS_DONE) {
+		face(s);
+		well(s, 2, ROW_A, s->lw - 4, 2 * ROW_H + 1);
+		box_text(s, 2, ROW_A, s->lw - 4, p->msg1, -1, 0, UIC_TEXT_HI);
+		box_text(s, 2, ROW_B, s->lw - 4, p->msg2, -1, 0, UIC_PAPER);
+		return;
+	}
 	hole_row(s, p->rv.hole);
 	if (!info) info = p->rv.hole->name;
-	if (p->round) {
+	if (p->round && !practice(p)) {
 		w = CARD_X - 3;
 		button(s, CARD_X, ROW_B, CARD_W, "Card");
 	}
@@ -1166,9 +1450,15 @@ void play_turn(Surface *s, const Play *p)
 	int16_t n = 0;
 
 	hole_row(s, p->rv.hole);
-	add(t, &n, p->round ? p->round->pl[p->cur].name : "Player 1");
-	add(t, &n, ", shot ");
-	play_num(t + n, p->stroke);
+	if (practice(p)) {
+		/* "Range, ball 3" */
+		add(t, &n, p->round->mode == MODE_RANGE ? "Range, ball " : "Green, ball ");
+		play_num(t + n, (uint32_t)p->round->balls + 1);
+	} else {
+		add(t, &n, p->round ? p->round->pl[p->cur].name : "Player 1");
+		add(t, &n, ", shot ");
+		play_num(t + n, p->stroke);
+	}
 	readout(s, 2, ROW_B, s->lw - 4, t, -1, UIC_PAPER);
 }
 
@@ -1181,7 +1471,8 @@ void play_card(Surface *s, const Play *p)
 		readout(s, 2, ROW_B, s->lw - 4, p->rv.hole->name, -1, UIC_PAPER);
 	}
 	gfx_centre(&c, 1);
-	if (p->round) card_draw(&c, p->round, p->card, p->page, p->csel);
+	if (p->round && p->board) board_draw(&c, p->round, p->card, p->csel);
+	else if (p->round) card_draw(&c, p->round, p->card, p->page, p->csel);
 }
 
 void play_map(Surface *s, const Play *p)

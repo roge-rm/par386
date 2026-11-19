@@ -1,0 +1,7 @@
+# A short putt, or a tap on through whatever is showing: start on the
+# strip, power 390 ms later (hole1.replay's last putt), then a screenshot.
+0 pen-down 20 150
+60 pen-up
+390 pen-down 80 60
+450 pen-up
+3000 snapshot "{out}/{n}-putt.png"

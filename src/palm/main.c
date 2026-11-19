@@ -11,6 +11,7 @@
 #include "sonykeys.h"
 #include "audio.h"
 #include "sound.h"
+#include "records.h"
 
 #define kMinRomVersion sysMakeROMVersion(3, 1, 0, sysROMStageRelease, 0)
 #define kRom35 sysMakeROMVersion(3, 5, 0, sysROMStageRelease, 0)
@@ -42,6 +43,11 @@ static UInt32 gHeapStart;      /* free dynamic heap at launch */
 #define kSaveName    "Par386 Save"
 #define kSaveType    'Save'
 #define PIC_SCENE    0xFFFF     /* gBgPic when the kept copy holds the scene */
+/* App preferences: the computer golfers' shots setting (one byte, backed
+ * up) and the course records (rec_pack). */
+#define kCpuPref     3
+#define kRecPref     4
+static Records gRecords;
 static Boolean gPlaying;
 static Play gPlay;
 static Round gRound;
@@ -215,6 +221,14 @@ static UInt8 MapKey(const EventType *e)
 	if (e->data.keyDown.modifiers & commandKeyMask) return KEY_NONE;
 	if (c == 'c' || c == 'C' || c == 's' || c == 'S') return KEY_CARD;
 	return c >= 32 && c < 256 ? KEY_OTHER : KEY_NONE;
+}
+
+/* An app button that woke the device, or came with the powered-on flag: dropped. */
+static Boolean WakeKey(const EventType *e)
+{
+	WChar c = e->data.keyDown.chr;
+	return (c == vchrHard1 || c == vchrHard2 || c == vchrHard3 || c == vchrHard4) &&
+	       (e->data.keyDown.modifiers & poweredOnKeyMask) != 0;
 }
 
 static Boolean gQuitting;
@@ -560,6 +574,37 @@ static void PlayEnd(void)
 	gPlaying = false;
 }
 
+/* Each course's record line on the courses screen. */
+static void RecordsShow(void)
+{
+	UInt8 k;
+	for (k = 0; k < gCourseCount; k++) {
+		const CourseRecord *c = rec_find(&gRecords, gCourseNames[k], 0);
+		front_record(&gFront, k, c ? c->strokes : 0, c ? c->to_par : 0);
+	}
+}
+
+static void RecordsLoad(void)
+{
+	UInt8 *buf = MemPtrNew(REC_SAVE_MAX);
+	UInt16 size = REC_SAVE_MAX;
+
+	rec_init(&gRecords);
+	if (!buf) return;
+	if (PrefGetAppPreferences(kCreator, kRecPref, buf, &size, true) != noPreferenceFound && size <= REC_SAVE_MAX)
+		rec_unpack(&gRecords, buf, size);
+	MemPtrFree(buf);
+}
+
+static void RecordsSave(void)
+{
+	UInt8 *buf = MemPtrNew(REC_SAVE_MAX);
+	if (!buf) return;
+	PrefSetAppPreferences(kCreator, kRecPref, 1, buf, rec_pack(&gRecords, buf), true);
+	MemPtrFree(buf);
+	RecordsShow();
+}
+
 static void DeleteSave(void)
 {
 	LocalID id = DmFindDatabase(0, kSaveName);
@@ -580,6 +625,8 @@ static void SaveRound(void)
 	if (!gPlaying) return;
 	play_settle(&gPlay);
 	if (gRound.over) {
+		/* a finished round may set course records; a second save of it sets none */
+		if (rec_round(&gRecords, &gRound, 0)) RecordsSave();
 		DeleteSave();
 		return;
 	}
@@ -732,6 +779,14 @@ static Boolean PlayStart(Boolean resume)
 		seed = TimGetSeconds();
 #endif
 		rules_init(&gRound, gCourseNames[gFront.course], gFront.players, c.hole_count, c.par, seed);
+		/* the range is played on the first par 5, the green on the first hole */
+		{
+			UInt8 h = 0, k;
+			if (gFront.mode == MODE_RANGE)
+				for (k = 0; k < c.hole_count; k++)
+					if (c.par[k] >= 5) { h = k; break; }
+			rules_mode(&gRound, gFront.mode, gFront.cpu, h);
+		}
 	}
 	if ((id = DmFindDatabase(0, gRound.course)) == 0 || (gCourseDb = DmOpenDatabase(0, id, dmModeReadOnly)) == 0)
 		return false;
@@ -741,6 +796,7 @@ static Boolean PlayStart(Boolean resume)
 	if ((id = DmFindDatabase(0, kScratchName)) == 0) return false;
 	if ((gScratchDb = DmOpenDatabase(0, id, dmModeReadWrite)) == 0) return false;
 	if (!LoadHole(gRound.hole + 1)) return false;
+	gPlay.quick = gFront.quick;
 	play_start(&gPlay, &gHole, &gGrid, &gRound);
 	gPlaying = true;
 	if (!resume) SaveRound();
@@ -772,6 +828,7 @@ static UInt32 NowMs(void)
 }
 
 static void SceneRender(void);
+static void PlayAct(int f);
 
 /* Plays what the core queued; the birds only on the scene while playing. */
 static void Sound(void)
@@ -811,9 +868,22 @@ static void PlayFrame(void)
 #endif
 
 	gAnim = false;
-	if (!gPlaying || gPlay.view != PLAY_SCENE || !gS.bits) return;
+	if (!gPlaying || !gS.bits) return;
+	if (gPlay.view == PLAY_MAP) {
+		/* a computer golfer's result on the map: on to whatever comes next */
+		f = play_frame(&gPlay, &gS, NULL, NowMs());
+		if (f & ~PL_ANIM) PlayAct(f);
+		else gAnim = (f & PL_ANIM) != 0;
+		return;
+	}
+	if (gPlay.view != PLAY_SCENE) return;
 	gPlay.golf = &gGolf;
 	f = play_frame(&gPlay, &gS, gBgPic == PIC_SCENE ? ScreenKept() : NULL, NowMs());
+	if (f & (PL_BACK | PL_CARD | PL_MAP | PL_NEXT | PL_SCENE)) {
+		/* the end of a hole, a computer golfer's turn on the map, or the range's next ball */
+		PlayAct(f);
+		return;
+	}
 	if (f & PL_RENDER) {
 		/* the next shot, or aimed off the side: SceneRender comes back here once it's drawn */
 		if (f & PL_TURN) TurnStrip();
@@ -934,6 +1004,18 @@ static void SceneRender(void)
 	PlayFrame();
 }
 
+/* The first view of a turn: the scene with the turn panel while it draws,
+ * or a quick computer golfer's result on the map. */
+static void PlayBegin(void)
+{
+	if (gPlay.view == PLAY_MAP) {
+		PlayAct(PL_MAP | PL_ANIM);
+		return;
+	}
+	TurnStrip();
+	SceneRender();
+}
+
 static void PlayAct(int f)
 {
 	/* sounds start before any long draw */
@@ -956,8 +1038,7 @@ static void PlayAct(int f)
 			return;
 		}
 		play_start(&gPlay, &gHole, &gGrid, &gRound);
-		TurnStrip();
-		SceneRender();
+		PlayBegin();
 	} else if (f & PL_CARD) {
 		/* over the kept scene; saved when it opens at the end of a hole */
 		gAnim = false;
@@ -976,6 +1057,16 @@ static void PlayAct(int f)
 #endif
 		PlayStatus();
 		ScreenShowAll();
+		gAnim = (f & PL_ANIM) != 0;
+	} else if (f & PL_PANEL) {
+		URect u;
+		PlayStatus();
+		u.x = 0;
+		u.y = gS.h - RENDER_STATUS * gS.scale;
+		u.w = gS.w;
+		u.h = RENDER_STATUS * gS.scale;
+		ScreenShow(&u);
+		gAnim = (f & PL_ANIM) != 0;
 	} else if ((f & PL_SCENE) && ScreenKept() && gBgPic == PIC_SCENE) {
 		ScreenRestoreAll();
 		PlayFrame();
@@ -1008,10 +1099,10 @@ static void Act(int r)
 {
 	Sound();
 	if (r & FR_SOUND) AudioSetMode(gFront.sound);
+	if (r & FR_CPU) PrefSetAppPreferences(kCreator, kCpuPref, 1, &gFront.quick, 1, true);
 	if (r & (FR_PLAY | FR_CONTINUE)) {
 		if (PlayStart((r & FR_CONTINUE) != 0)) {
-			TurnStrip();
-			SceneRender();
+			PlayBegin();
 			return;
 		}
 		PlayEnd();
@@ -1192,6 +1283,8 @@ static void EventLoop(void)
 			SysHandleEvent(&e);
 			continue;
 		}
+		/* the press that wakes the device isn't ours: no select or swing from it */
+		if (e.eType == keyDownEvent && WakeKey(&e)) continue;
 		if (e.eType == keyDownEvent && gPlaying) {
 			/* the Menu button and backspace go back to the clubhouse */
 			WChar c = e.data.keyDown.chr;
@@ -1284,7 +1377,15 @@ UInt32 PilotMain(UInt16 cmd, void *cmdPBP, UInt16 launchFlags)
 	gFront.sound = AudioOpen();
 	snd_set_hook(Sound);
 	DropLeftover();
+	{
+		UInt8 q = 1;
+		UInt16 size = 1;
+		if (PrefGetAppPreferences(kCreator, kCpuPref, &q, &size, true) == noPreferenceFound || size != 1 || q > 1) q = 1;
+		gFront.quick = q;
+	}
+	RecordsLoad();
 	FindCourses();
+	RecordsShow();
 	front_clubhouse(&gFront, LoadSave(&gRound, false) == LS_OK);
 	gFront.screen = SCR_TITLE;
 	FrmGotoForm(MainForm);
