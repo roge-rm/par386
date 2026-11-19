@@ -39,6 +39,7 @@ static UInt8 gFailMakes;        /* Make fails this many more times */
 static UInt8 gDepth;            /* the screen's depth */
 /* Sony HR */
 static Boolean gSony, gSonyLoaded, gSonyOpen, gSonyMode;
+static Boolean gOS5;            /* an ARM device: fast enough for the views at 320 */
 static UInt16 gSonyRef;
 static UInt32 gSonyW, gSonyH, gSonyDepth;
 static Boolean gSonyColour;
@@ -255,6 +256,8 @@ static Err Make(void)
 	gS.depth = g16 ? 8 : gDepth;
 	if (!gS.bits) return 2;
 	gfx_init(&gS);
+	/* 68k devices (before OS 5) draw the views at 160 and double them at 320 */
+	gS.half = gS.scale == 2 && !gOS5;
 	return errNone;
 }
 
@@ -357,6 +360,7 @@ Err ScreenOpen(void)
 
 	FtrGet(sysFtrCreator, sysFtrNumROMVersion, &rom);
 	gRom35 = rom >= kRom35;
+	gOS5 = rom >= 0x05000000UL;
 	if (gRom35) FtrGet(sysFtrCreator, sysFtrNumWinVersion, &win);
 	if (win >= 4) WinScreenGetAttribute(winScreenDensity, &density);
 	gDD = density == kDensityDouble;
@@ -611,6 +615,6 @@ UInt32 ScreenPicType(void)
 
 void ScreenDescribe(char *t)
 {
-	StrPrintF(t, "%u%s %ux%u%s%s", (UInt16)gDepth, gSony ? " HR" : gDD ? " DD" : "",
-	          (UInt16)gS.w, (UInt16)gS.h, gLE ? " LE" : "", gPins ? " P" : "");
+	StrPrintF(t, "%u%s %ux%u%s%s%s", (UInt16)gDepth, gSony ? " HR" : gDD ? " DD" : "",
+	          (UInt16)gS.w, (UInt16)gS.h, gLE ? " LE" : "", gPins ? " P" : "", gS.half ? " H" : "");
 }

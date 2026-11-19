@@ -156,6 +156,45 @@ static void screens_at(int w, int h, uint8_t scale, uint8_t depth, const char *n
 	sfree(&s);
 }
 
+/* The pictures alone at scale 1 and 2 at one depth: every pixel at 2 is
+ * the one at 1 under it, so 2-bit pictures are doubled. */
+static void pic_double(uint8_t depth)
+{
+	Surface a, b;
+	Front f;
+	int x, y, k, bad = 0;
+
+	front_init(&f);
+	for (k = 0; k < 2; k++) {
+		char name[64];
+		uint16_t id = front_picture(&f), i;
+		surface_wh(&a, 160, 160, 1, depth);
+		surface_wh(&b, 320, 320, 2, depth);
+		for (i = 0; ; i++) {
+			long len;
+			uint8_t *d;
+			snprintf(name, sizeof name, "Pic2-%d.bin", id + i);
+			if (!(d = load(name, &len))) break;
+			CHECK(gfx_pic_band(&a, d, (uint32_t)len) == 0);
+			CHECK(gfx_pic_band(&b, d, (uint32_t)len) == 0);
+			free(d);
+		}
+		CHECK(i > 0);
+		for (y = 0; y < 320; y++)
+			for (x = 0; x < 320; x++) {
+				int per = 8 / depth, sh = 8 - depth - depth * ((x / 2) % per), sh2 = 8 - depth - depth * (x % per);
+				const uint8_t *ra = a.bits + (y / 2) * a.rowBytes, *rb = b.bits + y * b.rowBytes;
+				uint8_t va = depth == 8 ? ra[x / 2] : (uint8_t)(ra[x / 2 / per] >> sh);
+				uint8_t vb = depth == 8 ? rb[x] : (uint8_t)(rb[x / per] >> sh2);
+				bad += ((va ^ vb) & ((1 << depth) - 1)) != 0;
+			}
+		CHECK(bad == 0);
+		sfree(&a);
+		sfree(&b);
+		front_key(&f, KEY_OTHER);
+	}
+}
+
 static void input(void)
 {
 	Front f;
@@ -314,6 +353,16 @@ int main(int argc, char **argv)
 	screens_at(320, 480, 2, 8, "tall");
 	screens_at(480, 320, 2, 8, "wide");
 	screens_at(320, 448, 2, 8, "tx");
+	/* grey 320 screens (Sony HR, or stepped down for memory) get the 2-bit pictures doubled */
+	screens_at(320, 320, 2, 4, "q4");
+	screens_at(320, 320, 2, 2, "q2");
+	screens_at(320, 320, 2, 1, "q1");
+	screens_at(320, 480, 2, 4, "tall4");
+	screens_at(480, 320, 2, 2, "wide2");
+	pic_double(1);
+	pic_double(2);
+	pic_double(4);
+	pic_double(8);
 	input();
 	courses(1);
 	courses(2);

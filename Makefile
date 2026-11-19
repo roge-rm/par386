@@ -138,10 +138,20 @@ build/uitest: host/uitest.c $(HOSTSRC) src/core/*.h | $(BUILD)
 # Draws each screen at 160x160 2-bit and 320x320 8-bit from the packed
 # pictures through the same core code as the Palm build, and checks taps
 # and keys move through the screens.
+# The 320x320 grey screens (doubled 2-bit pictures) are compared with host/ref/.
+UIREFS   = q4-title-320 q4-menu-320 q2-title-320 q2-menu-320
+
 ui-test: build/uitest $(ART)/art.rcp
 	mkdir -p $(DEBUGDIR)/m1b
+	rm -rf build/ui
 	build/uitest $(ART) build/ui
 	python3 tools/topng.py build/ui $(DEBUGDIR)/m1b host-
+	python3 tools/refcmp.py build/ui build/ui-png host/ref $(UIREFS)
+
+ui-ref: build/uitest $(ART)/art.rcp
+	rm -rf build/ui
+	build/uitest $(ART) build/ui
+	python3 tools/refcmp.py build/ui build/ui-png host/ref --update $(UIREFS)
 
 build/rendertest: host/rendertest.c $(HOSTSRC) src/core/*.h | $(BUILD)
 	$(HOSTCC) host/rendertest.c $(HOSTSRC) -lm -o $@
@@ -153,7 +163,8 @@ build/rendertest: host/rendertest.c $(HOSTSRC) src/core/*.h | $(BUILD)
 # compares them with host/ref/. render-ref stores the current ones there.
 REFS     = tee-160 tee-320 fairway-160 fairway-320 approach-160 approach-320 green-160 green-320 \
            d4-tee-160 d4-green-160 d1-tee-160 d1-green-160 d8-tee-320-16 \
-           tee-320x480-16 green-320x480-16 map-320x480 tee-480x320-16 green-480x320-16 map-480x320
+           tee-320x480-16 green-320x480-16 map-320x480 tee-480x320-16 green-480x320-16 map-480x320 \
+           h4-tee-320 h4-map-320 h4-green-320 h2-tee-320 h8-tee-320
 
 render-test: build/rendertest build/courses/Par386-Test.pdb $(ART)/obj.rcp
 	rm -rf build/render && mkdir -p build/render
@@ -210,4 +221,4 @@ tables:
 clean:
 	rm -rf build
 
-.PHONY: all release clean host-test course-test course-render auldkirk ui-test render-test render-ref physics-test rules-test courses tables art
+.PHONY: all release clean host-test course-test course-render auldkirk ui-test ui-ref render-test render-ref physics-test rules-test courses tables art

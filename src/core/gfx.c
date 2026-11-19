@@ -199,10 +199,11 @@ static const uint8_t pic2to4[4] = { 0, 1, 3, 15 };
 static const uint8_t pic2to8[4] = { 0, PAL_GREY + 7, PAL_GREY + 6, 255 };
 
 /* One unpacked picture row at another depth (bd), or an 8-bit 320 wide row
- * halved onto a 160 wide 8-bit surface. */
+ * halved onto a 160 wide 8-bit surface. 2-bit pictures are 160 wide, so at
+ * scale 2 each pixel goes in twice across and the row twice down (y, y + 1). */
 static void SEC_UI pic_row(Surface *s, int16_t y, const uint8_t *src, uint16_t rb, uint8_t bd)
 {
-	int16_t x, n;
+	int16_t x, n, sc = s->scale;
 	uint8_t *p = rowp(s, y);
 
 	if (bd == 8) {
@@ -211,10 +212,25 @@ static void SEC_UI pic_row(Surface *s, int16_t y, const uint8_t *src, uint16_t r
 		return;
 	}
 	n = (int16_t)(rb << 2);
-	for (x = 0; x < n && s->ox + x < s->w; x++) {
-		uint8_t v = (uint8_t)((src[x >> 2] >> (6 - ((x & 3) << 1))) & 3);
-		v = s->depth == 8 ? pic2to8[v] : s->depth == 4 ? pic2to4[v] : (uint8_t)(v == 3);
-		put(s, p, (int16_t)(s->ox + x), v);
+	if (sc == 2 && s->depth == 4 && !(s->ox & 1) && s->ox + 2 * n <= s->w) {
+		/* a byte a pixel */
+		uint8_t *q = p + (s->ox >> 1);
+		for (x = 0; x < n; x++)
+			*q++ = (uint8_t)(pic2to4[(src[x >> 2] >> (6 - ((x & 3) << 1))) & 3] * 0x11);
+	} else {
+		for (x = 0; x < n && s->ox + x * sc < s->w; x++) {
+			uint8_t v = (uint8_t)((src[x >> 2] >> (6 - ((x & 3) << 1))) & 3);
+			if (s->depth != 2) v = s->depth == 8 ? pic2to8[v] : s->depth == 4 ? pic2to4[v] : (uint8_t)(v == 3);
+			put(s, p, (int16_t)(s->ox + x * sc), v);
+			if (sc == 2 && s->ox + 2 * x + 1 < s->w) put(s, p, (int16_t)(s->ox + 2 * x + 1), v);
+		}
+	}
+	if (sc == 2 && y + 1 < s->h) {
+		/* the row again below, whole bytes from the one holding ox */
+		uint8_t *q = p + s->rowBytes;
+		uint16_t a = (uint16_t)(((uint16_t)s->ox << s->lg) >> 3);
+		uint16_t e = (uint16_t)(((uint16_t)(s->ox + 2 * n > s->w ? s->w : s->ox + 2 * n) << s->lg) + 7) >> 3;
+		for (; a < e; a++) q[a] = p[a];
 	}
 }
 
@@ -222,7 +238,7 @@ int gfx_pic_band(Surface *s, const uint8_t *d, uint32_t len)
 {
 	uint16_t y0, rows, rb, col = 0, row = 0, ob;
 	uint32_t i = 8;
-	uint8_t *p, conv, bd, buf[320];
+	uint8_t *p, conv, bd, dbl, buf[320];
 
 	if (len < 8) return -1;
 	y0 = (uint16_t)((d[0] << 8) | d[1]);
@@ -231,15 +247,16 @@ int gfx_pic_band(Surface *s, const uint8_t *d, uint32_t len)
 	bd = d[6];
 	ob = (uint16_t)(((uint16_t)s->ox << s->lg) >> 3);
 	/* the picture's own depth goes straight in; 2 bits can go to 1, 4 or 8,
-	 * and 8 bits at 320 to 8 bits at 160 */
-	conv = bd != s->depth || (bd == 8 && s->scale == 1 && rb > (uint16_t)s->w);
+	 * and doubled at scale 2 (dbl), and 8 bits at 320 to 8 bits at 160 */
+	dbl = (uint8_t)(bd == 2 && s->scale == 2);
+	conv = bd != s->depth || dbl || (bd == 8 && s->scale == 1 && rb > (uint16_t)s->w);
 	if (conv && !(bd == 2 && s->depth != 16) && !(bd == 8 && s->depth == 8 && s->scale == 1 && rb <= sizeof(buf)))
 		return -1;
 	if (bd == 8 && conv) {
 		y0 >>= 1;
 		if (y0 + ((rows + 1) >> 1) + s->oy > s->h) return -1;
 	} else if (conv) {
-		if (rb > sizeof(buf) || y0 + rows + s->oy > s->h) return -1;
+		if (rb > sizeof(buf) || ((y0 + rows) << dbl) + s->oy > s->h) return -1;
 	} else if (rb + ob > s->rowBytes || y0 + rows + s->oy > s->h) {
 		return -1;
 	}
@@ -272,7 +289,7 @@ int gfx_pic_band(Surface *s, const uint8_t *d, uint32_t len)
 			if (col == rb) {
 				col = 0;
 				if (!conv) p += s->rowBytes;
-				else if (bd == 2) pic_row(s, (int16_t)(y0 + row + s->oy), buf, rb, bd);
+				else if (bd == 2) pic_row(s, (int16_t)(((y0 + row) << dbl) + s->oy), buf, rb, bd);
 				else if (!(row & 1)) pic_row(s, (int16_t)(y0 + (row >> 1) + s->oy), buf, rb, bd);
 				row++;
 			}

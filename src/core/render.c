@@ -888,11 +888,80 @@ static uint32_t SEC_RENDER lap(RenderStats *st, uint8_t k, uint32_t t)
 
 uint32_t render_work_size(const Surface *s)
 {
-	uint32_t w = (uint32_t)s->w;
+	uint32_t w = (uint32_t)(s->half && s->scale == 2 ? s->w >> 1 : s->w);
 	return w * 2 + w + sizeof(RObj) * MAX_OBJ + w * POOL_COLS * 2 + BKD_MAX + 16;
 }
 
+/* Half size drawing (Surface.half): a surface over the top left quarter of
+ * s's pixels at scale 1, drawn into and then doubled in place by double_up. */
+static int SEC_RENDER half_of(const Surface *s, Surface *h)
+{
+	if (!s->half || s->scale != 2) return 0;
+	*h = *s;
+	h->w = (int16_t)(s->w >> 1);
+	h->h = (int16_t)(s->h >> 1);
+	h->scale = 1;
+	h->half = 0;
+	h->lw = h->w;
+	h->lh = h->h;
+	h->ox = h->oy = 0;
+	return 1;
+}
+
+/* 4 pixels of 1 bit, doubled across. */
+static const uint8_t dbl1[16] = {
+	0x00, 0x03, 0x0C, 0x0F, 0x30, 0x33, 0x3C, 0x3F, 0xC0, 0xC3, 0xCC, 0xCF, 0xF0, 0xF3, 0xFC, 0xFF
+};
+
+/* Doubles the top left quarter of s across and down to fill it. Row y goes
+ * into row 2y + 1, then that is copied to row 2y; working from the bottom
+ * up, both rows are past every row still to be read. */
+static void SEC_RENDER double_up(Surface *s)
+{
+	uint16_t n = (uint16_t)(((uint16_t)(s->w >> 1) << s->lg) >> 3), j;
+	int16_t y;
+
+	for (y = (int16_t)((s->h >> 1) - 1); y >= 0; y--) {
+		const uint8_t *p = s->bits + MULU16(y, s->rowBytes);
+		uint8_t *q = s->bits + MULU16(2 * y + 1, s->rowBytes), *o = q - s->rowBytes;
+		for (j = 0; j < n; j++) {
+			uint8_t b = p[j];
+			switch (s->lg) {
+			case 3:
+				q[0] = q[1] = b;
+				break;
+			case 2:
+				q[0] = (uint8_t)((b & 0xF0) | (b >> 4));
+				q[1] = (uint8_t)((b & 0x0F) | (b << 4));
+				break;
+			case 1:
+				q[0] = (uint8_t)(((b >> 6) * 0x50) | (((b >> 4) & 3) * 5));
+				q[1] = (uint8_t)((((b >> 2) & 3) * 0x50) | ((b & 3) * 5));
+				break;
+			default:
+				q[0] = dbl1[b >> 4];
+				q[1] = dbl1[b & 15];
+				break;
+			}
+			q += 2;
+		}
+		q -= n << 1;
+		for (j = 0; j < (uint16_t)(n << 1); j++) o[j] = q[j];
+	}
+}
+
+static int SEC_RENDER scene_draw(Surface *s, const RenderView *v, const RenderArt *a, void *work, RenderStats *stats);
+
 int render_scene(Surface *s, const RenderView *v, const RenderArt *a, void *work, RenderStats *stats)
+{
+	Surface h;
+	if (!half_of(s, &h)) return scene_draw(s, v, a, work, stats);
+	if (scene_draw(&h, v, a, work, stats) < 0) return -1;
+	double_up(s);
+	return 0;
+}
+
+static int SEC_RENDER scene_draw(Surface *s, const RenderView *v, const RenderArt *a, void *work, RenderStats *stats)
 {
 	R r;
 	RenderStats local;
@@ -992,7 +1061,26 @@ static void SEC_RENDER dot(const R *r, int16_t x, int16_t y, int16_t n, uint8_t 
 		}
 }
 
+static int SEC_RENDER map_draw(Surface *s, const RenderView *v, RenderMap *out);
+
 int render_map(Surface *s, const RenderView *v, RenderMap *out)
+{
+	Surface h;
+	if (!half_of(s, &h)) return map_draw(s, v, out);
+	if (map_draw(&h, v, out) < 0) return -1;
+	double_up(s);
+	/* where things are on s */
+	out->bx = (int16_t)(out->bx * 2);
+	out->by = (int16_t)(out->by * 2);
+	out->px = (int16_t)(out->px * 2);
+	out->py = (int16_t)(out->py * 2);
+	out->left = (int16_t)(out->left * 2);
+	out->top = (int16_t)(out->top * 2);
+	out->ypp >>= 1;
+	return 0;
+}
+
+static int SEC_RENDER map_draw(Surface *s, const RenderView *v, RenderMap *out)
 {
 	R r;
 	const Hole *h = v->hole;
@@ -1305,7 +1393,18 @@ static void SEC_RENDER gline(const R *r, int16_t x0, int16_t y0, int16_t x1, int
 	}
 }
 
+static int SEC_RENDER green_draw(Surface *s, const RenderView *v);
+
 int render_green(Surface *s, const RenderView *v)
+{
+	Surface h;
+	if (!half_of(s, &h)) return green_draw(s, v);
+	if (green_draw(&h, v) < 0) return -1;
+	double_up(s);
+	return 0;
+}
+
+static int SEC_RENDER green_draw(Surface *s, const RenderView *v)
 {
 	R r;
 	RenderCam c;

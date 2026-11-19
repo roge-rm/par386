@@ -8,6 +8,7 @@
 #include "front.h"
 #include "play.h"
 #include "screen.h"
+#include "sonykeys.h"
 
 #define kMinRomVersion sysMakeROMVersion(3, 1, 0, sysROMStageRelease, 0)
 #define kRom35 sysMakeROMVersion(3, 5, 0, sysROMStageRelease, 0)
@@ -162,6 +163,15 @@ static UInt8 MapKey(const EventType *e)
 		if (k & kNavLeft) return KEY_LEFT;
 		if (k & kNavRight) return KEY_RIGHT;
 		return KEY_NONE;
+	}
+	if (e->data.keyDown.modifiers & commandKeyMask) {
+		/* the Jog Dial: turning works as page up and down, pressing as select */
+		switch (c) {
+		case vchrJogUp: return KEY_UP;
+		case vchrJogDown: return KEY_DOWN;
+		case vchrJogPush: return KEY_SELECT;
+		case vchrJogBack: return KEY_BACK;
+		}
 	}
 	switch (c) {
 	case vchrPageUp: case vchrRockerUp: case chrUpArrow: return KEY_UP;
@@ -766,7 +776,7 @@ static void SceneRender(void)
 {
 	RenderArt art;
 	MemHandle hs[RENDER_TYPES * RENDER_SIZES + 3];
-	UInt16 n = 0, t, k;
+	UInt16 n = 0, t, k, sc;
 	void *work;
 	UInt32 fr;
 #ifdef DEBUG
@@ -793,10 +803,12 @@ static void SceneRender(void)
 	for (t = 0; t < RENDER_TYPES; t++)
 		for (k = 0; k < RENDER_SIZES; k++)
 			LockArt(&art.spr[t][k], 'Spr8', 1000 + t * 10 + k, hs, &n);
-	LockArt(&art.golfer, 'Spr8', 2000 + gS.scale - 1, hs, &n);
+	/* the golfer and backdrop for the scale the scene is drawn at */
+	sc = gS.half ? 1 : gS.scale;
+	LockArt(&art.golfer, 'Spr8', 2000 + sc - 1, hs, &n);
 	/* the course's backdrop, or the first one if it's not in this build */
-	LockArt(&art.backdrop, 'Bkd8', 1000 + 10 * gCourseHdr.scenery + gS.scale - 1, hs, &n);
-	if (!art.backdrop.p) LockArt(&art.backdrop, 'Bkd8', 1000 + gS.scale - 1, hs, &n);
+	LockArt(&art.backdrop, 'Bkd8', 1000 + 10 * gCourseHdr.scenery + sc - 1, hs, &n);
+	if (!art.backdrop.p) LockArt(&art.backdrop, 'Bkd8', 1000 + sc - 1, hs, &n);
 	work = MemPtrNew(render_work_size(&gS));
 	fr = FreeHeap();
 	if (fr < gMinFree || !gMinFree) gMinFree = fr;

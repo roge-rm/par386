@@ -580,6 +580,63 @@ int main(int argc, char **argv)
 			views(&s, "x-", &v, &art[1], 0);
 			sfree(&s);
 		}
+		/* Half size at 320 (Surface.half, slow 68k devices): the views drawn at
+		 * 160 and doubled, with scale 1 art; the scene, map and green view
+		 * match the 160 ones doubled pixel for pixel. */
+		{
+			static const uint8_t hd[4] = { 1, 2, 4, 8 };
+			int k, x, y, bad;
+			for (k = 0; k < 4; k++) {
+				Surface a, b;
+				RenderView gv = v;
+				RenderMap ma, mb;
+				int view;
+				surface_d(&a, 1, hd[k]);
+				surface_d(&b, 2, hd[k]);
+				b.half = 1;
+				CHECK(render_work_size(&b) == render_work_size(&a));
+				gv.green = 1;
+				gv.ball = vec2_make(h.pins[0].x - (2L << 16), h.pins[0].y - (7L << 16));
+				gv.aim = iatan2(h.pins[0].y - gv.ball.y, h.pins[0].x - gv.ball.x);
+				for (view = 0; view < 3; view++) {
+					if (view == 0) {
+						CHECK(draw(&a, &v, &art[0], NULL) == 0);
+						CHECK(draw(&b, &v, &art[0], NULL) == 0);
+					} else if (view == 1) {
+						CHECK(render_map(&a, &v, &ma) == 0);
+						CHECK(render_map(&b, &v, &mb) == 0);
+						CHECK(mb.bx == 2 * ma.bx && mb.py == 2 * ma.py && mb.left == 2 * ma.left && mb.yards == ma.yards);
+					} else {
+						CHECK(render_green(&a, &gv) == 0);
+						CHECK(render_green(&b, &gv) == 0);
+					}
+					bad = 0;
+					for (y = 0; y < 320; y++)
+						for (x = 0; x < 320; x++) bad += pixel(&b, x, y) != pixel(&a, x / 2, y / 2);
+					CHECK(bad == 0);
+					if (bad) printf("  half %d-bit view %d: %d pixels differ\n", hd[k], view, bad);
+				}
+				sfree(&a);
+				sfree(&b);
+			}
+			/* with the status strip and overlays, at 4, 2 and 8 bits (h4-, h2-, h8-) */
+			for (k = 1; k < 4; k++) {
+				char t[8];
+				surface_d(&s, 2, hd[k]);
+				s.half = 1;
+				snprintf(t, sizeof t, "h%d-", hd[k]);
+				views(&s, t, &v, &art[0], 0);
+				sfree(&s);
+			}
+			surface_wh(&s, 320, 480, 2, 4);
+			s.half = 1;
+			views(&s, "hx-", &v, &art[0], 0);
+			sfree(&s);
+			surface_wh(&s, 480, 320, 2, 1);
+			s.half = 1;
+			views(&s, "hx-", &v, &art[0], 0);
+			sfree(&s);
+		}
 		/* too big or not a multiple of 16 across */
 		surface_wh(&s, 328, 320, 2, 8);
 		CHECK(render_scene(&s, &v, &art[1], NULL, NULL) == -1);

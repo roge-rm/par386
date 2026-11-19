@@ -18,6 +18,8 @@ typedef struct {
 	uint8_t depth;
 	uint8_t lg;             /* log2 of depth, set by gfx_init */
 	uint8_t scale;          /* pixels per logical unit: 1 on 160 wide screens, 2 on 320 */
+	uint8_t half;           /* at scale 2, render.c draws the views at scale 1 and doubles
+	                         * them (slow CPUs); the platform sets it, gfx_init leaves it */
 	int16_t lw, lh;         /* size in logical units, set by gfx_init */
 	int16_t ox, oy;         /* where ui.c and pictures put logical 0,0, in pixels; 0 from gfx_init */
 	uint8_t pa[UIC_COUNT];  /* pixel value of each UI colour on even checker squares */
@@ -47,8 +49,8 @@ int16_t SEC_UI gfx_ball_h(void);
 
 /* Picture bands, made by tools/mkart.py: big-endian u16 first row, u16 rows,
  * u16 bytes a row, u8 depth, u8 0, then the rows packed with PackBits.
- * Put at ox, oy. 2-bit bands also go on 1, 4 and 8-bit surfaces, and 8-bit
- * 320 wide ones on 160 wide 8-bit surfaces at half size. Returns 0, or -1
+ * Put at ox, oy. 2-bit bands also go on 1, 4 and 8-bit surfaces, doubled
+ * at scale 2 as they're 160 wide, and 8-bit 320 wide ones on 160 wide 8-bit surfaces at half size. Returns 0, or -1
  * if the band doesn't fit the surface or is cut short. */
 int SEC_UI gfx_pic_band(Surface *s, const uint8_t *d, uint32_t len);
 
