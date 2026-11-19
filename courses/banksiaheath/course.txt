@@ -1,0 +1,9 @@
+# Banksia Heath, an Australian sandbelt course among heath and gum trees.
+# Made by tools/mkbanksia.py.
+name Banksia Heath
+tee Gold
+tee Blue
+tee Red
+holes 18
+scenery 4         # the sandbelt backdrop: low sandy hills in the heat haze
+wind 12           # a moderate breeze

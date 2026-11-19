@@ -40,10 +40,12 @@ STYLES = {
             grass=(98, 158, 70), rough=(64, 116, 50),
             items=[(mkstyle.OBJ_LANDMARK, 0, 172, 30, 22), (OBJ_TREE, 0, 26, 42, 22),
                    (OBJ_PINE, 0, 196, 46, 18), (OBJ_TREE, 1, 58, 33, 10)]),
-    4: dict(sky=((80, 140, 214), (224, 228, 220)), far=('scrub', (96, 112, 84), 5),
-            grass=(126, 164, 76), rough=(178, 160, 104),
-            items=[(OBJ_TREE, 0, 24, 42, 26), (mkstyle.OBJ_LANDMARK, 0, 166, 30, 18),
-                   (OBJ_TREE, 1, 192, 44, 22), (mkstyle.OBJ_ANIMAL, 0, 60, 38, 7)]),
+    4: dict(sky=((80, 140, 214), (236, 232, 218)), far=('sandhills', (120, 136, 150), 9),
+            grass=(126, 164, 76), rough=(96, 110, 60),
+            green=(146, 34, 24, 4), bunkers=[(138, 39, 20, 3.5), (170, 35, 9, 2.5), (62, 36, 12, 2.5)],
+            items=[(OBJ_TREE, 0, 24, 42, 26), (mkstyle.OBJ_LANDMARK, 0, 174, 30, 18),
+                   (OBJ_TREE, 1, 196, 46, 22), (mkstyle.OBJ_ANIMAL, 0, 40, 33, 6),
+                   (OBJ_BUSH, 0, 90, 34, 6), (OBJ_TREE, 0, 104, 29, 9)]),
     5: dict(sky=((120, 150, 190), (236, 222, 196)), far=('hills', (120, 112, 80), 6),
             grass=(110, 150, 62), rough=(150, 132, 80),
             items=[(mkstyle.OBJ_LANDMARK, 0, 180, 36, 22), (OBJ_TREE, 0, 26, 40, 16),
@@ -147,6 +149,23 @@ def paint(s):
         hills = (y >= htop[None, :]) & (y < HORIZON - bh)
         img[hills] = mix((50, 86, 60), haze, 0.35)
         lab[body | hills] = FAR
+    elif kind == 'sandhills':
+        # far low ranges faint in the haze, low sandy hills patched with
+        # scrub in front, and streaks of heat shimmer across them
+        img[band] = far
+        xs = np.arange(W)
+        hp = mkobj.vnoise((1, W), 18, 750 + s)[0]
+        htop = HORIZON - 1 - 4 * hp
+        hills = (y >= htop[None, :]) & (y < HORIZON)
+        sand_c = mix((214, 190, 140), haze, 0.3)
+        shade = 0.92 + 0.12 * (mkobj.vnoise((H, W), 3, 760 + s) - 0.5)
+        img = np.where(hills[..., None], sand_c[None, None] * shade[..., None], img)
+        scrub = hills & (mkobj.vnoise((H, W), 2, 770 + s) > 0.6)
+        img[scrub] = mix((110, 112, 70), haze, 0.3)
+        shimmer = (y >= HORIZON - bh + 2) & (y < HORIZON) & ((y % 2) == 0) & \
+                  (mkobj.vnoise((H, W), 9, 780 + s) > 0.62 + 0 * xs[None, :])
+        img[shimmer] = mix(img[shimmer], np.asarray(haze, float), 0.6)
+        lab[hills] = FAR
     else:
         img[band] = mix(far, haze, 0.2 * (HORIZON - y) / max(1, bh))[band] if False else far
     # ground: rough everywhere, a fairway narrowing to the horizon with mown
@@ -167,6 +186,26 @@ def paint(s):
     img = np.where(ground[..., None], g, img)
     lab[np.broadcast_to(ground, (H, W))] = ROUGH
     lab[ground & fw] = FAIRWAY
+    # a green (x, y, half width, half height), then big ragged bunkers
+    # with a dark lip, cut into it
+    if st.get('green'):
+        gx_, gy_, grx_, gry_ = st['green']
+        on = (np.hypot((x - gx_) / grx_, (y - gy_) / gry_) < 1) & ground
+        img = np.where(on[..., None], np.asarray(mix((140, 196, 96), haze, 0.15))[None, None] *
+                       (1 + 0.06 * ((x // 6 + y // 2) % 2 == 0))[..., None], img)
+        lab[on] = FAIRWAY
+    for k, (bx, by, rx, ry) in enumerate(st.get('bunkers', [])):
+        a = np.arctan2((y - by) / ry, (x - bx) / rx)
+        rag = (1 + 0.16 * np.sin(a * 3 + k) + 0.1 * np.sin(a * 7 + 2 * k)
+               + 0.15 * mkobj.vnoise((H, W), 2, 800 + 10 * s + k))
+        dd = np.hypot((x - bx) / rx, (y - by) / ry) / rag
+        lip = (dd < 1.25) & ground & (y > by - ry * 0.4)
+        sand = (dd < 1.0) & ground
+        img[lip] = img[lip] * 0.6
+        lit = 0.95 + 0.12 * (y - by) / ry
+        img = np.where(sand[..., None], np.asarray((236, 222, 180), float)[None, None] * lit[..., None], img)
+        lab[lip] = ROUGH
+        lab[sand] = FAIRWAY
     # the sprites, far ones first, with a little haze on the far ones
     for typ, v, sx, sy, sh in sorted(st['items'], key=lambda it: it[3]):
         idx, ax, ay = sprite(s, typ, v, sh)

@@ -22,7 +22,8 @@ Backdrops come in sets by the course's scenery number: Bkd8 1000 + 10 *
 scenery + 0 or 1. Scenery 0 is the tree line, 1 the links (sea, hills and a
 town with a kirk), 2 the Irish clifftop (the Atlantic, a far headland with
 its lighthouse, the mainland and clouds), 3 the Japanese bay (the sea, a
-snow-capped volcano, wooded ridges with a pagoda and thin cloud).
+snow-capped volcano, wooded ridges with a pagoda and thin cloud), 4 the
+sandbelt (low sandy hills, scrub and gums in the heat haze).
 
 Usage: mkobj.py OUT [PREVIEW]
 """
@@ -710,6 +711,100 @@ def sakura_art(res, prev):
             preview(idx, prev / f'backdrop-{1030 + k}.png', 2)
 
 
+# Banksia Heath (scenery 4): low sandy hills, scrub and gums in the heat
+# haze, from their own random numbers.
+brng = np.random.default_rng(2386 + 4)
+
+
+def banksia_backdrop(width, height, seed):
+    """The sandbelt backdrop, half a turn wide (it repeats twice a turn):
+    far low ranges, faint in the haze, with low sandy hills in front
+    patched with scrub, then a line of distant gums and heath along the
+    bottom rows so the terrain's far edge meets it. Heat haze over it all:
+    a pale band at the hills' feet broken into shimmering streaks, which
+    lift the bottoms of the gums off the ground like a mirage."""
+    h, w = height * SS, width * SS
+    y, x = np.mgrid[0:h, 0:w] + 0.5
+    u = x[0] / w * 180.0
+    ur = np.radians(u) * 2          # a whole turn across the strip, for waves that wrap
+    fine = brng.random((h, w)) - 0.5
+    ground = h - SS * 2.5             # the bottom rows: the heath meets the terrain here
+
+    # the far ranges: long and low, highest in two places
+    far_p = (0.40 + 0.07 * np.sin(ur * 2 + 0.6) + 0.05 * np.sin(ur * 5 + 2.1) + 0.02 * np.sin(ur * 13 + 0.3))
+    far_p *= 0.75 + 0.25 * np.cos(ur - 1.2)
+    far_top = ground - far_p * h * 0.95
+    far = y >= far_top[None, :]
+    # sandy hills: rounded dunes, bare sand on the crests, scrub lower down
+    sh_p = (0.22 + 0.06 * np.sin(ur * 3 + 1.0) + 0.04 * np.sin(ur * 7 + 0.4) + 0.025 * np.abs(np.sin(ur * 11 + 2)))
+    sand_top = ground - sh_p * h * 0.85
+    hill = y >= sand_top[None, :]
+    depth = (y - sand_top[None, :]) / h
+    scrub_n = pnoise(h, w, SS * 2, seed + 1, SS * 3)
+    scrub = hill & (scrub_n + depth * 2.2 > 0.95)
+    hs = np.clip(0.80 - depth * 1.2 + (pnoise(h, w, SS * 3, seed + 2, SS * 10) - 0.5) * 0.3 + fine * 0.1, 0, 1)
+    cs = np.clip(0.45 + (scrub_n - 0.5) * 0.6 + fine * 0.2, 0, 1)
+    # distant gums: clumps of ragged round crowns on thin pale trunks
+    crowns = np.zeros((h, w), dtype=bool)
+    trunk = np.zeros((h, w), dtype=bool)
+    crown_y = np.full(w, float(ground))
+    for c in np.arange(4, 180, 1) [brng.random(176) < 0.10]:
+        for k in range(int(brng.integers(1, 5))):
+            cx = (c + brng.normal(0, 1.2)) / 180 * w
+            r = SS * brng.uniform(2.4, 3.8)
+            cy = ground - SS * brng.uniform(2.5, 5.0) - r
+            for b in range(3):
+                bx, by = cx + brng.normal(0, r * 0.5), cy + brng.normal(0, r * 0.35)
+                crowns |= ((x - bx) / (r * 0.8)) ** 2 + ((y - by) / (r * 0.6)) ** 2 < 1
+            trunk |= (np.abs(x - cx) < SS * 0.5) & (y > cy) & (y < ground)
+            crown_y = np.minimum(crown_y, np.where(np.abs(x[0] - cx) < r * 1.5, cy, ground))
+    gum_n = pnoise(h, w, SS * 2, seed + 3, SS * 2)
+    heath = y >= ground - SS * (1.0 + 1.2 * pnoise(h, w, SS * 2, seed + 5, SS * 2))
+    gs = np.clip(0.42 + (gum_n - 0.5) * 0.5 - (y - crown_y[None, :]) / h * 0.8 + fine * 0.2, 0, 1)
+    # heat haze: a pale band rising off the ground, streaked across
+    band = (ground - y) / (h * 0.30)
+    streak = pnoise(h, w, SS * 1, seed + 6, SS * 30)
+    rows = ((y // SS) % 3 != 1)
+    haze = (band > 0.05) & (band < 0.7) & rows & (streak > 0.58 + band * 0.4)
+    mirage = (band > 0.08) & (band < 0.25) & (streak > 0.62)
+    zs = np.clip(0.80 + (1 - band) * 0.15 + fine * 0.05, 0, 1)
+    idx = np.zeros((height, width), dtype=np.uint8)
+    for mask, name, sh_, dith in ((far, 'far', 0.82 + fine * 0.1, 0.9),
+                                  (hill, 'sand', hs * 0.55 + 0.25, 0.9),
+                                  (scrub, 'oob', cs * 0.6 + 0.25, 0.9),
+                                  (crowns, 'far', gs * 0.6 + 0.12, 0.9),
+                                  (trunk, 'wall', np.full((h, w), 0.8), 0.3),
+                                  (heath, 'oob', cs * 0.5 + 0.2, 0.9),
+                                  (haze & ~crowns, 'grey', zs, 0.3),
+                                  (mirage, 'grey', zs, 0.3)):
+        cov = shrink(mask.astype(float), SS)
+        shd = shrink(np.where(mask, sh_, 0), SS) / np.maximum(cov, 1e-6)
+        on = cov >= 0.5
+        kk = ramp_index(name, np.clip(shd, 0, 1), (brng.random(idx.shape) - 0.5) * dith)
+        idx[on] = kk[on]
+    # the heat haze over the far ground: long pale streaks of shimmer,
+    # closer together low down, over the far ranges and the sky above them
+    yy, xx = np.mgrid[0:height, 0:width]
+    top_px = (sand_top[::SS] / SS)[None, :]
+    lift = (top_px - yy) / (height * 0.3)           # 0 at the sandy hills' tops, 1 well above
+    gap = np.where(lift < 0.2, 2, 3)
+    run = pnoise(height, width, 1, seed + 7, 40)
+    glow = (lift > -0.2) & (lift < 0.45) & (yy % gap == 0) & (run > 0.3 + 0.8 * np.clip(lift, 0, 1))
+    glow &= (idx == 0) | np.isin(idx, np.arange(RAMPS['far'][0], RAMPS['far'][0] + RAMPS['far'][1]))
+    glow &= ~shrink(crowns.astype(float), SS).astype(bool)
+    idx[glow] = RAMPS['sky'][0] + RAMPS['sky'][1] - 1
+    return idx
+
+
+def banksia_art(res, prev):
+    """Scenery 4, Banksia Heath: Bkd8 1040 and 1041."""
+    big = banksia_backdrop(968, 48, 41)
+    for k, idx in enumerate((big.reshape(24, 2, 484, 2)[:, 0, :, 0], big)):
+        res.append(('Bkd8', 1040 + k, bkd8(idx)))
+        if prev:
+            preview(idx, prev / f'backdrop-{1040 + k}.png', 2)
+
+
 def main():
     out = Path(sys.argv[1])
     prev = Path(sys.argv[2]) if len(sys.argv) > 2 else None
@@ -743,6 +838,7 @@ def main():
     links_art(res, prev)
     carrig_art(res, prev)
     sakura_art(res, prev)
+    banksia_art(res, prev)
     import mkstyle
     mkstyle.make(res, prev)
     rcp = ['/* Made by tools/mkobj.py. */']
