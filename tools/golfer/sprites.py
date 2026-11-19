@@ -2,7 +2,7 @@
 
   python3 sprites.py RENDERDIR OUTDIR [BACKGROUND]
 RENDERDIR holds f01.png ... and meta.json from render.py. For each sprite
-height (20, 40, 60 px for the standing golfer, and 80 for the title at 320)
+height (20, 40, 60 px for the standing golfer, and 80 for play and the title at 320)
 it writes ART/fNN-<h>.png in the repo's art/golfer/: the frame cut straight
 to the golfer ramps of the master palette (tools/mkpal.py), saved as a
 paletted PNG with the master palette and index 0 clear. All frames of a size
@@ -33,6 +33,8 @@ clubs = [np.asarray(Image.open(p.replace('/f', '/c')).convert('RGBA')).astype(np
 
 SIZES = (20, 40, 60, 80)               # sprite height of the standing golfer
 TITLE_ONLY = {80: (1, 4, 13)}          # frames made at a size, if not all
+# frames made after those at a size, with their own grain, so the others stay as they were
+LATE = {80: (2,)}
 rng = np.random.default_rng(386)
 
 RGB, RAMPS, _, _ = mkpal.build()
@@ -71,10 +73,11 @@ def shrink(rgba, scale):
     return np.concatenate([np.clip(rgb, 0, 1), a], -1)
 
 
-def grain(rgb, mask, amount):
+def grain(rgb, mask, amount, g=None):
     """Film/video grain: mostly luminance, a little chroma."""
-    lum = rng.normal(0, amount, rgb.shape[:2])[..., None]
-    chroma = rng.normal(0, amount * 0.35, rgb.shape)
+    g = g or rng
+    lum = g.normal(0, amount, rgb.shape[:2])[..., None]
+    chroma = g.normal(0, amount * 0.35, rgb.shape)
     return np.where(mask[..., None], np.clip(rgb + lum + chroma, 0, 1), rgb)
 
 
@@ -118,10 +121,13 @@ CONTRAST = {20: 1.35, 40: 1.05, 60: 1.0, 80: 1.0}
 
 for h in SIZES:
     scale = h / stand_h
-    frames = []
-    for n, (b, cl) in enumerate(zip(big, clubs)):
-        if h in TITLE_ONLY and n + 1 not in TITLE_ONLY[h]:
-            frames.append(None)
+    frames = [None] * len(big)
+    late = LATE.get(h, ())
+    order = [n for n in range(len(big)) if n + 1 not in late] + [n - 1 for n in late]
+    late_rng = np.random.default_rng(386 + h)
+    for n in order:
+        b, cl = big[n], clubs[n]
+        if h in TITLE_ONLY and n + 1 not in TITLE_ONLY[h] and n + 1 not in late:
             continue
         c = b[y0:y1, x0:x1]
         s = shrink(c, scale)
@@ -131,8 +137,8 @@ for h in SIZES:
         # the shaft as a light line; at 20 px it can't be thinner than a pixel, so it's kept light to stand off the body
         col = k[on][:, :3] if h > 20 else np.maximum(k[on][:, :3], 0.62)
         s[on] = np.concatenate([col, np.ones((on.sum(), 1))], 1)
-        s[..., :3] = grain(s[..., :3], s[..., 3] > 0.4, 0.035 if h >= 40 else 0.02)
-        frames.append(master(s, on))
+        s[..., :3] = grain(s[..., :3], s[..., 3] > 0.4, 0.035 if h >= 40 else 0.02, late_rng if n + 1 in late else None)
+        frames[n] = master(s, on)
     for i, idx in enumerate(frames):
         if idx is not None:
             to_png(idx).save(os.path.join(ART, f'f{i + 1:02d}-{h}.png'), transparency=0)

@@ -741,9 +741,9 @@ static void meter_tests(const Hole *h, const SurfaceGrid *g)
 	f = play_frame(&p, &s, &bg, 0);
 	CHECK(f & PL_DIRTY);
 
-	/* the ball projects where render_scene draws it: the middle column, row 107 */
+	/* the ball projects where render_scene draws it: the middle column, row 127 (BALL_GAP above the bottom of the view) */
 	CHECK(render_point(&p.cam, p.rv.ball.x, p.rv.ball.y, hole_height(h, p.rv.ball.x, p.rv.ball.y), &sx, &sy, &depth));
-	CHECK(sx == 80 && sy >= 105 && sy <= 109);
+	CHECK(sx == 80 && sy >= 125 && sy <= 129);
 
 	/* club changes and aiming */
 	play_key(&p, KEY_DOWN, 10);

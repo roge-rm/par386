@@ -1,10 +1,12 @@
 /* The view from behind the ball (render.h).
  *
- * Camera: CAM_BACK yards behind the ball along the aim line and CAM_UP above
- * it, looking level with the view shifted down so the horizon sits at row
- * HORIZON (no pitch, so verticals stay vertical). That puts the ball about
- * 18 degrees below the eye, low in the middle column, and makes the golfer
- * at the ball 20 px tall on 160 wide screens, the size of the sprite.
+ * Camera: CAM_BACK yards behind the ball along the aim line, looking level
+ * with the view shifted down so the horizon sits at row HORIZON (no pitch,
+ * so verticals stay vertical). Its height puts the ball BALL_GAP rows above
+ * the bottom of the view: about 4 yards on a square screen, more on a tall
+ * one, where the horizon moves down by half the extra rows. That stands the
+ * golfer in the foreground, 40 px tall on 160 wide screens, the size of the
+ * sprite, with the hole in front of him.
  *
  * Terrain is marched front to back in depth steps, every column at each
  * step, with a y-buffer per column (voxel-space style). Each sample fills
@@ -25,10 +27,10 @@
 #include "pal.h"
 #include "paltab.h"
 
-#define CAM_BACK   (14L << 16)        /* yards behind the ball */
-#define CAM_UP     (9L << 15)         /* 4.5 yards above it */
+#define CAM_BACK   (7L << 16)         /* yards behind the ball */
+#define BALL_GAP   7                  /* rows from the ball to the bottom of the view on 160 wide screens */
 #define FOCAL      140                /* pixels per unit of x / depth on 160 wide screens */
-#define HORIZON    62                 /* horizon row on 160 wide screens */
+#define HORIZON    52                 /* horizon row on 160 wide screens */
 #define Z_NEAR     (2L << 16)
 #define Z_FAR      (800L << 16)
 #define OBJ_NEAR   (4L << 16)         /* objects nearer than this are skipped */
@@ -166,6 +168,14 @@ static int16_t SEC_RENDER fit(const Surface *s, int16_t *vh)
 	    s->h < 160 * sc || s->h > 240 * sc) return -1;
 	*vh = (int16_t)(s->h - RENDER_STATUS * sc);
 	return (int16_t)((*vh - (160 - RENDER_STATUS) * sc) / 2);
+}
+
+/* The camera's height above the ball's ground, in yards, that puts the
+ * ball BALL_GAP rows above the bottom of a view vh rows tall with the
+ * horizon on row yh. */
+static fixed SEC_RENDER cam_up(int16_t vh, int16_t yh, int16_t sc)
+{
+	return (fixed)(vh - BALL_GAP * sc - yh) * CAM_BACK / (FOCAL * sc);
 }
 
 /* Writes palette index c at (x, y); p points at the byte holding the pixel. */
@@ -481,6 +491,7 @@ static void SEC_RENDER sample(const R *r, fixed px, fixed py, int16_t m, uint8_t
 #define SEG_SHIFT 2
 #define HALF_Z    32       /* yards */
 #define LONG_Z    64
+#define NEAR_Z    14L      /* yards; nearer, 160 wide screens step z / 11 */
 /* Haze: ground past HAZE_LIFT yards is drawn lighter in its own ramp, up to
  * 2 levels; past HAZE_MIX it goes over to the haze ramp, all of it by
  * HAZE_MIX + 160. At 2 bits it goes over a row at a time (haze_row), so
@@ -874,7 +885,16 @@ static void SEC_RENDER terrain(R *r)
 								const int8_t *nzc = pal_noise + (xx & 15);
 								const uint8_t *pat = pal_pat2 + ((uint16_t)base << 2);
 								int16_t l0 = lv + 8;
-								for (yy = y; yy < ye; yy++, p += rb) {
+								if (l0 >= 8 && l0 <= PAL_RAMP_N * 16 - 8) {
+									/* the noise (-8 to 7) can't take the level off the ramp: no clamps */
+									const int8_t *nzp = nzc + ((y & 15) << 4), *nze = nzc + 256;
+									for (yy = y; yy < ye; yy++, p += rb) {
+										int16_t l = (l0 + (*nzp >> ns)) >> 4;
+										*p = (uint8_t)((*p & nm) | (pat[(l << 2) | (yy & 3)] & mk));
+										nzp += 16;
+										if (nzp >= nze) nzp -= 256;
+									}
+								} else for (yy = y; yy < ye; yy++, p += rb) {
 									int16_t l = (l0 + (nzc[(yy & 15) << 4] >> ns)) >> 4;
 									if (l < 0) l = 0;
 									if (l > PAL_RAMP_N - 1) l = PAL_RAMP_N - 1;
@@ -918,10 +938,10 @@ static void SEC_RENDER terrain(R *r)
 		if (ymax <= 0) break;
 		step++;
 		zl = z;
-		/* z / 16 near (z / 24 on 320 screens), 3 to 6 rows a step from the
-		 * bottom of the view to 14 yards, then z / 21 from 32 yards and z / 11
-		 * from 160, where a step is under a row. */
-		if (z < (32L << 16)) z += r->scale > 1 ? (z >> 5) + (z >> 7) : (z >> 4);
+		/* z / 16 near (z / 24 on 320 screens, z / 11 under NEAR_Z on 160 ones),
+		 * 3 to 7 rows a step from the bottom of the view to 14 yards, then
+		 * z / 21 from 32 yards and z / 11 from 160, where a step is under a row. */
+		if (z < (32L << 16)) z += r->scale > 1 ? (z >> 5) + (z >> 7) : z < (NEAR_Z << 16) ? (z >> 4) + (z >> 5) : (z >> 4);
 		else z += z < (160L << 16) ? (z >> 5) + (z >> 6) : (z >> 4) + (z >> 5);
 	}
 	while (on < r->nobj) snap(r, &r->obj[on++]);
@@ -1156,12 +1176,22 @@ static void SEC_RENDER golfer(const R *r, const RenderData *gd, int16_t bx, int1
 
 	if (px) {
 		int16_t x0 = bx - (int16_t)be16(gd->p + 8), y0 = by - (int16_t)be16(gd->p + 10);
-		for (j = 0; j < h; j++) {
+		/* the columns on screen */
+		int16_t e = r->w - x0;
+		uint16_t i0 = x0 < 0 ? (uint16_t)-x0 : 0, i1 = e < 0 ? 0 : e < (int16_t)w ? (uint16_t)e : w;
+		for (j = 0; j < h; j++, px += w) {
 			int16_t y = y0 + (int16_t)j;
+			uint8_t *row;
 			if (y < 0 || y >= r->vh) continue;
-			for (i = 0; i < w; i++) {
-				uint8_t c = px[MULU16(j, w) + i];
-				if (c) plot(r, x0 + (int16_t)i, y, c, dbl);
+			if (dbl) {
+				for (i = i0; i < i1; i++)
+					if (px[i]) plot(r, x0 + (int16_t)i, y, px[i], 1);
+				continue;
+			}
+			row = r->bits + MULU16(y, r->rb);
+			for (i = i0; i < i1; i++) {
+				int16_t x = x0 + (int16_t)i;
+				if (px[i]) put(r, row + ((uint16_t)x >> (3 - r->lg)), x, y, px[i]);
 			}
 		}
 	}
@@ -1204,6 +1234,35 @@ static void SEC_RENDER golfer_box(const R *r, RenderGolfer *g, int16_t bx, int16
 	g->y = y0;
 	g->w = x1 > x0 && y1 > y0 && x1 - x0 <= n && y1 - y0 <= n ? x1 - x0 : 0;
 	g->h = y1 - y0;
+}
+
+/* Keeps the pixels in the golfer's box in g->under (save) or puts them
+ * back. Drawn at full size it keeps whole bytes of each row, so the pixels
+ * either side of the box in the same bytes go back as they were drawn;
+ * at half size (dbl) one byte a pixel, put back doubled. */
+static void SEC_RENDER under_io(const R *r, const RenderGolfer *g, uint8_t save, uint8_t dbl)
+{
+	uint8_t *u = g->under;
+	int16_t x, y;
+
+	if (g->half) {
+		for (y = g->y; y < g->y + g->h; y++)
+			for (x = g->x; x < g->x + g->w; x++) {
+				if (save) *u = getpx(r, x, y);
+				else setpx(r, x, y, *u, dbl);
+				u++;
+			}
+		return;
+	}
+	{
+		uint8_t k = (uint8_t)(3 - r->lg);
+		uint16_t b0 = (uint16_t)g->x >> k, n = (uint16_t)((((uint16_t)(g->x + g->w - 1)) >> k) - b0 + 1), i;
+		for (y = g->y; y < g->y + g->h; y++, u += n) {
+			uint8_t *p = r->bits + MULU16(y, r->rb) + b0;
+			if (save) for (i = 0; i < n; i++) u[i] = p[i];
+			else for (i = 0; i < n; i++) p[i] = u[i];
+		}
+	}
 }
 
 static RenderClock clock_fn;
@@ -1311,7 +1370,7 @@ int render_pose(Surface *s, const RenderGolfer *g, uint8_t pose, uint8_t ball,
                 int16_t *ox, int16_t *oy, int16_t *ow, int16_t *oh)
 {
 	R r;
-	int16_t x, y, vh;
+	int16_t vh;
 	uint8_t d = g->half;
 	const uint8_t *u = g->under;
 	uint16_t w, h;
@@ -1324,8 +1383,7 @@ int render_pose(Surface *s, const RenderGolfer *g, uint8_t pose, uint8_t ball,
 	r.w = d ? s->w >> 1 : s->w;
 	r.vh = d ? vh >> 1 : vh;
 	if (g->x + g->w > r.w || g->y + g->h > r.vh) return -1;
-	for (y = g->y; y < g->y + g->h; y++)
-		for (x = g->x; x < g->x + g->w; x++) setpx(&r, x, y, *u++, d);
+	under_io(&r, g, 0, d);
 	golfer(&r, &g->pose[pose], g->bx, g->by, ball, d);
 	*ox = d ? g->x << 1 : g->x;
 	*oy = d ? g->y << 1 : g->y;
@@ -1398,7 +1456,7 @@ static int SEC_RENDER scene_draw(Surface *s, const RenderView *v, const RenderAr
 	r.camy = v->ball.y - mulq(CAM_BACK, r.fy);
 	bh = hb_at(r.h, v->ball.x, v->ball.y);
 	groundz = r.h->base + fix_mul(bh << 8, r.h->step);
-	r.camb = fix_div(groundz + CAM_UP - r.h->base, r.h->step) >> 8;
+	r.camb = fix_div(groundz + cam_up(r.vh, r.yh, r.scale) - r.h->base, r.h->step) >> 8;
 	r.stepf = (uint32_t)r.h->step * (uint32_t)r.f;
 
 	t = lap(r.st, 0, 0);
@@ -1422,9 +1480,7 @@ static int SEC_RENDER scene_draw(Surface *s, const RenderView *v, const RenderAr
 		RenderGolfer *g = a->golfer;
 		golfer_box(&r, g, bx, by);
 		if (g->w && g->under) {
-			uint8_t *u = g->under;
-			for (y = g->y; y < g->y + g->h; y++)
-				for (x = g->x; x < g->x + g->w; x++) *u++ = getpx(&r, x, y);
+			under_io(&r, g, 1, 0);
 		} else {
 			g->w = 0;
 		}
@@ -1961,10 +2017,10 @@ static void SEC_RENDER scene_cam(const Surface *s, const RenderView *v, RenderCa
 	c->ry = (int16_t)-c->fx;
 	c->camx = v->ball.x - mulq(CAM_BACK, c->fx);
 	c->camy = v->ball.y - mulq(CAM_BACK, c->fy);
-	c->camz = v->hole->base + fix_mul(bh << 8, v->hole->step) + CAM_UP;
 	c->f = (int16_t)(FOCAL * s->scale);
 	c->cx = s->w / 2;
 	c->yh = (int16_t)(HORIZON * s->scale + fit(s, &vh));
+	c->camz = v->hole->base + fix_mul(bh << 8, v->hole->step) + cam_up(vh, c->yh, s->scale);
 	c->pc = 16384;
 	c->ps = 0;
 	c->zref = 0;

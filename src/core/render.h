@@ -26,10 +26,10 @@ enum { POSE_ADDRESS, POSE_BACK, POSE_TOP, POSE_FINISH, RENDER_POSES };
 
 /* The pixels kept under the golfer, so his pose can change over a finished
  * scene: at most this many logical units square. */
-#define RENDER_UNDER_UNITS 40
+#define RENDER_UNDER_UNITS 56
 
-/* The golfer: his frames for the scale the scene is drawn at (20 px on 160
- * wide screens, 40 on 320), and where render_scene put him. The caller
+/* The golfer: his frames for the scale the scene is drawn at (40 px on 160
+ * wide screens, 80 on 320), and where render_scene put him. The caller
  * keeps it for as long as the scene is shown, with under pointing at
  * render_under_size bytes (or 0: the pose can't change). */
 typedef struct {

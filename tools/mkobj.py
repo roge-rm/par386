@@ -2,8 +2,8 @@
 """Makes the renderer's art for the test hole, cut to the master palette
 (tools/mkpal.py), and packs it for the core:
   OUT/Spr8-ID.bin  object sprites, ID 1000 + type * 10 + size (0 small, 1 big),
-                   the golfer's poses, ID 2000 + 10 * pose + 0 or 1 for 20 or
-                   40 px, and the course sets from tools/mkstyle.py
+                   the golfer's poses, ID 2000 + 10 * pose + 0 or 1 for 40 or
+                   80 px, and the course sets from tools/mkstyle.py
   OUT/Bkd8-ID.bin  the backdrop strip, 1000 for 160 wide screens, 1001 for 320
   OUT/obj.rcp      PilRC DATA lines for all of them
 and previews to PREVIEW if given.
@@ -226,7 +226,7 @@ def spr8(idx, ax, ay, px=None, py=None):
 # Golfer poses the game shows, as frames of tools/golfer: address, half way
 # back, the top of the swing and the finish. Spr8 2000 + 10 * pose + size.
 POSES = (1, 2, 4, 13)
-GOLFER_SIZES = (20, 40)
+GOLFER_SIZES = (40, 80)
 
 
 def golfer(frame, n):
