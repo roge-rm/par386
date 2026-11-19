@@ -400,7 +400,9 @@ d0 = (ball_at - _grip).normalized()
 # Hand keys for the club direction in (toward target, toward ball, up), for
 # the top of the backswing and the finish where the mocap hands wobble.
 # None means use the mocap hands; address and impact aim at the ball.
-CLUB = [None, None, (1.0, -0.08, -0.05), (1.0, -0.08, -0.05), None, (-0.55, 0.15, 0.82), None, None,
+# At the top the shaft points a little left of the target and level, so from
+# behind the ball it shows to the left of the head, not end-on as a stub.
+CLUB = [None, None, (0.62, -0.45, 0.64), (0.80, -0.55, -0.12), None, (-0.55, 0.15, 0.82), None, None,
         None, (0.92, -0.30, 0.15), (0.35, -0.55, 0.76), (-0.50, 0.55, -0.65), (-0.50, 0.55, -0.65)]
 LAG = 80     # degrees between lead forearm and shaft in the downswing, wrists cocked
 up = Vector((0, 0, 1))

@@ -1,6 +1,7 @@
 """Renders every frame of the golfer scene with Cycles on the CPU, transparent.
 
-  blender -b SCENE.blend --python render.py -- OUTDIR [SIZE] [SAMPLES]
+  blender -b SCENE.blend --python render.py -- OUTDIR [SIZE] [SAMPLES] [FRAMES]
+FRAMES is a comma list such as 3,4 to render only those again.
 Writes OUTDIR/f01.png ... at SIZE x SIZE (default 480) without the club
 (it still casts its shadow), and cNN.png with the club alone, everything else
 held out, so sprites.py can draw the shaft as a thin line.
@@ -14,6 +15,7 @@ argv = sys.argv[sys.argv.index('--') + 1:]
 out = argv[0]
 size = int(argv[1]) if len(argv) > 1 else 480
 samples = int(argv[2]) if len(argv) > 2 else 64
+only = [int(x) for x in argv[3].split(',')] if len(argv) > 3 else None
 os.makedirs(out, exist_ok=True)
 
 sc = bpy.context.scene
@@ -62,6 +64,8 @@ def club_pass(f):
     club.visible_camera = False
 
 for f in range(sc.frame_start, sc.frame_end + 1):
+    if only and f not in only:
+        continue
     t = time.time()
     sc.frame_set(f)
     sc.render.filepath = os.path.join(out, f'f{f:02d}.png')

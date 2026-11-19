@@ -24,7 +24,7 @@ Points in records are in quarter yards (u16), and must lie on the hole (0 to wid
 | name | course name, 1 to 31 characters |
 | name × tee sets | tee set names, 1 to 15 characters each |
 | per hole: u8, u16 | par, yards from the longest tee |
-| u8 | version 2 only: scenery, the sky and backdrop art (0 trees, 1 links) |
+| u8 | version 2 only: scenery, the sky, backdrop and object art (0 parkland, 1 links, 2 Irish clifftop, 3 Japanese seaside, 4 Australian sandbelt, 5 South African bush, 6 Canadian Rockies) |
 | u8 × holes | version 2 only: each hole's map turned against the course, 256 a turn, which moves the backdrop |
 
 A name is a length byte and that many Latin-1 characters, no nul.
@@ -56,7 +56,9 @@ The test hole is 2816 bytes. A 32 × 64 heightmap is 2 KB of that, and it doesn'
 
 Surface types: 0 rough, 1 first cut, 2 fairway, 3 deep rough, 4 green, 5 fringe, 6 bunker, 7 water, 8 cart path, 9 out of bounds, 10 tee box.
 
-Object types: 1 tree, 2 pine, 3 palm, 4 bush, 5 rock, 6 house, 7 stand, 8 wall (a dry-stone section 6 yd long at scale 64), 9 gorse, 10 grass (dune grass). Other numbers load and are left for later. Palm and stand have no sprites yet.
+Object types: 1 tree, 2 pine, 3 palm, 4 bush, 5 rock, 6 house, 7 stand (a grandstand), 8 wall (a dry-stone section 6 yd long at scale 64), 9 gorse, 10 grass (dune grass), 11 landmark (16 yd high: the course's kirk, lighthouse, pagoda, windmill, baobab or hotel), 12 animal (1.5 yd: sheep, kangaroo, crane, crocodile, hippo or elk). Other numbers load and are left for later.
+
+Each scenery number has its own sprites for some types (tools/mkstyle.py lists them), in variant 0 and sometimes 1, such as the cherry and the maple for Sakura Bay trees; types it has none for use the shared art, and a variant it has no art for draws as variant 0. Scenery 2 to 6 have object art but no sky or backdrop yet.
 
 ## Surface grid
 
@@ -95,7 +97,7 @@ ellipse bunker 38 236 7 10 [points] [degrees]
 object pine 16 60 [variant] [scale]
 ```
 
-Surface names: rough, first-cut, fairway, deep-rough, green, fringe, bunker, water, path, oob, tee. Object names: tree, pine, palm, bush, rock, house, stand, wall, gorse, grass, or a number.
+Surface names: rough, first-cut, fairway, deep-rough, green, fringe, bunker, water, path, oob, tee. Object names: tree, pine, palm, bush, rock, house, stand, wall, gorse, grass, landmark, animal, or a number.
 
 Auld Kirk (`courses/auldkirk/`) is made by `tools/mkauldkirk.py` (`make auldkirk`), which writes the hole files and heightmaps from a table of centre lines, greens and features.
 

@@ -19,7 +19,7 @@ a few black dots (more in the dark mowing bands), first cut more, rough and
 deep rough over half black, fringe fewer,
 green is grey with one black dot in 16, sand is near white and water is in
 lines. The golfer is a black silhouette with a light cap and shoes, and
-the flag is white so it shows against the trees.
+the flag is white so it shows against the trees. The club is black.
 """
 import os
 import re
@@ -65,7 +65,7 @@ OTHER = [
     ('trousers', 5, [(20, 24, 24), (46, 56, 55), (104, 112, 110)], ('sil', 0, 0, 0)),
     ('cap',      4, [(150, 156, 150), (210, 214, 206), (255, 255, 252)], ('flat', 0, 0, 0)),
     ('shoes',    3, [(92, 92, 90), (170, 170, 166), (232, 232, 228)], ('flat', 0, 0, 0)),
-    ('club',     4, [(40, 40, 42), (110, 112, 112), (196, 198, 196)], ('sil', 0, 0, 0)),
+    ('club',     4, [(40, 40, 42), (110, 112, 112), (196, 198, 196)], ('ink', 0, 0, 0)),
     ('flag',     4, [(110, 10, 10), (190, 30, 24), (244, 70, 54)], ('flag', 0, 0, 0)),
     ('grey',     8, [(28, 28, 28), (128, 128, 128), (236, 236, 236)], ('luma', 0, 0, 0)),
     # for the title and menu art
@@ -73,6 +73,8 @@ OTHER = [
     ('red',      6, [(80, 8, 8), (160, 24, 20), (236, 70, 48)], ('luma', 0, 0, 0)),
     ('gold',     6, [(110, 70, 10), (200, 150, 40), (255, 228, 120)], ('luma', 0, 0, 0)),
     ('navy',     6, [(8, 10, 36), (34, 44, 100), (96, 110, 180)], ('luma', 0, 0, 0)),
+    # cherry blossom for the Sakura Bay trees
+    ('blossom',  4, [(122, 52, 74), (214, 128, 156), (252, 218, 228)], ('luma', 0, 0, 0)),
 ]
 
 
@@ -183,6 +185,9 @@ def pattern(c, st, lvl):
             elif kind == 'flag':
                 # white with a black lower edge, to show against the trees behind
                 v = B if lvl < 0.4 else W
+            elif kind == 'ink':
+                # the club's shaft: black, so the thin line shows on light grass
+                v = B
             elif kind == 'sil':
                 # the golfer's body: a black silhouette, only the lightest parts light
                 v = B if luma(c) < 0.75 else L

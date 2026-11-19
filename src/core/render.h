@@ -12,7 +12,8 @@
 /* Logical rows left at the bottom for the status bar: the view is the top
  * 160 - RENDER_STATUS rows (times the surface's scale). */
 #define RENDER_STATUS     16
-#define RENDER_TYPES      11    /* object types 0..10 (hole.h) */
+#define RENDER_TYPES      13    /* object types 0..12 (hole.h) */
+#define RENDER_VARIANTS   2     /* sprite variants per type, picked by the object's variant byte */
 #define RENDER_SIZES      2     /* sprite sizes per type, small then big */
 
 typedef struct {
@@ -20,11 +21,32 @@ typedef struct {
 	uint32_t len;               /* 0 if missing */
 } RenderData;
 
-/* Spr8 resources by object type and size, the golfer and the Bkd8 strip
- * for the surface's scale (golfer 20 px on 160 wide screens, 40 on 320). */
+/* Golfer poses: address, half way back, the top of the swing, the finish. */
+enum { POSE_ADDRESS, POSE_BACK, POSE_TOP, POSE_FINISH, RENDER_POSES };
+
+/* The pixels kept under the golfer, so his pose can change over a finished
+ * scene: at most this many logical units square. */
+#define RENDER_UNDER_UNITS 40
+
+/* The golfer: his frames for the scale the scene is drawn at (20 px on 160
+ * wide screens, 40 on 320), and where render_scene put him. The caller
+ * keeps it for as long as the scene is shown, with under pointing at
+ * render_under_size bytes (or 0: the pose can't change). */
 typedef struct {
-	RenderData spr[RENDER_TYPES][RENDER_SIZES];
-	RenderData golfer;
+	RenderData pose[RENDER_POSES];
+	uint8_t *under;             /* one byte a pixel, at the drawing scale */
+	int16_t bx, by;             /* the ball point, drawing pixels */
+	int16_t x, y, w, h;         /* the box kept in under, drawing pixels; w is 0 if none */
+	uint8_t half;               /* drawn at half size and doubled (Surface.half) */
+	uint8_t shown;              /* the pose drawn now */
+	uint8_t ball;               /* 1 if the ball is drawn at his feet */
+} RenderGolfer;
+
+/* Spr8 resources by object type, variant and size, the golfer and the Bkd8
+ * strip for the surface's scale. */
+typedef struct {
+	RenderData spr[RENDER_TYPES][RENDER_VARIANTS][RENDER_SIZES];
+	RenderGolfer *golfer;       /* 0 for no golfer */
 	RenderData backdrop;
 } RenderArt;
 
@@ -81,6 +103,15 @@ typedef struct {
 
 /* Bytes of work memory render_scene needs for this surface. */
 uint32_t SEC_RENDER render_work_size(const Surface *s);
+/* Bytes for RenderGolfer.under. */
+uint32_t SEC_RENDER render_under_size(const Surface *s);
+/* Puts pose over the golfer in a finished scene s (or its kept copy), from
+ * the pixels kept under him, with the ball at his feet if ball isn't 0.
+ * Sets *x, *y, *w, *h to the pixels it changed. Returns -1 if it can't
+ * (nothing kept, or no such frame). Doesn't change g: the caller sets
+ * g->shown and g->ball once every copy is done. */
+int SEC_RENDER render_pose(Surface *s, const RenderGolfer *g, uint8_t pose, uint8_t ball,
+                           int16_t *x, int16_t *y, int16_t *w, int16_t *h);
 /* Draws the view. work must hold render_work_size bytes; stats may be 0.
  * Returns 0, or -1 if the surface isn't 160 or 320 wide. */
 int SEC_RENDER render_scene(Surface *s, const RenderView *v, const RenderArt *a,

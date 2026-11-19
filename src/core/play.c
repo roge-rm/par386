@@ -811,6 +811,8 @@ int play_debug_green(Play *p)
 
 void play_resized(Play *p)
 {
+	/* the pixels kept under the golfer are for the old size */
+	if (p->golf) p->golf->w = 0;
 	p->cam_ok = 0;
 	p->npatch = 0;
 	p->redraw |= R_ALL;
@@ -829,7 +831,31 @@ void play_settle(Play *p)
 	else if (!r->over && (n = rules_next(r, pin(p))) >= 0) r->turn = (uint8_t)n;
 }
 
-int play_frame(Play *p, Surface *s, const Surface *bg, uint32_t now)
+/* The golfer's pose for where the swing is: address while aiming, half way
+ * back then the top as the meter goes up, the top on the way down and the
+ * finish once the ball is struck. With the putter he stays at address. */
+static void SEC_UI pose(Play *p, Surface *s, Surface *bg)
+{
+	RenderGolfer *g = p->golf;
+	uint8_t want, ball = p->state <= PS_DOWN;
+	int16_t x, y, w, h;
+
+	if (!g || !g->w || p->rv.green) return;
+	if (p->club == CLUB_PT || p->state == PS_AIM) want = POSE_ADDRESS;
+	else if (p->state == PS_UP) want = p->mpos < (S16 + W16) / 2 ? POSE_BACK : POSE_TOP;
+	else if (p->state == PS_DOWN) want = POSE_TOP;
+	else want = POSE_FINISH;
+	if (want == g->shown && ball == g->ball) return;
+	if (render_pose(s, g, want, ball, &x, &y, &w, &h) < 0) return;
+	if (bg) render_pose(bg, g, want, ball, &x, &y, &w, &h);
+	g->shown = want;
+	g->ball = ball;
+	dirty(p, x, y, w, h);
+	/* overlays over him come off the kept copy and go on again */
+	p->redraw |= R_OVER;
+}
+
+int play_frame(Play *p, Surface *s, Surface *bg, uint32_t now)
 {
 	int flags = 0;
 	uint8_t k;
@@ -908,6 +934,7 @@ int play_frame(Play *p, Surface *s, const Surface *bg, uint32_t now)
 		break;
 	}
 
+	pose(p, s, bg);
 	if (p->redraw & R_OVER) {
 		int16_t mx = 0, my = 0, ok = 0;
 		if (p->state <= PS_DOWN) {

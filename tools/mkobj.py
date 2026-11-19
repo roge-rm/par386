@@ -2,7 +2,8 @@
 """Makes the renderer's art for the test hole, cut to the master palette
 (tools/mkpal.py), and packs it for the core:
   OUT/Spr8-ID.bin  object sprites, ID 1000 + type * 10 + size (0 small, 1 big),
-                   and the golfer, ID 2000 + 0, 1, 2 for 20, 40 and 60 px
+                   the golfer's poses, ID 2000 + 10 * pose + 0 or 1 for 20 or
+                   40 px, and the course sets from tools/mkstyle.py
   OUT/Bkd8-ID.bin  the backdrop strip, 1000 for 160 wide screens, 1001 for 320
   OUT/obj.rcp      PilRC DATA lines for all of them
 and previews to PREVIEW if given.
@@ -14,8 +15,8 @@ Bkd8: u16 width, height, then each row packed with PackBits on its own. 0 is
 clear. The strip repeats twice in a full turn.
 
 Trees and the rest are drawn as lit shapes with grain and no outline, lit
-from the left and behind the camera like the golfer and the terrain. They'll
-be drawn again per course in milestone 11.
+from the left and behind the camera like the golfer and the terrain. The
+art per course style is in tools/mkstyle.py.
 
 Backdrops come in sets by the course's scenery number: Bkd8 1000 + 10 *
 scenery + 0 or 1. Scenery 0 is the tree line, 1 the links (sea, hills and a
@@ -213,30 +214,30 @@ def spr8(idx, ax, ay, px=None, py=None):
     return struct.pack('>HHHHhh', w, h, ax, ay, px, py) + idx.astype(np.uint8).tobytes()
 
 
-def golfer(n):
-    """The golfer's address frame remapped to the golfer ramps. The ball is at the club head."""
-    im = Image.open(ROOT / f'art/golfer/f01-{n}.png')
-    a = np.array(im)
-    p = np.array(im.getpalette()[:768]).reshape(-1, 3)
-    allowed = []
-    for name in ('skin', 'shirt', 'trousers', 'cap', 'shoes', 'club', 'grey'):
-        s, k = RAMPS[name]
-        allowed += range(s, s + k)
-    allowed.append(255)
-    out = np.zeros(a.shape, dtype=np.uint8)
-    cache = {}
-    for v in np.unique(a[a > 0]):
-        cache[v] = mkpal.nearest(tuple(int(c) for c in p[v]), allowed, RGB)
-    for v, i in cache.items():
-        out[a == v] = i
-    h, w = a.shape
-    ys, xs = np.nonzero(a[:, w * 2 // 3:])
+# Golfer poses the game shows, as frames of tools/golfer: address, half way
+# back, the top of the swing and the finish. Spr8 2000 + 10 * pose + size.
+POSES = (1, 2, 4, 13)
+GOLFER_SIZES = (20, 40)
+
+
+def golfer(frame, n):
+    """A golfer frame from art/golfer (already on the master palette, 0
+    clear), trimmed to its pixels. The point is the ball, at the club head
+    in the address frame; all frames share one canvas, so it holds for each."""
+    def load(f):
+        return np.array(Image.open(ROOT / f'art/golfer/f{f:02d}-{n}.png'))
+    a0 = load(1)
+    h, w = a0.shape
+    ys, xs = np.nonzero(a0[:, w * 2 // 3:])
     k = np.argmax(ys * 100 + xs)
     bx, by = int(xs[k] + w * 2 // 3), int(ys[k])
-    ys, xs = np.nonzero(a)
+    ys, xs = np.nonzero(a0)
     feet = int(ys.max()) + 1
     fx = int(round(xs[ys == ys.max()].mean()))
-    return out, fx, feet, bx, by
+    a = load(frame)
+    ys, xs = np.nonzero(a)
+    y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
+    return a[y0:y1, x0:x1].astype(np.uint8), fx - x0, feet - y0, bx - x0, by - y0
 
 
 def backdrop(width, height, seed):
@@ -511,11 +512,12 @@ def main():
             res.append(('Spr8', rid, spr8(idx, ax, ay)))
             if prev:
                 preview(idx, prev / f'spr-{rid}.png', 4)
-    for k, n in enumerate((20, 40, 60)):
-        idx, fx, fy, bx, by = golfer(n)
-        res.append(('Spr8', 2000 + k, spr8(idx, fx, fy, bx, by)))
-        if prev:
-            preview(idx, prev / f'golfer-{n}.png', 4)
+    for p, frame in enumerate(POSES):
+        for k, n in enumerate(GOLFER_SIZES):
+            idx, fx, fy, bx, by = golfer(frame, n)
+            res.append(('Spr8', 2000 + 10 * p + k, spr8(idx, fx, fy, bx, by)))
+            if prev:
+                preview(idx, prev / f'golfer-{p}-{n}.png', 4)
     # Wide enough for half a turn: 160 px is the view's 59.5 degrees (render.c).
     for k, (w, h) in enumerate(((484, 20), (968, 40))):
         idx = backdrop(w, h, 7) if k == 1 else None
@@ -526,6 +528,8 @@ def main():
         if prev:
             preview(idx, prev / f'backdrop-{1000 + k}.png', 2)
     links_art(res, prev)
+    import mkstyle
+    mkstyle.make(res, prev)
     rcp = ['/* Made by tools/mkobj.py. */']
     total = 0
     for typ, rid, data in res:

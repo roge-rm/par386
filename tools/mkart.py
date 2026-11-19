@@ -32,8 +32,9 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 MOCK = HERE / 'mockup'
 SCENE = MOCK / 'r/scene_bg_960.png'
-GOLFER = ROOT / 'art/golfer/f01-40.png'   # address pose, from tools/golfer/
-PIC_TITLE, PIC_MENU = 1000, 1100
+# the finish of the swing, from tools/golfer/: 40 px for 160 screens, 80 for 320
+GOLFER = {1: ROOT / 'art/golfer/f13-40.png', 2: ROOT / 'art/golfer/f13-80.png'}
+PIC_TITLE, PIC_MENU, PIC_PREVIEW = 1000, 1100, 1200
 BAND_ROWS = {2: 160, 8: 64}
 
 
@@ -56,10 +57,8 @@ def title(m, S):
     c = m['C'](S)
     scene = Image.open(SCENE).convert('RGB').resize((c.N, c.N), Image.LANCZOS)
     c.img.paste(scene)
-    # Golfer at address, on the tee at the bottom centre, with a soft shadow; doubled on 320 screens.
-    g = Image.open(GOLFER).convert('RGBA')
-    if S > 1:
-        g = g.resize((g.width * S, g.height * S), Image.NEAREST)
+    # The golfer at the finish, on the tee at the bottom centre, with a soft shadow.
+    g = Image.open(GOLFER[S]).convert('RGBA')
     feet_x, feet_y = 50 * S, 141 * S
     sh = Image.new('L', (c.N, c.N))
     ImageDraw.Draw(sh).ellipse([feet_x - 2 * S, feet_y - 3 * S, feet_x + g.width + 4 * S, feet_y + 2 * S], fill=130)
@@ -129,7 +128,7 @@ def title_grey(m):
     at the horizon; greens are stretched so the rough is dark grey, shadows dither to black and the
     fairway light. The logo, ribbon and golfer go on flat, with no dither."""
     scene = Image.open(SCENE).convert('RGB').resize((160, 160), Image.LANCZOS)
-    g = Image.open(GOLFER).convert('RGBA')
+    g = Image.open(GOLFER[1]).convert('RGBA')
     feet_x, feet_y = 50, 141
     p = scene.load()
 
@@ -275,11 +274,40 @@ def palette():
     return [v for c in rgb for v in c]
 
 
-def to8(img, pal):
+def to8(img, pal, dither=Image.Dither.FLOYDSTEINBERG):
     p = Image.new('P', (1, 1))
     p.putpalette(pal)
-    q = img.convert('RGB').quantize(palette=p, dither=Image.Dither.FLOYDSTEINBERG)
+    q = img.convert('RGB').quantize(palette=p, dither=dither)
     return q
+
+
+def preview_grey(img, lab):
+    """A course preview at 160 size as rows of 2-bit values, cut by region
+    as the title: sky light to white, the distant band and rough dark grey
+    going to black, the fairway light grey, objects black with their light
+    parts light."""
+    import mkpreview as mp
+    p = img.load()
+    rows = []
+    for y in range(img.height):
+        row = []
+        for x in range(img.width):
+            r, g, b = p[x, y]
+            L = (r * 30 + g * 59 + b * 11) / 25500
+            k = lab[y][x]
+            if k == mp.SKY:
+                v = dither(0.93 + 0.1 * (L - 0.65) / 0.25, x, y)
+            elif k == mp.FAR:
+                v = dither(0.6 + 0.3 * (L - 0.3) / 0.4, x, y)
+            elif k == mp.ROUGH:
+                v = dither(0.7 + 0.15 * (L - 0.3) / 0.3, x, y)
+            elif k == mp.FAIRWAY:
+                v = dither(0.9 + 0.06 * (L - 0.5) / 0.15, x, y)
+            else:
+                v = LIGHT if L > 0.7 else BLACK
+            row.append(v)
+        rows.append(row)
+    return rows
 
 
 def main():
@@ -310,6 +338,26 @@ def main():
             gi.putdata([(3 - v) * 85 for row in g for v in row])
             gi.resize((480, 480), Image.NEAREST).save(prev / f'art-{pid}-160-grey.png')
             q.convert('RGB').save(prev / f'art-{pid}-320.png')
+    # course select previews, by scenery number (tools/mkpreview.py)
+    import mkpreview
+    for sc, (img, lab) in mkpreview.make().items():
+        pid = PIC_PREVIEW + 10 * sc
+        small = img.resize((img.width // 2, img.height // 2), Image.LANCZOS)
+        g = preview_grey(small, lab[1::2, ::2])
+        # no dither: the painted grain is enough, and runs pack smaller
+        q = to8(img, pal, Image.Dither.NONE)
+        rows8 = [bytes(q.tobytes()[y * img.width:(y + 1) * img.width]) for y in range(img.height)]
+        for depth, rows in ((2, pack_rows(g, 2)), (8, rows8)):
+            for k, b in enumerate(bands(rows, depth)):
+                name = f'Pic{depth}-{pid + k}.bin'
+                (out / name).write_bytes(b)
+                rcp.append(f'DATA "Pic{depth}" ID {pid + k} "{out / name}"')
+                total += len(b)
+        if prev:
+            gi = Image.new('L', (small.width, small.height))
+            gi.putdata([(3 - v) * 85 for row in g for v in row])
+            gi.resize((small.width * 4, small.height * 4), Image.NEAREST).save(prev / f'preview-{sc}-160-grey.png')
+            q.convert('RGB').resize((img.width * 2, img.height * 2), Image.NEAREST).save(prev / f'preview-{sc}-320.png')
     (out / 'art.rcp').write_text('\n'.join(rcp) + '\n')
     print(f'art: {total} bytes in {len(rcp) - 2} bands, palette 768')
 

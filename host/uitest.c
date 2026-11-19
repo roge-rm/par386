@@ -83,6 +83,17 @@ static void draw(Surface *s, const Front *f)
 	}
 	CHECK(bands > 0);
 	front_draw(f, s);
+	if ((id = front_preview(f)) != 0) {
+		for (k = 0; ; k++) {
+			long len;
+			uint8_t *d;
+			snprintf(name, sizeof name, "Pic%d-%d.bin", s->depth >= 8 ? 8 : 2, id + k);
+			if (!(d = load(name, &len))) break;
+			CHECK(front_preview_band(s, d, (uint32_t)len) == 0);
+			free(d);
+		}
+		CHECK(k > 0);
+	}
 }
 
 static void save(const Surface *s, const char *name)
@@ -247,12 +258,13 @@ static void input(void)
 static void courses(uint8_t scale)
 {
 	static const char *const names[2] = { "Auld Kirk", "Test" };
+	static const uint8_t scenery[2] = { 1, 0 };
 	Surface s;
 	Front f;
 
 	surface(&s, scale);
 	front_init(&f);
-	front_courses(&f, names, 2, 0);
+	front_courses(&f, names, scenery, 2, 0);
 	front_clubhouse(&f, 0);
 	f.menu.sel = MAIN_COURSES;
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_COURSES && !f.dialog);

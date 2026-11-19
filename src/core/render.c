@@ -39,7 +39,7 @@
 
 /* Object heights in 1/16 yards at scale 64, by type. */
 static const uint16_t obj_h16[RENDER_TYPES] = {
-	0, 192, 224, 208, 35, 21, 128, 80, 24, 24, 14
+	0, 192, 224, 208, 35, 21, 128, 80, 24, 24, 14, 256, 24
 };
 
 /* The ball's second pixel and its black edge on 4 greys, from the ball point. */
@@ -281,12 +281,19 @@ static void SEC_RENDER gather(R *r, const RenderView *v, const RenderArt *a)
 	int16_t sx, base;
 	const uint8_t *px, *px2;
 	int32_t hp;
+	uint8_t vr;
 
 	for (i = 0; i < h->object_count; i++) {
 		hole_object(h, i, &ho);
 		if (ho.type >= RENDER_TYPES || !obj_h16[ho.type]) continue;
-		px = sprite(&a->spr[ho.type][0], &sw, &sh);
-		px2 = sprite(&a->spr[ho.type][1], &sw2, &sh2);
+		/* the object's variant, or the first if the art has no such variant */
+		vr = ho.variant < RENDER_VARIANTS ? ho.variant : 0;
+		px = sprite(&a->spr[ho.type][vr][0], &sw, &sh);
+		px2 = sprite(&a->spr[ho.type][vr][1], &sw2, &sh2);
+		if (!px && !px2 && vr) {
+			px = sprite(&a->spr[ho.type][0][0], &sw, &sh);
+			px2 = sprite(&a->spr[ho.type][0][1], &sw2, &sh2);
+		}
 		if (!px && !px2) continue;
 		if (!project(r, ho.pos, &o.depth, &sx)) continue;
 		/* height in pixels: 1/16 yards times focal over depth in 1/16 yards */
@@ -833,8 +840,60 @@ static void SEC_RENDER draw_obj(R *r, const RObj *o)
 	}
 }
 
-/* The golfer at address, his ball point on (bx, by), and the ball. */
-static void SEC_RENDER golfer(R *r, const RenderData *gd, int16_t bx, int16_t by)
+/* The value pixel (x, y) gets for palette index c, as put writes it. */
+static uint8_t SEC_RENDER pixval(const R *r, int16_t x, int16_t y, uint8_t c)
+{
+	uint8_t b = 0;
+	put(r, &b, x, y, c);
+	switch (r->lg) {
+	case 3: return b;
+	case 2: return (uint8_t)(x & 1 ? b & 15 : b >> 4);
+	case 1: return (uint8_t)((b >> (6 - ((x & 3) << 1))) & 3);
+	default: return (uint8_t)((b >> (7 - (x & 7))) & 1);
+	}
+}
+
+static uint8_t SEC_RENDER getpx(const R *r, int16_t x, int16_t y)
+{
+	uint8_t b = *pixp(r, x, y);
+	switch (r->lg) {
+	case 3: return b;
+	case 2: return (uint8_t)(x & 1 ? b & 15 : b >> 4);
+	case 1: return (uint8_t)((b >> (6 - ((x & 3) << 1))) & 3);
+	default: return (uint8_t)((b >> (7 - (x & 7))) & 1);
+	}
+}
+
+/* Writes pixel value v at (x, y), or at the 2 x 2 pixels (2x, 2y) if dbl. */
+static void SEC_RENDER setpx(const R *r, int16_t x, int16_t y, uint8_t v, uint8_t dbl)
+{
+	int16_t i, j, n = dbl ? 2 : 1;
+	uint8_t *p, m, sh;
+
+	if (dbl) { x <<= 1; y <<= 1; }
+	for (j = 0; j < n; j++)
+		for (i = 0; i < n; i++) {
+			int16_t px = x + i;
+			p = r->bits + MULU16(y + j, r->rb) + ((uint16_t)px >> (3 - r->lg));
+			switch (r->lg) {
+			case 3: *p = v; break;
+			case 2: sh = (uint8_t)(px & 1 ? 0 : 4); m = (uint8_t)(15 << sh); *p = (uint8_t)((*p & ~m) | (v << sh)); break;
+			case 1: sh = (uint8_t)(6 - ((px & 3) << 1)); m = (uint8_t)(3 << sh); *p = (uint8_t)((*p & ~m) | (v << sh)); break;
+			default: sh = (uint8_t)(7 - (px & 7)); m = (uint8_t)(1 << sh); *p = (uint8_t)((*p & ~m) | (v << sh)); break;
+			}
+		}
+}
+
+/* Palette index c at (x, y) in the view: put, or doubled with dbl. */
+static void SEC_RENDER plot(const R *r, int16_t x, int16_t y, uint8_t c, uint8_t dbl)
+{
+	if (x < 0 || x >= r->w || y < 0 || y >= r->vh) return;
+	if (dbl) setpx(r, x, y, pixval(r, x, y, c), 1);
+	else put(r, pixp(r, x, y), x, y, c);
+}
+
+/* Spr8 frame d with its ball point on (bx, by), and the ball if ball isn't 0. */
+static void SEC_RENDER golfer(const R *r, const RenderData *gd, int16_t bx, int16_t by, uint8_t ball, uint8_t dbl)
 {
 	uint16_t w, h, i, j;
 	const uint8_t *px = sprite(gd, &w, &h);
@@ -845,28 +904,50 @@ static void SEC_RENDER golfer(R *r, const RenderData *gd, int16_t bx, int16_t by
 			int16_t y = y0 + (int16_t)j;
 			if (y < 0 || y >= r->vh) continue;
 			for (i = 0; i < w; i++) {
-				int16_t x = x0 + (int16_t)i;
 				uint8_t c = px[MULU16(j, w) + i];
-				if (c && x >= 0 && x < r->w) put(r, pixp(r, x, y), x, y, c);
+				if (c) plot(r, x0 + (int16_t)i, y, c, dbl);
 			}
 		}
 	}
+	if (!ball) return;
 	/* the ball: white, with a dark pixel under it on 160 wide screens so it shows on light grass */
 	for (j = 0; j < r->scale; j++)
-		for (i = 0; i < r->scale; i++) {
-			int16_t x = bx + (int16_t)i, y = by - (int16_t)j;
-			if (x >= 0 && x < r->w && y >= 0 && y < r->vh) put(r, pixp(r, x, y), x, y, PAL_WHITE);
-		}
-	if (r->scale == 1 && by + 1 < r->vh && by + 1 >= 0 && bx >= 0 && bx < r->w)
-		put(r, pixp(r, bx, by + 1), bx, by + 1, PAL_GREY + 1);
+		for (i = 0; i < r->scale; i++) plot(r, bx + (int16_t)i, by - (int16_t)j, PAL_WHITE, dbl);
+	if (r->scale == 1) plot(r, bx, by + 1, PAL_GREY + 1, dbl);
 	/* On 4 greys only black stands out: the ball is 2 pixels wide with black
 	 * either side and under it. */
-	if (r->lg == 1 && r->scale == 1 && by >= 0 && by < r->vh) {
-		for (i = 0; i < 5; i++) {
-			int16_t x = bx + ball_dx[i], y = by + ball_dy[i];
-			if (x >= 0 && x < r->w && y < r->vh) put(r, pixp(r, x, y), x, y, i ? PAL_BLACK : PAL_WHITE);
-		}
+	if (r->lg == 1 && r->scale == 1)
+		for (i = 0; i < 5; i++) plot(r, bx + ball_dx[i], by + ball_dy[i], i ? PAL_BLACK : PAL_WHITE, dbl);
+}
+
+/* The box round every pose and the ball, kept to the view and to the
+ * under buffer's size; w is 0 if there's nothing to keep. */
+static void SEC_RENDER golfer_box(const R *r, RenderGolfer *g, int16_t bx, int16_t by)
+{
+	int16_t x0 = bx - 2, y0 = by - 2, x1 = bx + 4, y1 = by + 3, n = (int16_t)(RENDER_UNDER_UNITS * r->scale);
+	uint16_t w, h, k;
+
+	for (k = 0; k < RENDER_POSES; k++) {
+		const RenderData *d = &g->pose[k];
+		int16_t ax, ay;
+		if (!sprite(d, &w, &h)) continue;
+		ax = bx - (int16_t)be16(d->p + 8);
+		ay = by - (int16_t)be16(d->p + 10);
+		if (ax < x0) x0 = ax;
+		if (ay < y0) y0 = ay;
+		if (ax + (int16_t)w > x1) x1 = ax + (int16_t)w;
+		if (ay + (int16_t)h > y1) y1 = ay + (int16_t)h;
 	}
+	if (x0 < 0) x0 = 0;
+	if (y0 < 0) y0 = 0;
+	if (x1 > r->w) x1 = r->w;
+	if (y1 > r->vh) y1 = r->vh;
+	g->bx = bx;
+	g->by = by;
+	g->x = x0;
+	g->y = y0;
+	g->w = x1 > x0 && y1 > y0 && x1 - x0 <= n && y1 - y0 <= n ? x1 - x0 : 0;
+	g->h = y1 - y0;
 }
 
 static RenderClock clock_fn;
@@ -884,6 +965,12 @@ static uint32_t SEC_RENDER lap(RenderStats *st, uint8_t k, uint32_t t)
 	now = clock_fn();
 	if (t) st->ticks[k] += now - t;
 	return now;
+}
+
+uint32_t render_under_size(const Surface *s)
+{
+	uint32_t n = (uint32_t)RENDER_UNDER_UNITS * (s->half && s->scale == 2 ? 1 : s->scale);
+	return n * n;
 }
 
 uint32_t render_work_size(const Surface *s)
@@ -955,9 +1042,38 @@ static int SEC_RENDER scene_draw(Surface *s, const RenderView *v, const RenderAr
 int render_scene(Surface *s, const RenderView *v, const RenderArt *a, void *work, RenderStats *stats)
 {
 	Surface h;
+	if (a->golfer) a->golfer->half = 0;
 	if (!half_of(s, &h)) return scene_draw(s, v, a, work, stats);
+	if (a->golfer) a->golfer->half = 1;
 	if (scene_draw(&h, v, a, work, stats) < 0) return -1;
 	double_up(s);
+	return 0;
+}
+
+int render_pose(Surface *s, const RenderGolfer *g, uint8_t pose, uint8_t ball,
+                int16_t *ox, int16_t *oy, int16_t *ow, int16_t *oh)
+{
+	R r;
+	int16_t x, y, vh;
+	uint8_t d = g->half;
+	const uint8_t *u = g->under;
+	uint16_t w, h;
+
+	if (!g->w || !u || pose >= RENDER_POSES || !sprite(&g->pose[pose], &w, &h) || fit(s, &vh) < 0) return -1;
+	r.bits = s->bits;
+	r.rb = s->rowBytes;
+	r.lg = (uint8_t)(s->depth == 8 ? 3 : s->depth == 4 ? 2 : s->depth == 2 ? 1 : 0);
+	r.scale = (uint8_t)(d ? 1 : s->scale);
+	r.w = d ? s->w >> 1 : s->w;
+	r.vh = d ? vh >> 1 : vh;
+	if (g->x + g->w > r.w || g->y + g->h > r.vh) return -1;
+	for (y = g->y; y < g->y + g->h; y++)
+		for (x = g->x; x < g->x + g->w; x++) setpx(&r, x, y, *u++, d);
+	golfer(&r, &g->pose[pose], g->bx, g->by, ball, d);
+	*ox = d ? g->x << 1 : g->x;
+	*oy = d ? g->y << 1 : g->y;
+	*ow = d ? g->w << 1 : g->w;
+	*oh = d ? g->h << 1 : g->h;
 	return 0;
 }
 
@@ -1039,7 +1155,20 @@ static int SEC_RENDER scene_draw(Surface *s, const RenderView *v, const RenderAr
 		bx = r.cx;
 		by = (int16_t)(r.yh + (MULS16(dz6(r.camb, bh), m) >> sh));
 	}
-	golfer(&r, &a->golfer, bx, by);
+	if (a->golfer) {
+		RenderGolfer *g = a->golfer;
+		golfer_box(&r, g, bx, by);
+		if (g->w && g->under) {
+			uint8_t *u = g->under;
+			for (y = g->y; y < g->y + g->h; y++)
+				for (x = g->x; x < g->x + g->w; x++) *u++ = getpx(&r, x, y);
+		} else {
+			g->w = 0;
+		}
+		g->shown = POSE_ADDRESS;
+		g->ball = 1;
+		golfer(&r, &g->pose[POSE_ADDRESS], bx, by, 1, 0);
+	}
 	lap(r.st, RS_GOLFER, t);
 
 	/* the status strip, black for now */
@@ -1178,7 +1307,7 @@ static int SEC_RENDER map_draw(Surface *s, const RenderView *v, RenderMap *out)
 	for (i = 0; i < h->object_count; i++) {
 		hole_object(h, i, &o);
 		if (o.type == OBJ_ROCK || o.type == OBJ_WALL) dot(&r, MX(o.pos.x), MY(o.pos.y), sc, PAL_ROCK + 3);
-		else if (o.type == OBJ_HOUSE) dot(&r, MX(o.pos.x) - sc, MY(o.pos.y) - sc, 2 * sc + 1, PAL_WALL + 2);
+		else if (o.type == OBJ_HOUSE || o.type == OBJ_LANDMARK) dot(&r, MX(o.pos.x) - sc, MY(o.pos.y) - sc, 2 * sc + 1, PAL_WALL + 2);
 		else if ((o.type >= OBJ_TREE && o.type <= OBJ_BUSH) || o.type == OBJ_GORSE)
 			dot(&r, MX(o.pos.x) - (sc >> 1), MY(o.pos.y) - (sc >> 1), sc + 1, PAL_TREE + 1);
 	}

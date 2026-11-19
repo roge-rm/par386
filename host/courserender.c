@@ -17,7 +17,7 @@ static int fails, checks;
 
 #define CHECK(cond) do { checks++; if (!(cond)) { fails++; printf("FAIL %s:%d %s\n", __FILE__, __LINE__, #cond); } } while (0)
 
-#define SENTINEL 250    /* a spare palette index the renderer never writes */
+#define SENTINEL 253    /* a spare palette index (PAL_SPARE + 1) the renderer never writes */
 
 static const char *outdir;
 
@@ -76,12 +76,18 @@ static RenderData art_file(const char *dir, const char *type, int id)
 
 static void art_load(RenderArt *a, const char *dir, int scale, int scenery)
 {
-	int t, k;
+	int t, v, k;
+	RenderGolfer *g = calloc(1, sizeof *g);
 	memset(a, 0, sizeof *a);
+	/* the course style's sprites, else the shared ones, as main.c picks them */
 	for (t = 0; t < RENDER_TYPES; t++)
-		for (k = 0; k < RENDER_SIZES; k++)
-			a->spr[t][k] = art_file(dir, "Spr8", 1000 + t * 10 + k);
-	a->golfer = art_file(dir, "Spr8", 2000 + scale - 1);
+		for (v = 0; v < RENDER_VARIANTS; v++)
+			for (k = 0; k < RENDER_SIZES; k++) {
+				if (scenery) a->spr[t][v][k] = art_file(dir, "Spr8", 3000 + 200 * scenery + 10 * t + 2 * v + k);
+				if (!a->spr[t][v][k].p && !v) a->spr[t][v][k] = art_file(dir, "Spr8", 1000 + t * 10 + k);
+			}
+	for (k = 0; k < RENDER_POSES; k++) g->pose[k] = art_file(dir, "Spr8", 2000 + 10 * k + scale - 1);
+	a->golfer = g;
 	a->backdrop = art_file(dir, "Bkd8", 1000 + 10 * scenery + scale - 1);
 }
 
@@ -229,11 +235,13 @@ int main(int argc, char **argv)
 	}
 	printf("par %d, %d yd, hole records %u bytes, course %u bytes\n", par, yards, total, total + clen);
 	for (scale = 0; scale < 2; scale++) {
-		int t, z;
+		int t, v, z;
 		for (t = 0; t < RENDER_TYPES; t++)
-			for (z = 0; z < RENDER_SIZES; z++)
-				free((void *)art[scale].spr[t][z].p);
-		free((void *)art[scale].golfer.p);
+			for (v = 0; v < RENDER_VARIANTS; v++)
+				for (z = 0; z < RENDER_SIZES; z++)
+					free((void *)art[scale].spr[t][v][z].p);
+		for (z = 0; z < RENDER_POSES; z++) free((void *)art[scale].golfer->pose[z].p);
+		free(art[scale].golfer);
 		free((void *)art[scale].backdrop.p);
 	}
 	free(crec);

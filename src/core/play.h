@@ -82,6 +82,7 @@ typedef struct {
 	uint8_t card_from;          /* the view it was opened from, PLAY_SCENE or PLAY_MAP */
 	Shot shot;
 	Surface geo;                /* the surface's size and scale as last drawn, for taps */
+	RenderGolfer *golf;         /* the golfer in the scene, set by the platform; 0 for none */
 } Play;
 
 /* A hole on its own with one player, from the tee. seed sets the wind, as
@@ -106,8 +107,9 @@ int SEC_UI play_key(Play *p, uint8_t key, uint32_t now);
 int SEC_UI play_tap(Play *p, int16_t x, int16_t y, uint32_t now);
 /* Moves the meter and the ball on to now and draws what changed over the
  * scene in s, taking old overlays off from bg (the kept scene, or 0 if
- * there's none). Call after PL_RENDER or PL_SCENE, and while PL_ANIM is set. */
-int SEC_UI play_frame(Play *p, Surface *s, const Surface *bg, uint32_t now);
+ * there's none). The golfer's pose follows the swing in s and bg. Call
+ * after PL_RENDER or PL_SCENE, and while PL_ANIM is set. */
+int SEC_UI play_frame(Play *p, Surface *s, Surface *bg, uint32_t now);
 /* The status strip on the map: hole, par and yards, and a second line of
  * text if info isn't 0 (the hole's name if it is), with the Card button in
  * a round. */

@@ -53,6 +53,9 @@ static Course gCourseHdr;      /* the open course's header: scenery and each hol
 static char gCourseNames[FRONT_COURSES][dmDBNameLength];
 static UInt8 gCourseCount;
 static MemHandle gHoleH, gGridH;
+static RenderGolfer gGolf;     /* the golfer's frames, kept locked while playing, and the pixels under him */
+static MemHandle gGolfH[RENDER_POSES];
+static UInt32 gUnderLen;
 static UInt32 gMinFree;        /* least free heap while the scene was drawn */
 static Boolean gAnim;          /* play wants frames */
 #ifdef DEBUG
@@ -130,6 +133,12 @@ static void Redraw(void)
 #endif
 	gfx_centre(&gS, 1);
 	front_draw(&gFront, &gS);
+	if ((id = front_preview(&gFront)) != 0)
+		for (k = 0; (h = DmGetResource(type, id + k)) != NULL; k++) {
+			front_preview_band(&gS, MemHandleLock(h), MemHandleSize(h));
+			MemHandleUnlock(h);
+			DmReleaseResource(h);
+		}
 	gfx_centre(&gS, 0);
 #ifdef DEBUG
 	t2 = TimGetTicks();
@@ -478,6 +487,57 @@ static Boolean ListVisit(const char *name, UInt16 vol, const char *path, void *c
 	return false;
 }
 
+/* Lets go of the golfer's frames and the pixels kept under him. */
+static void GolferFree(void)
+{
+	UInt16 k;
+
+	for (k = 0; k < RENDER_POSES; k++) {
+		if (gGolfH[k]) {
+			MemHandleUnlock(gGolfH[k]);
+			DmReleaseResource(gGolfH[k]);
+		}
+		gGolfH[k] = NULL;
+		gGolf.pose[k].p = NULL;
+		gGolf.pose[k].len = 0;
+	}
+	if (gGolf.under) MemPtrFree(gGolf.under);
+	gGolf.under = NULL;
+	gGolf.w = 0;
+	gUnderLen = 0;
+}
+
+/* Locks the golfer's frames for scale sc (Spr8 2000 + 10 * pose + sc - 1)
+ * and makes the buffer for the pixels under him. They stay while playing,
+ * so his pose can change over the kept scene. Without the buffer the pose
+ * stays at address. */
+static void GolferLock(UInt16 sc)
+{
+	UInt16 k;
+	UInt32 n = render_under_size(&gS);
+
+	for (k = 0; k < RENDER_POSES; k++) {
+		MemHandle h;
+		if (gGolfH[k]) {
+			MemHandleUnlock(gGolfH[k]);
+			DmReleaseResource(gGolfH[k]);
+		}
+		gGolfH[k] = NULL;
+		gGolf.pose[k].p = NULL;
+		gGolf.pose[k].len = 0;
+		h = DmGetResource('Spr8', 2000 + 10 * k + sc - 1);
+		if (!h) continue;
+		gGolfH[k] = h;
+		gGolf.pose[k].p = MemHandleLock(h);
+		gGolf.pose[k].len = MemHandleSize(h);
+	}
+	if (gUnderLen != n) {
+		if (gGolf.under) MemPtrFree(gGolf.under);
+		gGolf.under = MemPtrNew(n);
+		gUnderLen = gGolf.under ? n : 0;
+	}
+}
+
 static void PlayEnd(void)
 {
 	LocalID id;
@@ -490,6 +550,7 @@ static void PlayEnd(void)
 	gScratchDb = gCourseDb = 0;
 	if ((id = DmFindDatabase(0, kScratchName)) != 0) DmDeleteDatabase(0, id);
 	DropImported();
+	GolferFree();
 	gPlaying = false;
 }
 
@@ -745,6 +806,7 @@ static void PlayFrame(void)
 
 	gAnim = false;
 	if (!gPlaying || gPlay.view != PLAY_SCENE || !gS.bits) return;
+	gPlay.golf = &gGolf;
 	f = play_frame(&gPlay, &gS, gBgPic == PIC_SCENE ? ScreenKept() : NULL, NowMs());
 	if (f & PL_RENDER) {
 		/* the next shot, or aimed off the side: SceneRender comes back here once it's drawn */
@@ -797,8 +859,8 @@ static void PlayStatus(void)
 static void SceneRender(void)
 {
 	RenderArt art;
-	MemHandle hs[RENDER_TYPES * RENDER_SIZES + 3];
-	UInt16 n = 0, t, k, sc;
+	MemHandle hs[RENDER_TYPES * RENDER_VARIANTS * RENDER_SIZES + 3];
+	UInt16 n = 0, t, v, k, sc, s = gCourseHdr.scenery;
 	void *work;
 	UInt32 fr;
 #ifdef DEBUG
@@ -822,15 +884,23 @@ static void SceneRender(void)
 		return;
 	}
 	MemSet(&art, sizeof(art), 0);
+	/* the course style's sprites (tools/mkstyle.py), else the shared ones;
+	 * a variant the style doesn't have is left out and render.c uses the first */
 	for (t = 0; t < RENDER_TYPES; t++)
-		for (k = 0; k < RENDER_SIZES; k++)
-			LockArt(&art.spr[t][k], 'Spr8', 1000 + t * 10 + k, hs, &n);
+		for (v = 0; v < RENDER_VARIANTS; v++)
+			for (k = 0; k < RENDER_SIZES; k++) {
+				if (s) LockArt(&art.spr[t][v][k], 'Spr8', 3000 + 200 * s + 10 * t + 2 * v + k, hs, &n);
+				if (!art.spr[t][v][k].p && !v) LockArt(&art.spr[t][v][k], 'Spr8', 1000 + t * 10 + k, hs, &n);
+			}
 	/* the golfer and backdrop for the scale the scene is drawn at */
 	sc = gS.half ? 1 : gS.scale;
-	LockArt(&art.golfer, 'Spr8', 2000 + sc - 1, hs, &n);
+	GolferLock(sc);
+	art.golfer = &gGolf;
+	gPlay.golf = &gGolf;
 	/* the course's backdrop, or the first one if it's not in this build */
 	LockArt(&art.backdrop, 'Bkd8', 1000 + 10 * gCourseHdr.scenery + sc - 1, hs, &n);
 	if (!art.backdrop.p) LockArt(&art.backdrop, 'Bkd8', 1000 + sc - 1, hs, &n);
+	gGolf.w = 0;    /* no golfer box until render_scene sets one */
 	work = MemPtrNew(render_work_size(&gS));
 	fr = FreeHeap();
 	if (fr < gMinFree || !gMinFree) gMinFree = fr;
@@ -1159,7 +1229,9 @@ static void FindCourses(void)
 	Boolean first = true;
 	char name[dmDBNameLength];
 	const char *shown[FRONT_COURSES];
-	UInt8 k, pre = StrLen(kCoursePre);
+	UInt8 k, pre = StrLen(kCoursePre), scenery[FRONT_COURSES];
+	DmOpenRef db;
+	Course c;
 
 	gCourseCount = 0;
 	while (DmGetNextDatabaseByTypeCreator(first, &st, kCourseType, kCreator, false, &card, &id) == errNone) {
@@ -1170,8 +1242,16 @@ static void FindCourses(void)
 		AddCourse(name);
 	}
 	if (HaveVfs()) CardScan(ListVisit, NULL);
-	for (k = 0; k < gCourseCount; k++) shown[k] = gCourseNames[k] + pre;
-	front_courses(&gFront, shown, gCourseCount, 0);
+	/* each one's scenery for its preview; a card course isn't read until it's played */
+	for (k = 0; k < gCourseCount; k++) {
+		shown[k] = gCourseNames[k] + pre;
+		scenery[k] = SCENERY_UNKNOWN;
+		if ((id = DmFindDatabase(0, gCourseNames[k])) != 0 && (db = DmOpenDatabase(0, id, dmModeReadOnly)) != NULL) {
+			if (CourseHeader(db, &c)) scenery[k] = c.scenery;
+			DmCloseDatabase(db);
+		}
+	}
+	front_courses(&gFront, shown, scenery, gCourseCount, 0);
 }
 
 /* Globals are only safe on a normal launch, so other launch codes do nothing here. */

@@ -73,7 +73,9 @@
 #define PAL_GOLD_N 6
 #define PAL_NAVY 242
 #define PAL_NAVY_N 6
-#define PAL_SPARE 248
-#define PAL_SPARE_N 7
+#define PAL_BLOSSOM 248
+#define PAL_BLOSSOM_N 4
+#define PAL_SPARE 252
+#define PAL_SPARE_N 3
 
 #endif

@@ -73,14 +73,14 @@ ART      = build/art
 $(SCENE): tools/mockup/render.py
 	python3 tools/mockup/render.py tools/mockup/r 960
 
-$(ART)/art.rcp: tools/mkart.py tools/mkpal.py tools/mockup/mock1b.py tools/mockup/mock1b2.py src/core/uicol.h art/golfer/f01-40.png $(SCENE)
+$(ART)/art.rcp: tools/mkart.py tools/mkpal.py tools/mockup/mock1b.py tools/mockup/mock1b2.py src/core/uicol.h tools/mkpreview.py tools/mkstyle.py tools/mkobj.py art/golfer/f13-40.png art/golfer/f13-80.png $(SCENE)
 	python3 tools/mkart.py $(ART)
 
 $(ART)/art.ro: $(ART)/art.rcp
 	pilrc -q -ro $(ART)/art.rcp $@
 
 # The renderer's sprites, golfer and backdrop, cut to the master palette.
-$(ART)/obj.rcp: tools/mkobj.py tools/mkpal.py tools/mkart.py src/core/uicol.h art/golfer/*.png
+$(ART)/obj.rcp: tools/mkobj.py tools/mkstyle.py tools/mkpal.py tools/mkart.py src/core/uicol.h art/golfer/*.png
 	python3 tools/mkobj.py $(ART) $(DEBUGDIR)/m3/art
 
 $(ART)/obj.ro: $(ART)/obj.rcp
@@ -174,7 +174,8 @@ build/rendertest: host/rendertest.c $(HOSTSRC) src/core/*.h | $(BUILD)
 REFS     = tee-160 tee-320 fairway-160 fairway-320 approach-160 approach-320 green-160 green-320 \
            d4-tee-160 d4-green-160 d1-tee-160 d1-green-160 d8-tee-320-16 \
            tee-320x480-16 green-320x480-16 map-320x480 tee-480x320-16 green-480x320-16 map-480x320 \
-           h4-tee-320 h4-map-320 h4-green-320 h2-tee-320 h8-tee-320
+           h4-tee-320 h4-map-320 h4-green-320 h2-tee-320 h8-tee-320 \
+           tee-top-160 tee-top-320 tee-finish-160 tee-finish-320 h4-tee-top-320
 
 render-test: build/rendertest build/courses/Par386-Test.pdb $(ART)/obj.rcp
 	rm -rf build/render && mkdir -p build/render

@@ -32,7 +32,7 @@ MAX_OBJECTS = 1024
 SURFACES = ["rough", "first-cut", "fairway", "deep-rough", "green", "fringe",
             "bunker", "water", "path", "oob", "tee"]
 OBJECTS = {"tree": 1, "pine": 2, "palm": 3, "bush": 4, "rock": 5, "house": 6,
-           "stand": 7, "wall": 8, "gorse": 9, "grass": 10}
+           "stand": 7, "wall": 8, "gorse": 9, "grass": 10, "landmark": 11, "animal": 12}
 OBJECT_NAMES = {v: k for k, v in OBJECTS.items()}
 
 PALM_EPOCH = 2082844800    # seconds from 1904 to 1970

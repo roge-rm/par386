@@ -31,7 +31,7 @@ void front_init(Front *f)
 	main_menu(f);
 }
 
-void front_courses(Front *f, const char *const *names, uint8_t count, uint8_t pick)
+void front_courses(Front *f, const char *const *names, const uint8_t *scenery, uint8_t count, uint8_t pick)
 {
 	uint8_t i, k;
 	uint16_t n = 0;
@@ -41,6 +41,7 @@ void front_courses(Front *f, const char *const *names, uint8_t count, uint8_t pi
 	for (i = 0; i < count; i++) {
 		for (k = 0; names[i][k] && k < 23; k++) f->course_list[n++] = names[i][k] == '|' ? ' ' : names[i][k];
 		f->course_list[n++] = '|';
+		f->scenery[i] = scenery ? scenery[i] : SCENERY_UNKNOWN;
 	}
 	while (*b) f->course_list[n++] = *b++;
 	f->course_list[n] = 0;
@@ -67,6 +68,28 @@ uint16_t front_picture(const Front *f)
 	return f->screen == SCR_TITLE ? PIC_TITLE : PIC_MENU;
 }
 
+uint16_t front_preview(const Front *f)
+{
+	uint8_t sc;
+
+	if (f->screen != SCR_COURSES || f->dialog || f->menu.sel >= f->courses) return 0;
+	sc = f->scenery[f->menu.sel];
+	return sc == SCENERY_UNKNOWN ? 0 : (uint16_t)(PIC_PREVIEW + 10 * sc);
+}
+
+int front_preview_band(Surface *s, const uint8_t *d, uint32_t len)
+{
+	int16_t ox = s->ox, oy = s->oy;
+	int r;
+
+	s->ox = (int16_t)(ox + PREVIEW_X * s->scale);
+	s->oy = (int16_t)(oy + PREVIEW_Y * s->scale);
+	r = gfx_pic_band(s, d, len);
+	s->ox = ox;
+	s->oy = oy;
+	return r;
+}
+
 void front_draw(const Front *f, Surface *s)
 {
 	const char *plate = f->screen == SCR_PLAYERS ? "PLAYERS" : f->screen == SCR_COURSES ? "COURSES" :
@@ -80,6 +103,13 @@ void front_draw(const Front *f, Surface *s)
 	for (n = 0; plate[n]; n++) {}
 	ui_ctext(s, PLATE_CX + 1, PLATE_Y + (PLATE_H - UI_CHAR) / 2 + 1, plate, n, UIC_BRASS_LT, -1);
 	ui_ctext(s, PLATE_CX, PLATE_Y + (PLATE_H - UI_CHAR) / 2, plate, n, UIC_BRASS_DK, -1);
+	if (f->screen == SCR_COURSES && f->menu.sel < f->courses) {
+		/* the preview's frame, and a dark box the picture goes in, if there is one */
+		ui_bevel(s, PREVIEW_X - 1, PREVIEW_Y - 1, PREVIEW_W + 2, PREVIEW_H + 2, UIC_BAR_DK, UIC_BAR_LT);
+		ui_fill(s, PREVIEW_X, PREVIEW_Y, PREVIEW_W, PREVIEW_H, UIC_BLACK);
+		if (f->scenery[f->menu.sel] == SCENERY_UNKNOWN)
+			ui_ctext(s, PREVIEW_X + PREVIEW_W / 2, PREVIEW_Y + (PREVIEW_H - UI_CHAR) / 2, "ON CARD", 7, UIC_TEXT, -1);
+	}
 	ui_menu_draw(s, &f->menu);
 	if (f->dialog)
 		ui_dialog_draw(s, &f->dlg);
@@ -96,7 +126,8 @@ static int SEC_UI players_screen(Front *f)
 static int SEC_UI courses_screen(Front *f)
 {
 	f->screen = SCR_COURSES;
-	ui_menu_init(&f->menu, f->course_list, 22, 36, 116, 20);
+	/* tighter lines to leave room for the preview below */
+	ui_menu_init(&f->menu, f->course_list, 22, 24, 116, 14);
 	f->menu.sel = f->course;
 	return FR_REDRAW;
 }
@@ -205,8 +236,9 @@ static int SEC_UI key_in(Front *f, uint8_t key)
 		return 0;
 	}
 	switch (key) {
-	case KEY_UP: f->oldSel = f->menu.sel; ui_menu_move(&f->menu, -1); return FR_REDRAW | FR_LINES;
-	case KEY_DOWN: f->oldSel = f->menu.sel; ui_menu_move(&f->menu, 1); return FR_REDRAW | FR_LINES;
+	/* on the courses screen the preview changes too, so all of it is redrawn */
+	case KEY_UP: f->oldSel = f->menu.sel; ui_menu_move(&f->menu, -1); return FR_REDRAW | (f->screen == SCR_COURSES ? 0 : FR_LINES);
+	case KEY_DOWN: f->oldSel = f->menu.sel; ui_menu_move(&f->menu, 1); return FR_REDRAW | (f->screen == SCR_COURSES ? 0 : FR_LINES);
 	case KEY_SELECT: return open_item(f, f->menu.sel);
 	case KEY_BACK:
 		if (f->screen == SCR_PLAYERS) return open_item(f, BACK_LINE);

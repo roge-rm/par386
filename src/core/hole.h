@@ -31,7 +31,9 @@ enum {
 /* Object types. Unknown ones are kept so newer courses still load. */
 enum {
 	OBJ_TREE = 1, OBJ_PINE, OBJ_PALM, OBJ_BUSH, OBJ_ROCK, OBJ_HOUSE, OBJ_STAND,
-	OBJ_WALL, OBJ_GORSE, OBJ_GRASS
+	OBJ_WALL, OBJ_GORSE, OBJ_GRASS,
+	OBJ_LANDMARK,       /* the course's tall landmark: a kirk, lighthouse, pagoda, etc. */
+	OBJ_ANIMAL          /* the course's animals */
 };
 
 /* Errors from course_parse and hole_parse. */

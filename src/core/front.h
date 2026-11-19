@@ -9,6 +9,15 @@
 /* Background pictures. */
 #define PIC_TITLE 1000
 #define PIC_MENU  1100
+/* Course previews, one picture per scenery number: PIC_PREVIEW + 10 * scenery
+ * (tools/mkpreview.py), shown on the courses screen in the box below. */
+#define PIC_PREVIEW 1200
+#define PREVIEW_X 28
+#define PREVIEW_Y 110
+#define PREVIEW_W 104
+#define PREVIEW_H 32
+/* A course's scenery when the platform can't tell it: no preview. */
+#define SCENERY_UNKNOWN 0xFF
 
 /* Keys, from the platform's buttons. KEY_CARD opens the scorecard while
  * playing (c or s). */
@@ -54,6 +63,7 @@ typedef struct {
 	uint8_t sound;           /* SOUND_* */
 	char settings_list[24];  /* "Sound: On|Back" */
 	char course_list[FRONT_COURSE_LIST];    /* their names and Back, "A|B|Back" */
+	uint8_t scenery[FRONT_COURSES];         /* each one's scenery, or SCENERY_UNKNOWN */
 	UiMenu menu;
 	UiDialog dlg;
 } Front;
@@ -67,8 +77,13 @@ int SEC_UI front_tap(Front *f, int16_t x, int16_t y);
 void SEC_UI front_message(Front *f, const char *title, const char *text);
 /* Back to the clubhouse menu, with Continue round if saved isn't 0. */
 void SEC_UI front_clubhouse(Front *f, uint8_t saved);
-/* Sets the installed courses' names (count of them) and the one picked. */
-void SEC_UI front_courses(Front *f, const char *const *names, uint8_t count, uint8_t pick);
+/* Sets the installed courses' names (count of them), their scenery numbers
+ * (or NULL if not known) and the one picked. */
+void SEC_UI front_courses(Front *f, const char *const *names, const uint8_t *scenery, uint8_t count, uint8_t pick);
+/* The preview picture for the highlighted line of the courses screen, or 0. */
+uint16_t SEC_UI front_preview(const Front *f);
+/* Draws one band of the preview picture into its box; -1 if it doesn't fit. */
+int SEC_UI front_preview_band(Surface *s, const uint8_t *d, uint32_t len);
 /* The main menu action for a line of the menu. */
 uint8_t SEC_UI front_action(const Front *f, uint8_t line);
 

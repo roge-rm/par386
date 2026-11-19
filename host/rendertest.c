@@ -17,7 +17,7 @@ static int fails, checks;
 
 #define CHECK(cond) do { checks++; if (!(cond)) { fails++; printf("FAIL %s:%d %s\n", __FILE__, __LINE__, #cond); } } while (0)
 
-#define SENTINEL 250    /* a spare palette index the renderer never writes */
+#define SENTINEL 253    /* a spare palette index (PAL_SPARE + 1) the renderer never writes */
 
 static const char *outdir;
 
@@ -75,14 +75,19 @@ static RenderData art_file(const char *dir, const char *type, int id)
 	return d;
 }
 
+/* The shared sprites, the golfer's poses with room for the pixels under
+ * him at any scale, and the first backdrop. */
 static void art_load(RenderArt *a, const char *dir, int scale)
 {
 	int t, k;
+	RenderGolfer *g = calloc(1, sizeof *g);
 	memset(a, 0, sizeof *a);
 	for (t = 0; t < RENDER_TYPES; t++)
 		for (k = 0; k < RENDER_SIZES; k++)
-			a->spr[t][k] = art_file(dir, "Spr8", 1000 + t * 10 + k);
-	a->golfer = art_file(dir, "Spr8", 2000 + scale - 1);
+			a->spr[t][0][k] = art_file(dir, "Spr8", 1000 + t * 10 + k);
+	for (k = 0; k < RENDER_POSES; k++) g->pose[k] = art_file(dir, "Spr8", 2000 + 10 * k + scale - 1);
+	g->under = malloc(RENDER_UNDER_UNITS * RENDER_UNDER_UNITS * 4);
+	a->golfer = g;
 	a->backdrop = art_file(dir, "Bkd8", 1000 + scale - 1);
 }
 
@@ -91,10 +96,13 @@ static void art_free(RenderArt *a)
 	int t, k;
 	for (t = 0; t < RENDER_TYPES; t++)
 		for (k = 0; k < RENDER_SIZES; k++)
-			free((void *)a->spr[t][k].p);
-	free((void *)a->golfer.p);
+			free((void *)a->spr[t][0][k].p);
+	for (k = 0; k < RENDER_POSES; k++) free((void *)a->golfer->pose[k].p);
+	free(a->golfer->under);
+	free(a->golfer);
 	free((void *)a->backdrop.p);
 }
+
 
 #define GUARD 64
 
@@ -129,13 +137,15 @@ static void sfree(Surface *s)
 	free(b);
 }
 
-static uint8_t pixel(const Surface *s, int x, int y)
+static uint8_t pixel_of(const uint8_t *bits, const Surface *s, int x, int y)
 {
-	const uint8_t *row = s->bits + (size_t)y * s->rowBytes;
+	const uint8_t *row = bits + (size_t)y * s->rowBytes;
 	int d = s->depth, per = 8 / d;
 	if (d == 8) return row[x];
 	return (uint8_t)((row[x / per] >> (8 - d - d * (x % per))) & ((1 << d) - 1));
 }
+
+static uint8_t pixel(const Surface *s, int x, int y) { return pixel_of(s->bits, s, x, y); }
 
 /* NAME-W.pgm (or NAME-WxH.pgm if it isn't square); grey screens keep their
  * depth in the maximum value, which tools/refcmp.py reads. */
@@ -204,6 +214,45 @@ static int draw(Surface *s, const RenderView *v, const RenderArt *a, RenderStats
 	CHECK(left == 0);
 	if (left) printf("  %d pixels left unwritten\n", left);
 	return r;
+}
+
+/* The tee view, then the golfer's poses over it: each changes only the
+ * box render_pose gives, and going back to address with the ball gives the
+ * scene as drawn. Saves the top of the swing and the finish as NAME-top
+ * and NAME-finish if name isn't 0. */
+static void poses(const RenderView *v, const RenderArt *a, int scale, int depth, int half, const char *name)
+{
+	Surface s;
+	uint8_t *first;
+	size_t n;
+	int16_t x, y, w, h;
+	int k, xx, yy, out = 0;
+	char nm[64];
+
+	surface_d(&s, scale, depth);
+	s.half = (uint8_t)half;
+	n = (size_t)s.rowBytes * s.h;
+	CHECK(draw(&s, v, a, NULL) == 0);
+	CHECK(a->golfer->w > 0 && a->golfer->shown == POSE_ADDRESS && a->golfer->ball == 1);
+	first = malloc(n);
+	memcpy(first, s.bits, n);
+	for (k = POSE_BACK; k <= POSE_FINISH; k++) {
+		CHECK(render_pose(&s, a->golfer, (uint8_t)k, k != POSE_FINISH, &x, &y, &w, &h) == 0);
+		/* nothing outside the box it gives */
+		for (yy = 0; yy < s.h; yy++)
+			for (xx = 0; xx < s.w; xx++)
+				if ((xx < x || xx >= x + w || yy < y || yy >= y + h) && pixel(&s, xx, yy) != pixel_of(first, &s, xx, yy)) out++;
+		if (name && k == POSE_TOP) { snprintf(nm, sizeof nm, "%s-top", name); save(&s, nm); }
+		if (name && k == POSE_FINISH) { snprintf(nm, sizeof nm, "%s-finish", name); save(&s, nm); }
+	}
+	CHECK(out == 0);
+	if (out) printf("  %d pixels changed outside the pose box\n", out);
+	CHECK(memcmp(first, s.bits, n) != 0);
+	CHECK(render_pose(&s, a->golfer, POSE_ADDRESS, 1, &x, &y, &w, &h) == 0);
+	CHECK(memcmp(first, s.bits, n) == 0);
+	CHECK(render_pose(&s, a->golfer, RENDER_POSES, 1, &x, &y, &w, &h) == -1);
+	free(first);
+	sfree(&s);
 }
 
 /* Draws a 160 view at 8 bits only to check it has no gaps. */
@@ -325,8 +374,9 @@ int main(int argc, char **argv)
 	surface_raster(&h, row, put_row, &g);
 	art_load(&art[0], argv[2], 1);
 	art_load(&art[1], argv[2], 2);
-	CHECK(art[0].golfer.len && art[1].golfer.len && art[0].backdrop.len && art[1].backdrop.len);
-	CHECK(art[0].spr[OBJ_TREE][0].len && art[0].spr[OBJ_PINE][1].len);
+	for (i = 0; i < RENDER_POSES; i++) CHECK(art[0].golfer->pose[i].len && art[1].golfer->pose[i].len);
+	CHECK(art[0].backdrop.len && art[1].backdrop.len);
+	CHECK(art[0].spr[OBJ_TREE][0][0].len && art[0].spr[OBJ_PINE][0][1].len);
 
 	pos[0].x = h.tees[0].pos.x / 65536.0;
 	pos[0].y = h.tees[0].pos.y / 65536.0;
@@ -359,6 +409,17 @@ int main(int argc, char **argv)
 	}
 
 	CHECK(dropped == 0);
+
+	/* The golfer's poses over the tee view at each depth and in half size drawing. */
+	v.ball = vec2_make(Y(pos[0].x), Y(pos[0].y));
+	v.aim = toward(v.ball, h.aim);
+	poses(&v, &art[0], 1, 2, 0, "tee");
+	poses(&v, &art[1], 2, 8, 0, "tee");
+	poses(&v, &art[0], 1, 1, 0, 0);
+	poses(&v, &art[0], 1, 4, 0, 0);
+	poses(&v, &art[0], 1, 8, 0, 0);
+	poses(&v, &art[0], 2, 4, 1, "h4-tee");
+	poses(&v, &art[0], 2, 2, 1, 0);
 
 	/* Odd cameras: off the side looking out of bounds, past the far end, in a corner looking back. */
 	{
@@ -407,19 +468,21 @@ int main(int argc, char **argv)
 	/* Bad art: short sprites and a backdrop cut off part way. */
 	{
 		RenderArt bad = art[0];
+		RenderGolfer bg = *art[0].golfer;
 		Surface s;
 		int t, k;
 		for (t = 0; t < RENDER_TYPES; t++) {
-			bad.spr[t][0].len = bad.spr[t][0].len ? 13 : 0;
-			bad.spr[t][1].len = bad.spr[t][1].len ? 11 : 0;
+			bad.spr[t][0][0].len = bad.spr[t][0][0].len ? 13 : 0;
+			bad.spr[t][0][1].len = bad.spr[t][0][1].len ? 11 : 0;
 		}
-		bad.golfer.len = 20;
+		for (k = 0; k < RENDER_POSES; k++) bg.pose[k].len = 20;
+		bad.golfer = &bg;
 		bad.backdrop.len = bad.backdrop.len / 2;
 		/* exact-size copies, so ASan sees any read past the shortened length */
 		for (t = 0; t < RENDER_TYPES; t++)
 			for (k = 0; k < RENDER_SIZES; k++)
-				bad.spr[t][k].p = exact(bad.spr[t][k].p, bad.spr[t][k].len);
-		bad.golfer.p = exact(bad.golfer.p, bad.golfer.len);
+				bad.spr[t][0][k].p = exact(bad.spr[t][0][k].p, bad.spr[t][0][k].len);
+		for (k = 0; k < RENDER_POSES; k++) bg.pose[k].p = exact(bg.pose[k].p, bg.pose[k].len);
 		bad.backdrop.p = exact(bad.backdrop.p, bad.backdrop.len);
 		surface(&s, 1);
 		v.ball = h.tees[0].pos;
@@ -427,8 +490,8 @@ int main(int argc, char **argv)
 		CHECK(draw(&s, &v, &bad, NULL) == 0);
 		sfree(&s);
 		for (t = 0; t < RENDER_TYPES; t++)
-			for (k = 0; k < RENDER_SIZES; k++) free((void *)bad.spr[t][k].p);
-		free((void *)bad.golfer.p);
+			for (k = 0; k < RENDER_SIZES; k++) free((void *)bad.spr[t][0][k].p);
+		for (k = 0; k < RENDER_POSES; k++) free((void *)bg.pose[k].p);
 		free((void *)bad.backdrop.p);
 		/* a surface that isn't 160 or 320 wide is turned down */
 		surface(&s, 1);
