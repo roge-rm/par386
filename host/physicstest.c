@@ -878,20 +878,25 @@ static void putt_play(Play *p, Surface *s, Surface *bg, uint32_t t, int32_t late
 }
 
 /* A full drive through play.c with frames every 30 ms, the shot view on the
- * map or not: when each sound came (st, sid, *ns), how long after the hit
- * it went over to the map (*tmap, 0 for never) and the time it went on to
- * the next shot. With name, pictures of the switch, the flight and the result. */
+ * map or not, its map drawn prows rows a frame while the ball flies in the
+ * scene (0 never, below 0 that many once the ball is down): when each sound came (st, sid, *ns), how long after the
+ * hit it went over to the map (*tmap, 0 for never) and the time it went on
+ * to the next shot. The switch fades as the platform does: the map surface
+ * gets the frames, then it's copied over. With name, pictures of the
+ * switch, the flight and the result. */
 static uint32_t drive_run(const Hole *h, const SurfaceGrid *g, uint8_t mapview, uint8_t tap, uint32_t *st, uint8_t *sid, int *ns,
-                          uint32_t *tmap, Play *out, const char *name)
+                          uint32_t *tmap, Play *out, const char *name, int16_t prows)
 {
-	static Play p;
-	Surface s, bg;
+	static Play p, q;
+	Surface s, bg, m, s2;
 	uint32_t t;
 	int f, k = 0, logged = 0, shot_res = 0;
 	char nm[64];
 
 	surface2(&s);
 	surface2(&bg);
+	surface2(&m);
+	surface2(&s2);
 	play_init(&p, h, g, 7);
 	p.mapview = mapview;
 	play_frame(&p, &s, &bg, 0);
@@ -903,11 +908,24 @@ static uint32_t drive_run(const Hole *h, const SurfaceGrid *g, uint8_t mapview, 
 	*tmap = 0;
 	for (t = 2760; t < 60000; t += 30) {
 		f = play_frame(&p, &s, &bg, t);
+		/* prows < 0: the map only starts once the ball is down, too late */
+		if (!p.onmap && play_map_wanted(&p) && prows && (prows > 0 || p.shown >= p.shot.fly_n))
+			play_map_prep(&m, &p, prows < 0 ? (int16_t)-prows : prows);
+		CHECK(!(f & PL_MAP) || p.mprep == 2);
 		if (f & PL_MAP) {
+			int j;
 			CHECK(!*tmap && p.view == PLAY_MAP && p.onmap && p.state == PS_FLY);
 			*tmap = t - p.tf;
-			play_map(&s, &p);
-			play_status(&s, &p, NULL);
+			/* the map drawn in one go, as on a resize, matches the one drawn in slices */
+			q = p;
+			play_map(&s2, &q);
+			play_frame(&q, &s2, NULL, t);
+			play_frame(&p, &m, NULL, t);
+			CHECK(memcmp(m.bits, s2.bits, (size_t)m.rowBytes * (m.h - RENDER_STATUS)) == 0);
+			/* the fade's steps: the ball goes on over the map */
+			for (j = 1; j <= 8; j++) play_frame(&p, &m, NULL, t + 40 * (uint32_t)j);
+			play_status(&m, &p, NULL);
+			memcpy(s.bits, m.bits, (size_t)m.rowBytes * m.h);
 			if (name) {
 				snprintf(nm, sizeof nm, "%s-switch", name);
 				save(&s, nm);
@@ -940,6 +958,8 @@ static uint32_t drive_run(const Hole *h, const SurfaceGrid *g, uint8_t mapview, 
 	*out = p;
 	free(s.bits);
 	free(bg.bits);
+	free(m.bits);
+	free(s2.bits);
 	return t;
 }
 
@@ -952,11 +972,11 @@ static void shotmap_tests(const Hole *h, const SurfaceGrid *g)
 	static uint8_t ia[64], ib[64];
 	static Play a, b, p;
 	Surface s, bg;
-	uint32_t ta, tb, ma, mb, t;
-	int na, nb, k, f;
+	uint32_t ta, tb, ma, mb, t, tc;
+	int na, nb, k, f, rows;
 
-	ta = drive_run(h, g, 0, 0, sa, ia, &na, &ma, &a, NULL);
-	tb = drive_run(h, g, 1, 0, sb, ib, &nb, &mb, &b, "shotmap");
+	ta = drive_run(h, g, 0, 0, sa, ia, &na, &ma, &a, NULL, 8);
+	tb = drive_run(h, g, 1, 0, sb, ib, &nb, &mb, &b, "shotmap", 5);
 	CHECK(ma == 0 && mb >= PLAY_MAP_AFTER_MS && mb < PLAY_MAP_AFTER_MS + 30);
 	CHECK(ta == tb && na == nb && na >= 3);
 	for (k = 0; k < na && k < nb; k++) CHECK(sa[k] == sb[k] && ia[k] == ib[k]);
@@ -964,27 +984,16 @@ static void shotmap_tests(const Hole *h, const SurfaceGrid *g)
 	CHECK(strcmp(a.msg1, b.msg1) == 0 && strcmp(a.msg2, b.msg2) == 0);
 	printf("shot view: map %lu ms after the hit, %d sounds at the same times, next shot at %lu ms\n",
 	       (unsigned long)mb, nb, (unsigned long)tb);
-	/* a slow switch (the map and the fade taking 900 ms) holds the flight back: the ball goes on from where it was */
-	{
-		Surface s2, bg2;
-		int16_t at;
-		surface2(&s2);
-		surface2(&bg2);
-		play_init(&p, h, g, 7);
-		p.mapview = 1;
-		play_frame(&p, &s2, &bg2, 0);
-		swing(&p, &s2, &bg2, 1000, MTR_UP_MS, 0);
-		for (t = 2760; t < 10000 && !(play_frame(&p, &s2, &bg2, t) & PL_MAP); t += 30) {}
-		at = p.shown;
-		play_map(&s2, &p);
-		play_frame(&p, &s2, &bg2, t + 900);
-		CHECK(p.onmap && p.shown >= at && p.shown <= at + 2);
-		free(s2.bits);
-		free(bg2.bits);
+	/* the map in one go, or so slowly the ball is down first (it stays in the scene), or never: the same shot */
+	for (rows = 0; rows < 3; rows++) {
+		tc = drive_run(h, g, 1, 0, sb, ib, &nb, &mb, &b, NULL, rows == 0 ? 999 : rows == 1 ? -999 : 0);
+		CHECK(tc == ta && nb == na && (rows ? mb == 0 : mb >= PLAY_MAP_AFTER_MS && mb < PLAY_MAP_AFTER_MS + 30));
+		for (k = 0; k < na && k < nb; k++) CHECK(sa[k] == sb[k] && ia[k] == ib[k]);
+		CHECK(a.rv.ball.x == b.rv.ball.x && a.rv.ball.y == b.rv.ball.y && a.lie == b.lie);
 	}
 	/* a tap on the result goes on sooner */
-	CHECK(drive_run(h, g, 1, 1, sb, ib, &nb, &mb, &b, NULL) < tb);
-	CHECK(drive_run(h, g, 1, 2, sb, ib, &nb, &mb, &b, NULL) < tb);
+	CHECK(drive_run(h, g, 1, 1, sb, ib, &nb, &mb, &b, NULL, 999) < tb);
+	CHECK(drive_run(h, g, 1, 2, sb, ib, &nb, &mb, &b, NULL, 999) < tb);
 
 	/* a short chip stays in the scene */
 	surface2(&s);

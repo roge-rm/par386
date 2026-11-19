@@ -360,14 +360,49 @@ static void to16s(int w, uint8_t le)
 	surface_wh(&a, w, 40, 1, 8);
 	for (i = 0; i < a.rowBytes * a.h; i++) a.bits[i] = (uint8_t)(i * 37 + 11);
 	gfx_to16(&a, d1, rb, 0, 0, w, 40, le);
-	gfx_to16_mask(&a, d2, rb, 0, 40, le, 0, 5);
+	gfx_to16_mask(&a, d2, rb, 0, 0, (int16_t)w, 40, le, 0, 5);
 	for (i = 0; i < rb * 40; i++) part += d1[i] == d2[i] && d1[i];
 	CHECK(part > 0 && memcmp(d1, d2, (size_t)rb * 40) != 0);
-	for (lo = 5; lo < 16; lo += 5) gfx_to16_mask(&a, d2, rb, 0, 40, le, (uint8_t)lo, (uint8_t)(lo + 5 > 16 ? 16 : lo + 5));
+	for (lo = 5; lo < 16; lo += 5) gfx_to16_mask(&a, d2, rb, 0, 0, (int16_t)w, 40, le, (uint8_t)lo, (uint8_t)(lo + 5 > 16 ? 16 : lo + 5));
 	CHECK(memcmp(d1, d2, (size_t)rb * 40) == 0);
 	sfree(&a);
 	free(d1);
 	free(d2);
+}
+
+/* gfx_copy_mask: three steps fill all of a rectangle (rounded out to 4 byte groups) and nothing past it */
+static uint8_t px_at(const Surface *s, int x, int y)
+{
+	uint8_t b = s->bits[y * s->rowBytes + ((x * s->depth) >> 3)];
+	int sh = 8 - s->depth - ((x * s->depth) & 7);
+	return (uint8_t)((b >> sh) & ((1 << s->depth) - 1));
+}
+
+static void copies(int w, uint8_t depth)
+{
+	Surface a, b;
+	int lo, x, y, bad = 0, got = 0;
+	uint32_t i, n;
+	int16_t px = (int16_t)(32 / depth), x0 = (int16_t)(px + 1), x1 = (int16_t)(w - px - 3);
+
+	surface_wh(&a, w, 40, 1, depth);
+	surface_wh(&b, w, 40, 1, depth);
+	n = (uint32_t)a.rowBytes * a.h;
+	for (i = 0; i < n; i++) b.bits[i] = (uint8_t)(i * 91 + 5);
+	gfx_copy_mask(&a, &b, x0, 3, x1, 30, 0, 5);
+	for (y = 0; y < 40; y++)
+		for (x = 0; x < w; x++) got += px_at(&a, x, y) != 0;
+	CHECK(got > 0);
+	for (lo = 5; lo < 16; lo += 5) gfx_copy_mask(&a, &b, x0, 3, x1, 30, (uint8_t)lo, (uint8_t)(lo + 5 > 16 ? 16 : lo + 5));
+	for (y = 0; y < 40; y++)
+		for (x = 0; x < w; x++) {
+			uint8_t pa = px_at(&a, x, y), pb = px_at(&b, x, y);
+			if (y >= 3 && y < 30 && x >= x0 && x < x1) bad += pa != pb;
+			else if (y < 3 || y >= 30 || x < px || x >= w - px) bad += pa != 0;
+		}
+	CHECK(bad == 0);
+	sfree(&a);
+	sfree(&b);
 }
 
 static void swaps(int w, uint8_t depth)
@@ -462,6 +497,10 @@ int main(int argc, char **argv)
 	swaps(176, 8);
 	swaps(48, 2);
 	to16s(160, 0);
+	copies(160, 1);
+	copies(160, 2);
+	copies(176, 4);
+	copies(160, 8);
 	to16s(162, 1);
 	printf("uitest: %d checks, %d failed\n", checks, fails);
 	return fails != 0;

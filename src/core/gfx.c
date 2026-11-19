@@ -364,25 +364,81 @@ void gfx_swap_mask(Surface *a, Surface *b, int16_t y0, int16_t y1, uint8_t lo, u
 	}
 }
 
-void gfx_to16_mask(const Surface *s, uint8_t *d, uint16_t rb, int16_t y0, int16_t y1, uint8_t le, uint8_t lo, uint8_t hi)
+void gfx_to16_mask(const Surface *s, uint8_t *d, uint16_t rb, int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint8_t le,
+                   uint8_t lo, uint8_t hi)
 {
 	int16_t y, x;
 	uint8_t c;
 
 	if (s->depth != 8) return;
+	if (x0 < 0) x0 = 0;
 	if (y0 < 0) y0 = 0;
+	if (x1 > s->w) x1 = s->w;
 	if (y1 > s->h) y1 = s->h;
 	for (y = y0; y < y1; y++) {
 		const uint8_t *t = dith4 + ((y & 3) << 2), *p = rowp(s, y);
 		uint8_t *q = d + MULU16(y, rb);
 		for (c = 0; c < 4; c++) {
 			if (t[c] < lo || t[c] >= hi) continue;
-			for (x = c; x < s->w; x += 4) {
+			for (x = (int16_t)(((x0 + 3 - c) & ~3) + c); x < x1; x += 4) {
 				uint16_t v = pal_565[p[x]];
 				if (le) v = (uint16_t)((v << 8) | (v >> 8));
 				q[x << 1] = (uint8_t)(v >> 8);
 				q[(x << 1) + 1] = (uint8_t)v;
 			}
 		}
+	}
+}
+
+/* The masks of mask_rows: for each pattern row, 4 bytes covering the 4
+ * pixel pattern at every depth, set where the dither value is from lo up
+ * to (not) hi. */
+static void SEC_CORE mask_rows(uint8_t lg, uint8_t lo, uint8_t hi, uint8_t m[4][4])
+{
+	uint8_t ppb = (uint8_t)(8 >> lg), d = (uint8_t)(1 << lg), r, k, j;
+	for (r = 0; r < 4; r++)
+		for (k = 0; k < 4; k++) {
+			uint8_t v = 0;
+			for (j = 0; j < ppb; j++) {
+				uint8_t dv = dith4[(r << 2) | ((k * ppb + j) & 3)];
+				v = (uint8_t)(v << d);
+				if (dv >= lo && dv < hi) v |= (uint8_t)((1 << d) - 1);
+			}
+			m[r][k] = v;
+		}
+}
+
+void gfx_copy_mask(Surface *d, const Surface *s, int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint8_t lo, uint8_t hi)
+{
+	uint8_t m[4][4];
+	int16_t y;
+	uint16_t b0, b1, j;
+
+	if (x0 < 0) x0 = 0;
+	if (y0 < 0) y0 = 0;
+	if (x1 > d->w) x1 = d->w;
+	if (y1 > d->h) y1 = d->h;
+	if (x1 <= x0 || y1 <= y0 || lo >= hi) return;
+	mask_rows(d->lg, lo, hi, m);
+	/* whole 4 byte groups, so the 32 bit loop lines up with the pattern */
+	b0 = (uint16_t)((((uint16_t)x0 << d->lg) >> 3) & ~3);
+	b1 = (uint16_t)(((((uint16_t)(x1 - 1) << d->lg) >> 3) | 3) + 1);
+	if (b1 > d->rowBytes) b1 = d->rowBytes;
+	for (y = y0; y < y1; y++) {
+		uint8_t *p = (uint8_t *)rowp(d, y);
+		const uint8_t *q = rowp(s, y), *mk = m[y & 3];
+		if (!(mk[0] | mk[1] | mk[2] | mk[3])) continue;
+		if (!(d->rowBytes & 3) && !(b1 & 3)) {
+			union { uint8_t b[4]; uint32_t w; } mw;
+			uint32_t *p4 = (uint32_t *)(p + b0);
+			const uint32_t *q4 = (const uint32_t *)(q + b0);
+			mw.b[0] = mk[0];
+			mw.b[1] = mk[1];
+			mw.b[2] = mk[2];
+			mw.b[3] = mk[3];
+			for (j = (uint16_t)((b1 - b0) >> 2); j; j--, p4++, q4++) *p4 ^= (*p4 ^ *q4) & mw.w;
+			continue;
+		}
+		for (j = b0; j < b1; j++) p[j] = (uint8_t)(p[j] ^ ((p[j] ^ q[j]) & mk[j & 3]));
 	}
 }

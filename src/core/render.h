@@ -131,6 +131,12 @@ typedef struct {
  * whole hole if box is 0 or the hole fits as big. With a box there's no
  * ball and no line to the pin. */
 int SEC_RENDER render_map_box(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out);
+/* render_map_box in slices: the ground of view rows y0 to y1 (not y1, in
+ * pixels of s), and once y1 reaches the view's height the rest (objects,
+ * pin, strip, and the doubling at half size). Returns 1 when that's done,
+ * 0 for a slice, -1 if s won't do. At half size the slices go into the
+ * top left quarter until the end, so s isn't to be shown before then. */
+int SEC_RENDER render_map_rows(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out, int16_t y0, int16_t y1);
 /* The green view for putting: the ground around the ball and the pin seen
  * from above and behind the ball, looking along v->aim, as a grid of
  * shaded cells with lines across the green, heights shown 6 times as

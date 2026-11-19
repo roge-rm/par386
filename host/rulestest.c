@@ -1134,13 +1134,14 @@ static void tournament_tests(void)
 static long auto_round(Round *r, uint8_t quick, int every)
 {
 	static Play p;
-	Surface s, bg;
+	Surface s, bg, m;
 	uint32_t t = 0;
 	long n = 0, maps = 0;
 	int f, resumes = 0;
 
 	surface(&s, 1);
 	surface(&bg, 1);
+	surface(&m, 1);
 	memset(&p, 0, sizeof p);
 	p.quick = quick == 1;
 	p.mapview = quick == 2;
@@ -1151,6 +1152,8 @@ static long auto_round(Round *r, uint8_t quick, int every)
 		/* the flight overlays draw over whatever is there */
 		f = p.view == PLAY_CARD ? play_key(&p, KEY_SELECT, t) : play_frame(&p, &s, &bg, t);
 		if (f & PL_BACK) break;
+		/* the shot's map, 20 rows a frame */
+		if (play_map_wanted(&p)) play_map_prep(&m, &p, 20);
 		if (f & PL_MAP) {
 			if (p.onmap) maps++;
 			play_map(&s, &p);
@@ -1181,6 +1184,7 @@ static long auto_round(Round *r, uint8_t quick, int every)
 	CHECK(quick != 2 || maps > (every ? 0 : 4));
 	free(s.bits);
 	free(bg.bits);
+	free(m.bits);
 	return n;
 }
 

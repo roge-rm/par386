@@ -41,11 +41,13 @@ enum { PS_AIM, PS_UP, PS_DOWN, PS_FLY, PS_RESULT, PS_DONE };
 
 /* With the shot view on the map, a full shot goes from the scene to the map
  * this long after the hit, unless its flight shows for less than
- * PLAY_MAP_MIN_MS (chips stay in the scene). Putts always stay. */
+ * PLAY_MAP_MIN_MS (chips stay in the scene). Putts always stay. The map is
+ * drawn offscreen in slices while the ball flies in the scene
+ * (play_map_wanted, play_map_prep); if it isn't ready before the ball
+ * comes down the shot stays in the scene. */
 #define PLAY_MAP_AFTER_MS 1000
 #define PLAY_MAP_MIN_MS   1500
 #define PLAY_UNDER 128  /* bytes kept under the ball on the map */
-#define PLAY_MAP_GAP_MS 60  /* a first map frame later than this after the switch holds the flight back by the rest */
 
 /* The swing meter, in logical units along the panel's top row, and its timing. */
 #define MTR_X      4    /* the bar's left */
@@ -106,8 +108,8 @@ typedef struct {
 	/* the shot on the map */
 	uint8_t mapview;            /* full shots go over to the map in flight; the platform sets it */
 	uint8_t onmap;              /* this shot is on the map (view PLAY_MAP) */
-	uint8_t mpause;             /* the next map frame takes the time since the switch (tmap) off the flight */
-	uint32_t tmap;              /* when the shot went over to the map */
+	uint8_t mprep;              /* the map for this shot: 0 not started, 1 drawing (mrow rows done, then -1 to -3 the panel's face, its words and the trail), 2 ready, 3 too late */
+	int16_t mrow;
 	int16_t mdrawn;             /* the last path point of the trail drawn on the map */
 	uint16_t mlive;             /* the readout last put on the panel */
 	RenderMap mg;               /* where the map put things */
@@ -157,6 +159,16 @@ void SEC_UI play_card(Surface *s, const Play *p);
  * or, for a shot on the map, the map framed on the shot with its trail so
  * far and the ball. */
 void SEC_UI play_map(Surface *s, Play *p);
+/* True while a shot in the scene will go over to the map: the platform
+ * then calls play_map_prep after each frame. */
+int SEC_UI play_map_wanted(const Play *p);
+/* Draws the next rows (at least 1) of the shot's map into m, a surface the
+ * size of the scene's that isn't shown and keeps what's drawn until the
+ * switch; once it's all there, the panel, then the trail so far on each
+ * call. Returns 1 when the map is ready: on the switch (PL_MAP) the
+ * platform fades from the scene to m, calling play_frame on m for each
+ * step, and then copies m to the scene's surface. */
+int SEC_UI play_map_prep(Surface *m, Play *p, int16_t rows);
 /* Writes v in decimal at t, returns the length. */
 int16_t SEC_UI play_num(char *t, uint32_t v);
 

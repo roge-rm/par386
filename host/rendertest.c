@@ -718,6 +718,28 @@ int main(int argc, char **argv)
 					CHECK(bad == 0);
 					if (bad) printf("  half %d-bit view %d: %d pixels differ\n", hd[k], view, bad);
 				}
+				/* the framed map drawn in slices of 7 rows is the same as in one go, at full and half size */
+				for (view = 0; view < 2; view++) {
+					Surface *o = view ? &b : &a, c = *o;
+					MapBox bx;
+					int16_t y0 = 0;
+					int done = 0;
+					size_t n = (size_t)o->rowBytes * o->h;
+					bx.x0 = 0;
+					bx.y0 = 0;
+					bx.x1 = ((fixed)h.width << 16) / 2;
+					bx.y1 = ((fixed)h.length << 16) / 2;
+					c.bits = malloc(n);
+					memset(c.bits, 0x5A, n);
+					CHECK(render_map_box(o, &v, &bx, &ma) == 0);
+					while (!done && y0 < 1000) {
+						done = render_map_rows(&c, &v, &bx, &mb, y0, (int16_t)(y0 + 7));
+						CHECK(done >= 0);
+						y0 = (int16_t)(y0 + 7);
+					}
+					CHECK(done == 1 && memcmp(c.bits, o->bits, n) == 0 && ma.ypp == mb.ypp && ma.left == mb.left && ma.top == mb.top);
+					free(c.bits);
+				}
 				sfree(&a);
 				sfree(&b);
 			}

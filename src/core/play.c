@@ -284,6 +284,7 @@ static void SEC_UI launch(Play *p)
 	ball_shot(&in, &p->shot);
 	p->have_shot = 1;
 	p->state = PS_FLY;
+	p->mprep = 0;
 	p->shown = -2;
 	p->redraw |= R_OVER;
 }
@@ -1206,6 +1207,8 @@ void play_resized(Play *p)
 	p->cam_ok = 0;
 	p->npatch = 0;
 	p->redraw |= R_ALL;
+	/* a shot's map half drawn at the old size starts again */
+	if (!p->onmap && p->mprep < 3) p->mprep = 0;
 }
 
 void play_settle(Play *p)
@@ -1469,12 +1472,19 @@ static void SEC_UI map_live(Play *p, Surface *s, uint8_t force)
 
 /* The panel for a shot on the map: in flight the club, the live readout,
  * the wind and who's playing; then the result or the score. */
+static void SEC_UI fly_info(Surface *s, Play *p);
 static void SEC_UI fly_panel(Surface *s, Play *p)
+{
+	face(s);
+	fly_info(s, p);
+}
+
+/* fly_panel's words, over its face. */
+static void SEC_UI fly_info(Surface *s, Play *p)
 {
 	char t[24];
 	int16_t n = 0;
 
-	face(s);
 	if (p->state != PS_FLY) {
 		well(s, 2, ROW_A, s->lw - 4, 2 * ROW_H + 1);
 		box_text(s, 2, ROW_A, s->lw - 4, p->msg1, -1, 0, UIC_TEXT_HI);
@@ -1495,25 +1505,85 @@ static void SEC_UI fly_panel(Surface *s, Play *p)
 	readout(s, LIE_X, ROW_B, ROSE_X - 1 - LIE_X, t, -1, UIC_PAPER);
 }
 
-/* Draws the map for the shot on it, with the trail so far, the start and the ball. */
-static void SEC_UI fly_map_draw(Play *p, Surface *s)
+/* The map for the shot, rows y0 to y1 of it, and at the end the start
+ * mark, with no trail or ball yet. Returns 1 when it's all drawn. */
+static int SEC_UI fly_map_rows(Play *p, Surface *s, int16_t y0, int16_t y1)
 {
 	MapBox b;
-	int16_t x, y, u = s->scale, k = p->shown;
+	int16_t x, y, u = s->scale;
+	int k;
 
 	shot_box(p, s, &b);
-	if (render_map_box(s, &p->rv, &b, &p->mg) != 0) return;
+	k = render_map_rows(s, &p->rv, &b, &p->mg, y0, y1);
+	if (k <= 0) return k;
 	p->under.w = 0;
 	p->mdrawn = -1;
-	p->dirty.w = 0;
-	if (k >= 0) map_ball(p, s);
+	p->mlive = 0xFFFF;
 	/* the start: a black square with a white ring */
 	x = (int16_t)(p->mg.left + p->shot.start.x / p->mg.ypp);
 	y = (int16_t)(p->mg.top + (p->mg.length - p->shot.start.y) / p->mg.ypp);
 	over(s, x - 2 * u, y - 2 * u, 5 * u, 5 * u, UIC_BLACK);
 	over(s, x - u, y - u, 3 * u, 3 * u, UIC_WHITE);
 	over(s, x, y, u, u, UIC_BLACK);
-	p->mlive = 0xFFFF;
+	return 1;
+}
+
+/* Draws the map for the shot on it, with the trail so far and the ball. */
+static void SEC_UI fly_map_draw(Play *p, Surface *s)
+{
+	if (fly_map_rows(p, s, 0, 0x7FFF) <= 0) return;
+	p->dirty.w = 0;
+	if (p->shown >= 0) map_ball(p, s);
+}
+
+int play_map_wanted(const Play *p)
+{
+	return p->mapview && p->state == PS_FLY && p->view == PLAY_SCENE && !p->onmap && p->mprep < 3 && p->shown < p->shot.fly_n &&
+	       p->club != CLUB_PT && (int32_t)p->shot.fly_n * FLY_MS >= PLAY_MAP_MIN_MS;
+}
+
+int play_map_prep(Surface *m, Play *p, int16_t rows)
+{
+	int k;
+	URect d = p->dirty;    /* the scene's, not touched here */
+	if (!play_map_wanted(p)) return p->mprep == 2;
+	if (p->mprep == 2) {
+		/* ready: the trail keeps up with the ball, so the switch has little to draw */
+		if (p->shown > p->mdrawn) map_ball(p, m);
+		p->dirty = d;
+		return 1;
+	}
+	if (!p->mprep) {
+		p->mprep = 1;
+		p->mrow = 0;
+	}
+	if (p->mrow < 0) {
+		/* the panel's face, its words, then the trail so far, each a call of its own */
+		if (p->mrow == -1) {
+			face(m);
+			p->mrow = -2;
+			k = 0;
+		} else if (p->mrow == -2) {
+			fly_info(m, p);
+			p->mrow = -3;
+			k = 0;
+		} else {
+			if (p->shown > p->mdrawn) map_ball(p, m);
+			p->mprep = 2;
+			k = 1;
+		}
+		p->dirty = d;
+		return k;
+	}
+	if (rows < 1) rows = 1;
+	k = fly_map_rows(p, m, p->mrow, (int16_t)(p->mrow + rows));
+	if (k < 0) {
+		p->mprep = 3;
+		return 0;
+	}
+	p->mrow = k ? -1 : (int16_t)(p->mrow + rows);
+	p->dirty = d;
+	return 0;
 }
 
 /* A frame of the shot on the map: the ball on, then the result, then the
@@ -1523,12 +1593,6 @@ static int SEC_UI fly_map(Play *p, Surface *s, uint32_t now)
 	int f;
 
 	p->dirty.w = 0;
-	if (p->mpause) {
-		/* the flight waits while the map draws and fades in: the ball goes on from where it was */
-		int32_t gap = (int32_t)(now - p->tmap) - PLAY_MAP_GAP_MS;
-		if (gap > 0) p->tf += (uint32_t)gap;
-		p->mpause = 0;
-	}
 	if (p->state == PS_FLY) {
 		int16_t i = fly_point(p, now);
 		landed(p, i);
@@ -1618,14 +1682,12 @@ int play_frame(Play *p, Surface *s, Surface *bg, uint32_t now)
 	case PS_FLY: {
 		int16_t i = fly_point(p, now);
 		landed(p, i);
-		if (p->mapview && p->club != CLUB_PT && (int32_t)p->shot.fly_n * FLY_MS >= PLAY_MAP_MIN_MS &&
-		    (int32_t)(now - p->tf) >= PLAY_MAP_AFTER_MS && i < p->shot.n - 1) {
-			/* over to the map for the rest of the flight */
-			p->shown = i;
+		if (p->mprep && p->mprep < 3 && i >= p->shot.fly_n) p->mprep = 3;    /* down before the map was ready */
+		if (p->mprep == 2 && (int32_t)(now - p->tf) >= PLAY_MAP_AFTER_MS) {
+			/* over to the map for the rest of the flight: the first map frame draws the trail so far */
+			p->shown = -1;
 			p->onmap = 1;
 			p->view = PLAY_MAP;
-			p->tmap = now;
-			p->mpause = 1;
 			return PL_MAP | PL_ANIM;
 		}
 		if (i >= p->shot.n - 1) {

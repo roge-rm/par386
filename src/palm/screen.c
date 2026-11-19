@@ -166,6 +166,7 @@ static void Free(void)
 	gOffBits = NULL;
 	gHaveBg = false;
 	ScreenFadeDrop();
+	ScreenSpareDrop();
 	/* nothing draws until Make works again */
 	gS.bits = NULL;
 	gS.w = gS.h = gS.lw = gS.lh = 0;
@@ -673,7 +674,7 @@ UInt32 ScreenDissolve(Int16 y1, UInt16 ms)
 		if (k && wait > 0) SysTaskDelay(wait);
 		hi = (UInt8)(lo + step > 16 ? 16 : lo + step);
 		ts = TimGetTicks();
-		if (g16) gfx_to16_mask(&gS, gOffBits, gOffRb, 0, y1, gLE, lo, hi);
+		if (g16) gfx_to16_mask(&gS, gOffBits, gOffRb, 0, 0, gS.w, y1, gLE, lo, hi);
 		else if (!k) gfx_swap_mask(&gS, &gFrom, 0, y1, 2, 16);
 		else gfx_swap_mask(&gS, &gFrom, 0, y1, lo, hi);
 #ifdef DEBUG
@@ -688,6 +689,108 @@ UInt32 ScreenDissolve(Int16 y1, UInt16 ms)
 		k++;
 	}
 	ScreenFadeDrop();
+	return worst;
+}
+
+/* The spare surface (ScreenSpare). */
+static WinHandle gSp;
+static BitmapPtr gSp8;
+static Surface gSpS;
+
+Surface *ScreenSpare(void)
+{
+	UInt16 err, rb = 0;
+
+	if (!gS.bits) return NULL;
+	if (gSpS.bits) return &gSpS;
+	gSpS = gS;
+	gSpS.bits = NULL;
+	if (g16) {
+		gSp8 = BmpCreate(gS.w, gS.h, 8, NULL, &err);
+		if (gSp8) {
+			Coord bw, bh;
+			BmpGetDimensions(gSp8, &bw, &bh, &rb);
+			gSpS.bits = BmpGetBits(gSp8);
+		}
+	} else {
+		gSp = NewWin(gS.w, gS.h);
+		if (gSp) gSpS.bits = WinBits(gSp, &rb);
+	}
+	if (!gSpS.bits || rb != gS.rowBytes) {
+		ScreenSpareDrop();
+		return NULL;
+	}
+	return &gSpS;
+}
+
+Surface *ScreenSpareHas(void)
+{
+	return gSpS.bits ? &gSpS : NULL;
+}
+
+void ScreenSpareDrop(void)
+{
+	if (gSp) WinDeleteWindow(gSp, false);
+	if (gSp8) BmpDelete(gSp8);
+	gSp = NULL;
+	gSp8 = NULL;
+	gSpS.bits = NULL;
+}
+
+UInt32 ScreenDissolveTo(Surface *m, Int16 y1, UInt16 ms, ScreenStep step)
+{
+	URect u, c;
+	UInt32 t0, ts, d, worst, per;
+	UInt8 lo = 0, hi, n = 2, k = 0;
+
+	u.x = u.y = 0;
+	u.w = gS.w;
+	u.h = gS.h;
+	if (!gS.bits || !gOff || !m || m->rowBytes != gS.rowBytes || m->h != gS.h) return 0;
+	/* the panel at once */
+	gfx_copy(&gS, m, 0, y1, gS.w, gS.h - y1);
+	c.x = 0;
+	c.y = y1;
+	c.w = gS.w;
+	c.h = gS.h - y1;
+	ScreenShow(&c);
+	/* 8 steps of 2 of the 16 dither values, each after a frame drawn on m:
+	 * its new pixels, and what the frame changed of those already shown */
+	per = (UInt32)ms * SysTicksPerSecond() / 1000 / 8;
+	t0 = TimGetTicks();
+	worst = 0;
+	while (lo < 16) {
+		Int32 wait = (Int32)(t0 + k * per - TimGetTicks());
+		if (k && wait > 0) SysTaskDelay(wait);
+		hi = (UInt8)(lo + n > 16 ? 16 : lo + n);
+		ts = TimGetTicks();
+		c.w = 0;
+		if (k && step) step(&c);
+		if (g16) {
+			gfx_to16_mask(m, gOffBits, gOffRb, 0, 0, gS.w, y1, gLE, lo, hi);
+			if (c.w > 0) gfx_to16_mask(m, gOffBits, gOffRb, c.x, c.y, c.x + c.w, c.y + c.h < y1 ? c.y + c.h : y1, gLE, 0, lo);
+		} else {
+			gfx_copy_mask(&gS, m, 0, 0, gS.w, y1, lo, hi);
+			if (c.w > 0) gfx_copy_mask(&gS, m, c.x, c.y, c.x + c.w, c.y + c.h < y1 ? c.y + c.h : y1, 0, lo);
+		}
+		if (c.w > 0 && c.y + c.h > y1) {
+			/* the panel's readout */
+			Int16 py = c.y > y1 ? c.y : y1;
+			gfx_copy(&gS, m, c.x, py, c.w, c.y + c.h - py);
+			if (g16) gfx_to16(&gS, gOffBits, gOffRb, c.x, py, c.w, c.y + c.h - py, gLE);
+		}
+#ifdef DEBUG
+		if (!k) gSwapTicks = TimGetTicks() - ts;
+#endif
+		Blit(&u);
+		d = TimGetTicks() - ts;
+		if (d > worst) worst = d;
+		/* a slow first step: the rest in 3 */
+		if (!k && d > 2 * per) n = 5;
+		lo = hi;
+		k++;
+	}
+	gfx_copy(&gS, m, 0, 0, gS.w, gS.h);
 	return worst;
 }
 

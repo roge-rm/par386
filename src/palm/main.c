@@ -45,6 +45,7 @@ static UInt32 gHeapStart;      /* free dynamic heap at launch */
 #define PIC_SCENE    0xFFFF     /* gBgPic when the kept copy holds the scene */
 #define PIC_MAP      0xFFFE     /* or the map of a shot, to fade the next scene in from */
 #define FADE_MS      320        /* the fade between the scene and a shot on the map */
+#define PREP_MS      60         /* the shot's map drawn this long a frame while the ball flies in the scene */
 /* App preferences: the computer golfers' shots setting (one byte, backed
  * up) and the course records (rec_pack). */
 #define kCpuPref     3
@@ -68,12 +69,13 @@ static UInt32 gUnderLen;
 static UInt32 gMinFree;        /* least free heap while the scene was drawn */
 static Boolean gAnim;          /* play wants frames */
 static Boolean gFadeBack;      /* a shot is on the map: the next scene fades in over it */
+static int gMapF;              /* flags from the frames during the fade to the map */
 static Boolean gFadeHold;      /* the next scene frame fades in from the picture ScreenFadeFrom kept */
 #ifdef DEBUG
 static RenderStats gStats;
 static UInt32 gDrawTicks, gMapTicks;
 /* the shot view: its map, the whole fade and the slowest fade step, in ticks */
-static UInt32 gZoomTicks, gFadeTicks, gFadeStep;
+static UInt32 gFadeStep, gGapTicks, gLastFrame;
 /* ticks and counts of meter and flight frames, and ticks for the last shot's physics */
 static UInt32 gMtrTicks, gMtrN, gFlyTicks, gFlyN, gSimTicks;
 #endif
@@ -569,6 +571,7 @@ static void PlayEnd(void)
 {
 	LocalID id;
 
+	ScreenSpareDrop();
 	if (gGridH) MemHandleUnlock(gGridH);
 	if (gHoleH) MemHandleUnlock(gHoleH);
 	gGridH = gHoleH = NULL;
@@ -845,9 +848,7 @@ static Int16 ViewRows(void)
 static void Fade(void)
 {
 #ifdef DEBUG
-	UInt32 t0 = TimGetTicks();
 	gFadeStep = ScreenDissolve(ViewRows(), FADE_MS);
-	gFadeTicks = TimGetTicks() - t0;
 #else
 	ScreenDissolve(ViewRows(), FADE_MS);
 #endif
@@ -859,6 +860,7 @@ static void KeepScene(void)
 	 * first frame of the new scene, golfer and all, fades in over it (PlayFrame) */
 	if (gFadeBack && gBgPic == PIC_MAP && ScreenFadeFrom(ScreenKept(), ViewRows())) gFadeHold = true;
 	gFadeBack = false;
+	ScreenSpareDrop();
 	gBgPic = ScreenKeep() ? PIC_SCENE : 0;
 }
 
@@ -900,6 +902,68 @@ static void SimTime(UInt8 before, UInt32 t0)
 }
 #endif
 
+#ifdef DEBUG
+/* The longest time between frames in the first 1.5 s of a flight (the shot view's switch). */
+static UInt32 gSwitchTicks, gLastPrep, gLast3D, gGapPrep, gGap3D;
+static void FrameMark(void)
+{
+	UInt32 t = TimGetTicks();
+	if (gPlay.state == PS_FLY && gPlay.shown >= -1 && gLastFrame && (Int32)(NowMs() - gPlay.tf) < 1500 &&
+	    t - gLastFrame > gGapTicks) {
+		gGapTicks = t - gLastFrame;
+		gGapPrep = gLastPrep;
+		gGap3D = gLast3D;
+	}
+	gLastFrame = t;
+}
+#endif
+
+/* Draws the next slice of the shot's map on the spare surface, sized to
+ * take about PREP_MS. With no memory for it the shot stays in the scene. */
+static void MapPrep(void)
+{
+	static Int16 rows;
+	static UInt32 done, spent;
+	Surface *m = ScreenSpare();
+	UInt32 t0, d, want = (UInt32)PREP_MS * SysTicksPerSecond() / 1000, r;
+
+	if (!m) {
+		gPlay.mprep = 3;
+		return;
+	}
+	if (!gPlay.mprep) {
+		rows = (Int16)(4 * gS.scale);
+		done = spent = 0;
+	}
+	t0 = TimGetTicks();
+	play_map_prep(m, &gPlay, rows);
+	d = TimGetTicks() - t0;
+#ifdef DEBUG
+	gLastPrep = d;
+#endif
+	/* the next slice from the rows a tick so far (ticks can be 10 ms), at most twice as big */
+	done += (UInt32)rows;
+	spent += d;
+	r = spent ? done * want / spent : (UInt32)rows * 2;
+	if (r > (UInt32)rows * 2) r = (UInt32)rows * 2;
+	rows = (Int16)(r < 1 ? 1 : r > (UInt32)(64 * gS.scale) ? 64 * gS.scale : r);
+}
+
+/* A frame of the shot during the fade to the map, drawn on the spare surface. */
+static void MapStep(URect *c)
+{
+	int f;
+	Surface *m = ScreenSpareHas();
+	c->w = 0;
+	if (!m || (gMapF & ~(PL_ANIM | PL_DIRTY))) return;
+#ifdef DEBUG
+	FrameMark();
+#endif
+	f = play_frame(&gPlay, m, NULL, NowMs());
+	gMapF |= f;
+	if (f & PL_DIRTY) *c = gPlay.dirty;
+}
+
 /* Lets play move the meter or the ball on and draw over the scene, and copies what changed to the screen. */
 static void PlayFrame(void)
 {
@@ -917,6 +981,9 @@ static void PlayFrame(void)
 	}
 	if (gPlay.view == PLAY_MAP) {
 		/* a shot on the map, or a computer golfer's result there: on to whatever comes next */
+#ifdef DEBUG
+		FrameMark();
+#endif
 		f = play_frame(&gPlay, &gS, NULL, NowMs());
 		if (f & PL_DIRTY) ScreenShow(&gPlay.dirty);
 		f &= ~PL_DIRTY;
@@ -926,6 +993,13 @@ static void PlayFrame(void)
 	}
 	if (gPlay.view != PLAY_SCENE) return;
 	gPlay.golf = &gGolf;
+#ifdef DEBUG
+	if (gPlay.state == PS_FLY && gPlay.shown == -2) {
+		gGapTicks = 0;
+		gLastFrame = 0;
+	}
+	FrameMark();
+#endif
 	f = play_frame(&gPlay, &gS, gBgPic == PIC_SCENE ? ScreenKept() : NULL, NowMs());
 	if (gFadeHold) {
 		/* the first frame after a shot on the map fades in */
@@ -946,6 +1020,12 @@ static void PlayFrame(void)
 	}
 	if (f & PL_DIRTY) ScreenShow(&gPlay.dirty);
 	gAnim = (f & PL_ANIM) != 0;
+#ifdef DEBUG
+	gLast3D = TimGetTicks() - t0;
+	gLastPrep = 0;
+#endif
+	if (play_map_wanted(&gPlay)) MapPrep();
+	else if (gPlay.mprep == 3) ScreenSpareDrop();    /* the shot stays in the scene */
 #ifdef DEBUG
 	SimTime(st, t0);
 	/* frames that drew something, by what they drew */
@@ -981,9 +1061,10 @@ static void PlayStatus(void)
 	          gFlyN ? gFlyTicks * 10000 / tps / gFlyN : 0, gSimTicks * 1000 / tps);
 	gfx_fill(&gS, 0, 8 * gS.scale, (Int16)(StrLen(t) * 8 * gS.scale), 8 * gS.scale, UIC_BLACK);
 	gfx_text(&gS, 0, 8 * gS.scale, t, StrLen(t), UIC_WHITE);
-	/* the last shot on the map: its map, the fade, the fade's slowest step and its first swap, in ms */
-	StrPrintF(t, "Z%lu D%lu d%lu s%lu", gZoomTicks * 1000 / tps, gFadeTicks * 1000 / tps, gFadeStep * 1000 / tps,
-	          gSwapTicks * 1000 / tps);
+	/* the last shot on the map: the longest gap between frames in its first 1.5 s, the scene frame and map
+	 * slice before that gap, the switch (from its frame to the map's first frame) and the last fade's slowest step, in ms */
+	StrPrintF(t, "g%lu %lu+%lu w%lu d%lu", gGapTicks * 1000 / tps, gGap3D * 1000 / tps,
+	          gGapPrep * 1000 / tps, gSwitchTicks * 1000 / tps, gFadeStep * 1000 / tps);
 	gfx_fill(&gS, 0, 16 * gS.scale, (Int16)(StrLen(t) * 8 * gS.scale), 8 * gS.scale, UIC_BLACK);
 	gfx_text(&gS, 0, 16 * gS.scale, t, StrLen(t), UIC_WHITE);
 #else
@@ -1004,6 +1085,8 @@ static void SceneRender(void)
 	UInt32 t0;
 #endif
 
+	/* a shot's map that wasn't used isn't kept through the draw */
+	ScreenSpareDrop();
 	if (!gS.bits) return;
 	if (gPlay.rv.green) {
 #ifdef DEBUG
@@ -1108,31 +1191,38 @@ static void PlayAct(int f)
 		play_card(&gS, &gPlay);
 		ScreenShowAll();
 		if (gPlay.card != CARD_VIEW) SaveRound();
+	} else if ((f & PL_MAP) && gPlay.onmap && !gFadeBack && gPlay.mprep == 2 && ScreenSpareHas()) {
+		/* a shot going over to the map: its map is ready on the spare surface;
+		 * the ball flies on over it while it fades in */
+		Surface *m = ScreenSpareHas();
+		gAnim = false;
+		gMapF = play_frame(&gPlay, m, NULL, NowMs());
+#ifdef DEBUG
+		gSwitchTicks = TimGetTicks() - gLastFrame;
+#endif
+#ifdef DEBUG
+		gFadeStep = ScreenDissolveTo(m, ViewRows(), FADE_MS, MapStep);
+		FrameMark();
+#else
+		ScreenDissolveTo(m, ViewRows(), FADE_MS, MapStep);
+#endif
+		ScreenSpareDrop();
+		gFadeBack = true;
+		f = gMapF & ~PL_DIRTY;
+		if (f & ~PL_ANIM) PlayAct(f);
+		else gAnim = (f & PL_ANIM) != 0;
 	} else if (f & PL_MAP) {
-		/* a shot going over to the map fades in over the scene, if the scene is kept */
-		Boolean fade = gPlay.onmap && !gFadeBack && ScreenKept() && gBgPic == PIC_SCENE &&
-		               ScreenFadeFrom(&gS, ViewRows());
 #ifdef DEBUG
 		UInt32 t0 = TimGetTicks();
 #endif
 		gAnim = false;
+		ScreenSpareDrop();
 		play_map(&gS, &gPlay);
 #ifdef DEBUG
-		if (gPlay.onmap) gZoomTicks = TimGetTicks() - t0;
-		else gMapTicks = TimGetTicks() - t0;
+		if (!gPlay.onmap) gMapTicks = TimGetTicks() - t0;
 #endif
 		PlayStatus();
-		if (fade) {
-			URect u;
-			u.x = 0;
-			u.y = ViewRows();
-			u.w = gS.w;
-			u.h = gS.h - u.y;
-			ScreenShow(&u);
-			Fade();
-		} else {
-			ScreenShowAll();
-		}
+		ScreenShowAll();
 		gFadeBack = gPlay.onmap;
 		gAnim = (f & PL_ANIM) != 0;
 	} else if (f & PL_PANEL) {
@@ -1272,11 +1362,7 @@ static void Resized(void)
 	gAnim = false;
 	play_resized(&gPlay);
 	if (gPlay.view == PLAY_MAP) {
-		/* a shot on the map flies on from where it was */
-		if (gPlay.onmap) {
-			gPlay.tmap = NowMs();
-			gPlay.mpause = 1;
-		}
+		/* a shot on the map flies on */
 		PlayAct(gPlay.onmap ? PL_MAP | PL_ANIM : PL_MAP);
 	} else if (gPlay.view == PLAY_CARD) {
 		gfx_fill(&gS, 0, 0, gS.w, gS.h, UIC_BLACK);

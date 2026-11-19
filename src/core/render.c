@@ -1509,7 +1509,7 @@ static void SEC_RENDER dot(const R *r, int16_t x, int16_t y, int16_t n, uint8_t 
 		}
 }
 
-static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out);
+static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out, int16_t y0, int16_t y1);
 
 int render_map(Surface *s, const RenderView *v, RenderMap *out)
 {
@@ -1518,9 +1518,17 @@ int render_map(Surface *s, const RenderView *v, RenderMap *out)
 
 int render_map_box(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out)
 {
+	return render_map_rows(s, v, box, out, 0, 0x7FFF) < 0 ? -1 : 0;
+}
+
+int render_map_rows(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out, int16_t y0, int16_t y1)
+{
 	Surface h;
-	if (!half_of(s, &h)) return map_draw(s, v, box, out);
-	if (map_draw(&h, v, box, out) < 0) return -1;
+	int k;
+	if (!half_of(s, &h)) return map_draw(s, v, box, out, y0, y1);
+	/* at half size: rows of the half view, all doubled at the end */
+	k = map_draw(&h, v, box, out, (int16_t)(y0 >> 1), y1 >= 0x7FFE ? 0x7FFF : (int16_t)((y1 + 1) >> 1));
+	if (k <= 0) return k;
 	double_up(s);
 	/* where things are on s */
 	out->bx = (int16_t)(out->bx * 2);
@@ -1530,10 +1538,10 @@ int render_map_box(Surface *s, const RenderView *v, const MapBox *box, RenderMap
 	out->left = (int16_t)(out->left * 2);
 	out->top = (int16_t)(out->top * 2);
 	out->ypp >>= 1;
-	return 0;
+	return 1;
 }
 
-static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out)
+static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out, int16_t y0, int16_t y1)
 {
 	R r;
 	const Hole *h = v->hole;
@@ -1589,7 +1597,9 @@ static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *bo
 			x0 += ypp;
 		}
 	}
-	for (y = 0; y < r.vh; y++) {
+	if (y0 < 0) y0 = 0;
+	if (y1 > r.vh) y1 = r.vh;
+	for (y = y0; y < y1; y++) {
 		uint8_t *p = pixp(&r, 0, y);
 		int32_t cy;
 		const uint8_t *cells;
@@ -1638,6 +1648,7 @@ static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *bo
 			else put(&r, p + ((uint16_t)x >> (3 - r.lg)), x, y, c);
 		}
 	}
+	if (y1 < r.vh) return 0;
 
 #define MX(wx) ((int16_t)(left + (wx) / ypp))
 #define MY(wy) ((int16_t)(top + (((fixed)h->length << 16) - (wy)) / ypp))
@@ -1696,7 +1707,7 @@ static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *bo
 		uint8_t *p = r.bits + MULU16(y, r.rb);
 		for (x = 0; x < (int16_t)r.rb; x++) p[x] = 0xFF;
 	}
-	return 0;
+	return 1;
 }
 
 /* a * b as fix_mulf, here so the green view doesn't call out of its segment. */

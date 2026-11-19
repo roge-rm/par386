@@ -46,6 +46,20 @@ void ScreenFadeDrop(void);
  * picture. A step much slower than its share makes the rest fewer. With no
  * picture kept gS is shown at once. Returns the slowest step in ticks. */
 UInt32 ScreenDissolve(Int16 y1, UInt16 ms);
+/* A second surface like gS that isn't shown, made on the first call
+ * (NULL if there's no memory) and kept until ScreenSpareDrop or the screen
+ * changes. ScreenSpareHas returns it only if it's there. */
+Surface *ScreenSpare(void);
+Surface *ScreenSpareHas(void);
+void ScreenSpareDrop(void);
+/* A frame drawn during ScreenDissolveTo: sets *changed to what it changed
+ * (pixels; w 0 for nothing). */
+typedef void (*ScreenStep)(URect *changed);
+/* Fades from what the display shows to m (a ScreenSpare) over rows 0 to y1,
+ * about ms long, with rows y1 on (the panel) shown at once. step is called
+ * before each step after the first, so what moves on m keeps moving. At
+ * the end gS holds m. Returns the slowest step in ticks. */
+UInt32 ScreenDissolveTo(Surface *m, Int16 y1, UInt16 ms, ScreenStep step);
 #ifdef DEBUG
 extern UInt32 gSwapTicks;    /* the first fade step's swap, without showing it */
 #endif
