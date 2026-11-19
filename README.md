@@ -1,6 +1,10 @@
 # Par 386
 
-A golf game for Palm OS in the style of early 90s PC golf games. Runs on the Palm IIIx and up. Early work, it only shows a blank form so far. See PLAN.md.
+A golf game for Palm OS in the style of early 90s PC golf games. Runs on the Palm IIIx and up. See PLAN.md.
+
+## Installing
+
+Install `Par386.prc` and the course files (`Par386-*.pdb`) you want. Courses can go in RAM or on an SD card, in `/PALM/Programs/Par386/`, `/PALM/Launcher/` or the root of the card. A card course is copied into RAM while you play it, so you need about 70 KB free.
 
 ## Games
 
