@@ -3,6 +3,7 @@
  * screen's own depth (core gfx.c and ui.c) and copies it to the display. */
 #define ALLOW_ACCESS_TO_INTERNALS_OF_WINDOWS
 #include <PalmOS.h>
+#include <VFSMgr.h>
 #include "resource.h"
 #include "front.h"
 #include "play.h"
@@ -249,6 +250,208 @@ static void GridRow(void *ctx, uint16_t row, const uint8_t *bytes, uint16_t len)
 	DmWrite(ctx, (UInt32)row * gGrid.stride, bytes, len);
 }
 
+/* Courses on an SD card. A card course is imported whole into RAM
+ * (storage heap, not the dynamic heap) when it's picked or resumed and
+ * deleted again when the round ends, so a card pulled out mid-round can't
+ * hurt a read. All VFS calls are behind HaveVfs(). */
+static const char *const kCardDirs[] = { "/PALM/Launcher", "/PALM/Programs/Par386", "/" };
+#define CARD_DIRS 3
+static Boolean gImported;               /* the open course was imported from a card */
+static char gImpName[dmDBNameLength];
+
+static Boolean HaveVfs(void)
+{
+	UInt32 v;
+	return FtrGet(sysFileCVFSMgr, vfsFtrIDVersion, &v) == errNone;
+}
+
+/* Reads the database name of a Par 386 course PDB on the card into name. */
+static Boolean CardCourseName(UInt16 vol, const char *path, char *name)
+{
+	FileRef f;
+	UInt32 type = 0, creator = 0;
+	Boolean ok;
+
+	if (VFSFileOpen(vol, path, vfsModeRead, &f) != errNone) return false;
+	ok = VFSFileDBInfo(f, name, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, &type, &creator, NULL) == errNone &&
+	     type == kCourseType && creator == kCreator && StrNCompare(name, kCoursePre, StrLen(kCoursePre)) == 0;
+	VFSFileClose(f);
+	return ok;
+}
+
+/* Calls visit with each Par 386 course PDB on the mounted cards (its
+ * database name, the volume and the path) until it gives true. */
+typedef Boolean (*CardVisit)(const char *name, UInt16 vol, const char *path, void *ctx);
+
+static char gFileName[256];             /* a directory entry's name */
+
+static void CardScan(CardVisit visit, void *ctx)
+{
+	UInt16 vol;
+	UInt32 vi = vfsIteratorStart;
+	UInt8 d;
+	char path[100], name[dmDBNameLength];
+	FileRef dir;
+	UInt32 it;
+	FileInfoType info;
+	UInt16 n;
+
+	while (vi != vfsIteratorStop && VFSVolumeEnumerate(&vol, &vi) == errNone) {
+		for (d = 0; d < CARD_DIRS; d++) {
+			if (VFSFileOpen(vol, kCardDirs[d], vfsModeRead, &dir) != errNone) continue;
+			it = vfsIteratorStart;
+			info.nameP = gFileName;
+			info.nameBufLen = sizeof gFileName;
+			while (it != vfsIteratorStop) {
+				info.attributes = 0;
+				/* an entry that can't be read is skipped, not the rest of the directory */
+				if (VFSDirEntryEnumerate(dir, &it, &info) != errNone) {
+					if (it == vfsIteratorStop) break;
+					continue;
+				}
+				n = StrLen(gFileName);
+				if ((info.attributes & vfsFileAttrDirectory) || n < 5 || StrCaselessCompare(gFileName + n - 4, ".pdb") != 0) continue;
+				if (StrLen(kCardDirs[d]) + n + 2 > sizeof path) continue;
+				StrCopy(path, kCardDirs[d]);
+				if (path[1]) StrCat(path, "/");
+				StrCat(path, gFileName);
+				if (CardCourseName(vol, path, name) && visit(name, vol, path, ctx)) {
+					VFSFileClose(dir);
+					return;
+				}
+			}
+			VFSFileClose(dir);
+		}
+	}
+}
+
+/* The imported course's name is kept in an app preference while it's in
+ * RAM, so a copy left by a crash or reset is deleted at the next launch. */
+#define kImpPref 1
+
+static void ImpPrefSet(const char *name)
+{
+	char buf[dmDBNameLength];
+
+	MemSet(buf, sizeof buf, 0);
+	if (name) StrCopy(buf, name);
+	PrefSetAppPreferences(kCreator, kImpPref, 1, buf, sizeof buf, false);
+}
+
+/* Deletes a copy recorded by ImpPrefSet if it's still ours. */
+static void DropLeftover(void)
+{
+	char buf[dmDBNameLength];
+	UInt16 size = sizeof buf;
+	LocalID id;
+	UInt32 type = 0, creator = 0;
+
+	MemSet(buf, sizeof buf, 0);
+	if (PrefGetAppPreferences(kCreator, kImpPref, buf, &size, false) == noPreferenceFound || !buf[0]) return;
+	buf[dmDBNameLength - 1] = 0;
+	if (StrNCompare(buf, kCoursePre, StrLen(kCoursePre)) == 0 && (id = DmFindDatabase(0, buf)) != 0 &&
+	    DmDatabaseInfo(0, id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, &type, &creator) == errNone &&
+	    type == kCourseType && creator == kCreator)
+		DmDeleteDatabase(0, id);
+	ImpPrefSet(NULL);
+}
+
+typedef struct { const char *want; Boolean found; Err err; } CardWant;
+
+static Boolean ImportVisit(const char *name, UInt16 vol, const char *path, void *ctx)
+{
+	CardWant *w = ctx;
+	UInt16 card;
+	LocalID id;
+
+	if (StrCompare(name, w->want) != 0) return false;
+	w->found = true;
+	ImpPrefSet(name);
+	w->err = VFSImportDatabaseFromFile(vol, path, &card, &id);
+	if (w->err == errNone) {
+		gImported = true;
+		StrCopy(gImpName, name);
+	} else ImpPrefSet(NULL);
+	return true;
+}
+
+static Boolean FindVisit(const char *name, UInt16 vol, const char *path, void *ctx)
+{
+	CardWant *w = ctx;
+
+	if (StrCompare(name, w->want) != 0) return false;
+	w->found = true;
+	return true;
+}
+
+enum { EC_OK, EC_MISSING, EC_NOMEM };
+
+/* EC_OK if the course is in RAM, else imports it from a card. */
+static UInt8 EnsureCourse(const char *name)
+{
+	CardWant w;
+
+	if (DmFindDatabase(0, name) != 0) return EC_OK;
+	if (gImported || !HaveVfs()) return EC_MISSING;
+	w.want = name;
+	w.found = false;
+	w.err = errNone;
+	CardScan(ImportVisit, &w);
+	if (w.found && w.err == errNone) return EC_OK;
+	return w.found && w.err == memErrNotEnoughSpace ? EC_NOMEM : EC_MISSING;
+}
+
+/* True if the course is on a card, or no card is in, so a resume can say to
+ * insert it. */
+static Boolean CardMayHave(const char *name)
+{
+	CardWant w;
+	UInt16 vol;
+	UInt32 vi = vfsIteratorStart;
+
+	if (!HaveVfs()) return false;
+	if (VFSVolumeEnumerate(&vol, &vi) != errNone) return true;
+	w.want = name;
+	w.found = false;
+	CardScan(FindVisit, &w);
+	return w.found;
+}
+
+/* Deletes the imported card course, if any. */
+static void DropImported(void)
+{
+	LocalID id;
+
+	if (!gImported) return;
+	if ((id = DmFindDatabase(0, gImpName)) != 0) DmDeleteDatabase(0, id);
+	gImported = false;
+	ImpPrefSet(NULL);
+}
+
+/* Adds a name to the sorted, capped course list, unless it's there. */
+static void AddCourse(const char *name)
+{
+	UInt8 i;
+
+	for (i = 0; i < gCourseCount; i++)
+		if (StrCompare(gCourseNames[i], name) == 0) return;
+	i = gCourseCount;
+	if (i == FRONT_COURSES) {
+		if (StrCompare(gCourseNames[i - 1], name) <= 0) return;
+		i--;
+	} else gCourseCount++;
+	for (; i > 0 && StrCompare(gCourseNames[i - 1], name) > 0; i--)
+		StrCopy(gCourseNames[i], gCourseNames[i - 1]);
+	StrCopy(gCourseNames[i], name);
+}
+
+static Boolean ListVisit(const char *name, UInt16 vol, const char *path, void *ctx)
+{
+	/* a course in RAM wins */
+	if (DmFindDatabase(0, name) == 0) AddCourse(name);
+	return false;
+}
+
 static void PlayEnd(void)
 {
 	LocalID id;
@@ -260,6 +463,7 @@ static void PlayEnd(void)
 	if (gCourseDb) DmCloseDatabase(gCourseDb);
 	gScratchDb = gCourseDb = 0;
 	if ((id = DmFindDatabase(0, kScratchName)) != 0) DmDeleteDatabase(0, id);
+	DropImported();
 	gPlaying = false;
 }
 
@@ -326,30 +530,42 @@ static Boolean CourseHeader(DmOpenRef db, Course *c)
 	return ok;
 }
 
-/* Reads the saved round into r. False if there's none, it's of another
- * version or broken, or its course is gone or has changed. */
-static Boolean LoadSave(Round *r)
+enum { LS_OK, LS_NONE, LS_CHANGED, LS_MISSING, LS_NOMEM };
+
+/* Reads the saved round into r. LS_NONE if there's none or it's of another
+ * version or broken, LS_CHANGED if its course's holes or pars changed (both
+ * mean the save is no use), LS_MISSING if the course isn't in RAM or on a
+ * card in, LS_NOMEM if it couldn't be imported for lack of memory. With
+ * full a card course is imported and checked and stays imported; without,
+ * it's only looked for on a card. */
+static UInt8 LoadSave(Round *r, Boolean full)
 {
 	LocalID id = DmFindDatabase(0, kSaveName);
 	DmOpenRef db;
 	MemHandle h;
 	Course c;
 	Boolean ok = false;
-	UInt8 k;
+	UInt8 k, e;
 
-	if (!id || (db = DmOpenDatabase(0, id, dmModeReadOnly)) == 0) return false;
+	if (!id || (db = DmOpenDatabase(0, id, dmModeReadOnly)) == 0) return LS_NONE;
 	if ((h = DmQueryRecord(db, 0)) != NULL) {
 		ok = rules_unpack(r, MemHandleLock(h), MemHandleSize(h)) == 0 && !r->over;
 		MemHandleUnlock(h);
 	}
 	DmCloseDatabase(db);
-	if (!ok) return false;
-	if ((id = DmFindDatabase(0, r->course)) == 0 || (db = DmOpenDatabase(0, id, dmModeReadOnly)) == 0) return false;
+	if (!ok) return LS_NONE;
+	if (!full && DmFindDatabase(0, r->course) == 0) return CardMayHave(r->course) ? LS_OK : LS_MISSING;
+	if ((e = EnsureCourse(r->course)) != EC_OK) return e == EC_NOMEM ? LS_NOMEM : LS_MISSING;
+	if ((id = DmFindDatabase(0, r->course)) == 0 || (db = DmOpenDatabase(0, id, dmModeReadOnly)) == 0) {
+		DropImported();
+		return LS_MISSING;
+	}
 	ok = CourseHeader(db, &c) && c.hole_count == r->holes;
 	for (k = 0; ok && k < r->holes; k++)
 		if (c.par[k] != r->pars[k]) ok = false;
 	DmCloseDatabase(db);
-	return ok;
+	if (!ok) DropImported();
+	return ok ? LS_OK : LS_CHANGED;
 }
 
 /* Hole n (from 1) of the open course: parses it, keeping its record
@@ -385,8 +601,9 @@ static Boolean LoadHole(UInt16 n)
 /* Opens the course and the scratch database and starts the round's hole:
  * the saved round if resume, else a new one on the test course for the
  * players picked in the clubhouse, saved straight away. */
-/* Set by PlayStart(true) when the saved round itself can't be used. */
-static Boolean gSaveBad;
+/* Why PlayStart failed. */
+enum { PF_MEM, PF_SAVE, PF_MISSING, PF_NOCOURSE };
+static UInt8 gFail;
 
 static Boolean PlayStart(Boolean resume)
 {
@@ -394,11 +611,21 @@ static Boolean PlayStart(Boolean resume)
 	Course c;
 	UInt32 seed;
 
+	gFail = PF_MEM;
 	if (resume) {
-		gSaveBad = !LoadSave(&gRound);
-		if (gSaveBad) return false;
+		switch (LoadSave(&gRound, true)) {
+		case LS_OK: break;
+		case LS_NOMEM: gFail = PF_MEM; return false;
+		case LS_MISSING: gFail = PF_MISSING; return false;
+		default: gFail = PF_SAVE; return false;
+		}
 	} else {
-		if (gFront.course >= gCourseCount) return false;
+		if (gFront.course >= gCourseCount) { gFail = PF_NOCOURSE; return false; }
+		switch (EnsureCourse(gCourseNames[gFront.course])) {
+		case EC_OK: break;
+		case EC_NOMEM: gFail = PF_MEM; return false;
+		default: gFail = PF_NOCOURSE; return false;
+		}
 		if ((id = DmFindDatabase(0, gCourseNames[gFront.course])) == 0 ||
 		    (gCourseDb = DmOpenDatabase(0, id, dmModeReadOnly)) == 0)
 			return false;
@@ -663,30 +890,35 @@ static void PlayInput(Boolean tap, Int16 x, Int16 y, UInt8 key)
 	PlayAct(f);
 }
 
+static char gMsg[48];                  /* the message dialog keeps its text */
+
 static void Act(int r)
 {
 	if (r & (FR_PLAY | FR_CONTINUE)) {
 		if (PlayStart((r & FR_CONTINUE) != 0)) {
 			TurnStrip();
 			SceneRender();
-		} else if ((r & FR_CONTINUE) && gSaveBad) {
-			PlayEnd();
+			return;
+		}
+		PlayEnd();
+		if (gFail == PF_SAVE) {
 			DeleteSave();
 			front_clubhouse(&gFront, 0);
-			front_message(&gFront, "Can't continue", "The saved round's\ncourse is missing.");
-			Redraw();
-		} else if (r & FR_CONTINUE) {
-			/* the save is fine, there wasn't the memory to open the hole */
-			PlayEnd();
+			front_message(&gFront, "Can't continue", "The saved round's\ncourse has changed.");
+		} else if (gFail == PF_MISSING) {
+			/* the save stays for when the card is back */
+			StrCopy(gMsg, "Insert the card\nwith ");
+			StrCat(gMsg, gRound.course + StrLen(kCoursePre));
 			front_clubhouse(&gFront, 1);
-			front_message(&gFront, "Out of memory", "Free some storage\nand try again.");
-			Redraw();
-		} else {
-			PlayEnd();
-			front_clubhouse(&gFront, LoadSave(&gRound));
+			front_message(&gFront, "Course missing", gMsg);
+		} else if (gFail == PF_NOCOURSE) {
+			front_clubhouse(&gFront, LoadSave(&gRound, false) == LS_OK);
 			front_message(&gFront, "No course", "Install a course\nPDB and try again.");
-			Redraw();
+		} else {
+			front_clubhouse(&gFront, LoadSave(&gRound, false) == LS_OK);
+			front_message(&gFront, "Out of memory", "Free some storage\nand try again.");
 		}
+		Redraw();
 		return;
 	}
 	if (r & FR_QUIT) Quit();
@@ -878,7 +1110,7 @@ static void EventLoop(void)
 	} while (e.eType != appStopEvent);
 }
 
-/* Finds the installed course databases (type Crse, ours) and gives their
+/* Finds the installed course databases (type Crse, ours, in RAM or on a card) and gives their
  * names, less "Par386 ", to the clubhouse, sorted, the first picked. */
 static void FindCourses(void)
 {
@@ -888,7 +1120,7 @@ static void FindCourses(void)
 	Boolean first = true;
 	char name[dmDBNameLength];
 	const char *shown[FRONT_COURSES];
-	UInt8 i, k, pre = StrLen(kCoursePre);
+	UInt8 k, pre = StrLen(kCoursePre);
 
 	gCourseCount = 0;
 	while (DmGetNextDatabaseByTypeCreator(first, &st, kCourseType, kCreator, false, &card, &id) == errNone) {
@@ -896,16 +1128,9 @@ static void FindCourses(void)
 		if (card != 0 || DmDatabaseInfo(card, id, name, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL) != errNone)
 			continue;
 		if (StrNCompare(name, kCoursePre, pre) != 0 || !name[pre]) continue;
-		/* keep the first FRONT_COURSES names in sorted order */
-		i = gCourseCount;
-		if (i == FRONT_COURSES) {
-			if (StrCompare(gCourseNames[i - 1], name) <= 0) continue;
-			i--;
-		} else gCourseCount++;
-		for (; i > 0 && StrCompare(gCourseNames[i - 1], name) > 0; i--)
-			StrCopy(gCourseNames[i], gCourseNames[i - 1]);
-		StrCopy(gCourseNames[i], name);
+		AddCourse(name);
 	}
+	if (HaveVfs()) CardScan(ListVisit, NULL);
 	for (k = 0; k < gCourseCount; k++) shown[k] = gCourseNames[k] + pre;
 	front_courses(&gFront, shown, gCourseCount, 0);
 }
@@ -931,8 +1156,9 @@ UInt32 PilotMain(UInt16 cmd, void *cmdPBP, UInt16 launchFlags)
 	DebugCoreCheck();
 #endif
 	front_init(&gFront);
+	DropLeftover();
 	FindCourses();
-	front_clubhouse(&gFront, LoadSave(&gRound));
+	front_clubhouse(&gFront, LoadSave(&gRound, false) == LS_OK);
 	gFront.screen = SCR_TITLE;
 	FrmGotoForm(MainForm);
 	EventLoop();
