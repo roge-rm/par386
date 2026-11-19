@@ -1,0 +1,158 @@
+# Sakura Bay, hole 15. Made by tools/mksakura.py; edit that and run it again.
+name Bamboo Grove
+par 4
+size 220 429
+heightmap hole-15.png 8
+height 0 0.125
+base rough
+aim 88 230
+turn 175
+
+tee Blue 76 14 371
+tee White 86.2 35.5 349
+tee Red 69.1 69.5 316
+
+pin 143.2 363.9
+pin 159.3 367.1
+pin 154.1 382.6
+pin 140.5 377.9
+
+poly first-cut 47.1,54.7 47.7,75.8 45,97.1 43.5,118.4 45.3,139.5 44.5,160.7 47,181.8 55.3,202.5 47.6,224.1 64.8,254.3 74.7,273.1 82.3,292.9 92.1,311.7 101.8,330.5 112.7,348.8 117.7,369.8 169.7,347 163.8,326.5 155,307.3 143.9,289.1 141.8,266.9 132.6,247.8 124.5,228.3 127.6,219.7 119.9,198.9 121.4,177.6 120.1,156.5 121.3,135.3 116.3,114.4 115.8,93.2 116,72 111.3,51.1
+poly fairway 47,60.7 49.1,81.1 46.7,101.7 48.3,122.2 45.4,142.8 48.5,163.2 57.5,183.2 59.7,203.6 53,224.5 67.1,253.3 76.6,271.5 84.2,290.6 94.2,308.6 101.8,327.6 114.3,344.5 123.6,362.8 162.3,345.9 156.2,326.2 146.1,308.3 143.3,287.1 135.8,268 124.7,250.6 118.6,230.9 120,220.8 113.7,200.6 114.5,180 115.9,159.4 117,138.9 118.3,118.3 110.3,98.2 107.1,77.9 107.2,57.3
+poly fringe 168.8,377 166.3,382.9 162.1,387.7 156.8,391 150.8,392.4 144.7,391.8 139.1,389.3 134.6,385.1 131.6,379.6 130.4,373.3 131.2,367 133.7,361.1 137.9,356.3 143.2,353 149.2,351.6 155.3,352.2 160.9,354.7 165.4,358.9 168.4,364.4 169.6,370.7
+poly green 165.5,376.1 163.3,381 159.9,385 155.5,387.7 150.6,388.9 145.6,388.4 141,386.3 137.4,382.9 134.9,378.3 133.9,373.1 134.5,367.9 136.7,363 140.1,359 144.5,356.3 149.4,355.1 154.4,355.6 159,357.7 162.6,361.1 165.1,365.7 166.1,370.9
+poly bunker 103.4,242.7 103.3,239.1 107.5,237.2 112,235.5 116.3,237.3 119.6,239.6 121.3,242.7 120.1,246.1 116.7,248.6 112,248.9 107.5,248.3 103.9,246.1
+poly bunker 45.8,258.7 48.1,255.6 51.6,253.5 56,252.7 60.4,253.5 63.7,255.7 64.8,258.7 64,261.9 61.1,264.7 56,265.7 50.9,264.8 48.1,261.9
+poly bunker 129,377 126.1,375.9 123.7,372.5 124.3,367.3 126.1,362.9 129.1,360.6 132.2,359.4 135.1,361.1 137.1,364.6 137,369.6 135.3,374.3 132.3,377.6
+poly bunker 170.3,376.6 172.8,378.1 171.9,382 170.3,385.5 167.8,388.7 164.5,390.1 161.6,389.7 160.1,387.1 160.4,383.5 161.3,379.6 164.7,377.5 167.7,376.3
+poly tee 69,8 83,8 83,20 69,20
+poly tee 81.2,29.5 91.2,29.5 91.2,41.5 81.2,41.5
+poly tee 64.1,63.5 74.1,63.5 74.1,75.5 64.1,75.5
+poly oob 0,0 18,0 18,429 0,429
+
+object wall 20 13 0 64
+object bush 55.6 15 0 67
+object bush 95.4 19 0 73
+object wall 20 19 0 64
+object pine 145.6 19.3 0 112
+object tree 120.8 20.6 1 80
+object bush 61.1 23.9 0 79
+object wall 20 25 0 64
+object tree 26.4 28.4 0 73
+object wall 20 31 0 64
+object wall 20 37 0 64
+object wall 20 43 0 64
+object wall 20 49 0 64
+object pine 23.2 49.3 0 86
+object pine 160.8 50 0 103
+object pine 131.1 51.6 0 92
+object wall 20 55 0 64
+object wall 20 61 0 64
+object wall 20 67 0 64
+object pine 33.1 73 0 79
+object wall 20 73 0 64
+object pine 125.9 77.8 0 98
+object wall 20 79 0 64
+object wall 20 85 0 64
+object wall 20 91 0 64
+object wall 20 97 0 64
+object tree 161.4 102.8 1 94
+object wall 20 103 0 64
+object tree 131.7 104.5 1 70
+object tree 32.1 104.7 1 85
+object wall 20 109 0 64
+object wall 20 115 0 64
+object wall 20 121 0 64
+object tree 160.5 126.1 1 93
+object wall 20 127 0 64
+object pine 133.2 127.6 0 97
+object tree 26.8 128.7 0 89
+object wall 20 133 0 64
+object wall 20 139 0 64
+object wall 20 145 0 64
+object wall 20 151 0 64
+object tree 27.8 155.5 1 79
+object tree 129.2 155.6 0 85
+object wall 20 157 0 64
+object wall 20 163 0 64
+object pine 122 168.3 0 61
+object wall 20 169 0 64
+object wall 20 175 0 64
+object pine 122.1 175.2 0 73
+object pine 123.8 178.2 0 62
+object wall 20 181 0 64
+object tree 137.7 182.7 1 71
+object tree 32.7 185.7 0 76
+object wall 20 187 0 64
+object pine 127.5 191.5 0 79
+object wall 20 193 0 64
+object pine 130.9 194.1 0 74
+object pine 130.7 198.2 0 76
+object pine 123.6 199 0 62
+object wall 20 199 0 64
+object wall 20 205 0 64
+object pine 134.7 205.3 0 81
+object pine 39.9 205.4 0 92
+object pine 149.7 206.2 0 69
+object tree 164.2 206.8 0 109
+object pine 144.7 211 0 60
+object wall 20 211 0 64
+object pine 157.2 211.2 0 60
+object wall 20 217 0 64
+object pine 139.4 217.7 0 85
+object wall 20 223 0 64
+object pine 151.9 225.5 0 60
+object wall 20 229 0 64
+object tree 185 231.2 0 86
+object wall 20 235 0 64
+object wall 20 241 0 64
+object tree 154.7 244.4 0 70
+object wall 20 247 0 64
+object tree 40.8 251.3 0 83
+object wall 20 253 0 64
+object wall 20 259 0 64
+object wall 20 265 0 64
+object wall 20 271 0 64
+object tree 157.4 271.5 0 70
+object wall 20 277 0 64
+object tree 54.5 277.8 0 72
+object wall 20 283 0 64
+object wall 20 289 0 64
+object wall 20 295 0 64
+object pine 175.6 297 0 92
+object pine 65.7 298.4 0 97
+object wall 20 301 0 64
+object tree 47.5 306.3 0 103
+object wall 20 307 0 64
+object wall 20 313 0 64
+object wall 20 319 0 64
+object pine 186.3 322.4 0 77
+object wall 20 325 0 64
+object tree 71.5 327.3 1 75
+object wall 20 331 0 64
+object wall 20 337 0 64
+object wall 20 343 0 64
+object wall 20 349 0 64
+object tree 194.8 349.1 0 80
+object pine 86 349.4 0 96
+object wall 20 355 0 64
+object wall 20 361 0 64
+object tree 55.2 362.8 1 93
+object wall 20 367 0 64
+object wall 20 373 0 64
+object tree 93.8 373.4 1 74
+object wall 20 379 0 64
+object bush 176.7 380.8 0 60
+object wall 20 385 0 64
+object tree 109.3 389.8 1 86
+object wall 20 391 0 64
+object wall 20 397 0 64
+object bush 151.8 400.9 0 56
+object wall 20 403 0 64
+object tree 204.8 405.7 0 88
+object tree 127.9 406.8 1 77
+object pine 162.7 407.1 0 98
+object pine 171.1 408.3 0 83
+object wall 20 409 0 64
+object wall 20 415 0 64
+object pine 193.6 417.2 0 96

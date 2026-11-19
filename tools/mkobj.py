@@ -21,7 +21,8 @@ art per course style is in tools/mkstyle.py.
 Backdrops come in sets by the course's scenery number: Bkd8 1000 + 10 *
 scenery + 0 or 1. Scenery 0 is the tree line, 1 the links (sea, hills and a
 town with a kirk), 2 the Irish clifftop (the Atlantic, a far headland with
-its lighthouse, the mainland and clouds).
+its lighthouse, the mainland and clouds), 3 the Japanese bay (the sea, a
+snow-capped volcano, wooded ridges with a pagoda and thin cloud).
 
 Usage: mkobj.py OUT [PREVIEW]
 """
@@ -613,6 +614,102 @@ def carrig_art(res, prev):
             preview(idx, prev / f'backdrop-{1020 + k}.png', 2)
 
 
+# Sakura Bay (scenery 3): the bay, a snow-capped volcano across it, wooded
+# hills and thin cloud, from their own random numbers.
+srng = np.random.default_rng(2386 + 3)
+
+
+def sakura_backdrop(width, height, seed):
+    """The bay backdrop, half a turn wide (it repeats twice a turn). Across
+    it in degrees: open sea with a far island (0 to 25), the volcano rising
+    over low wooded foothills, its peak at 60 with snow down its gullies
+    (25 to 100), then wooded ridges round the bay with a pagoda on one
+    (100 to 175). Sea along the bottom rows so the terrain's far edge meets
+    it, a band of thin cloud across the volcano's flank."""
+    h, w = height * SS, width * SS
+    y, x = np.mgrid[0:h, 0:w] + 0.5
+    u = x[0] / w * 180.0
+    ur = np.radians(u) * 2          # a whole turn across the strip, for waves that wrap
+    fine = srng.random((h, w)) - 0.5
+    sea_top = h - h * 0.11
+
+    def bump(c, half, p=1.0):
+        return np.clip(1 - np.abs(u - c) / half, 0, 1) ** p
+
+    # the volcano: concave sides, a flat top with a small notch for the crater
+    du = np.abs(u - 60)
+    cone = np.clip(1 - du / 30, 0, 1) ** 1.7
+    cone = np.minimum(cone, 0.80) + np.where(du < 2.2, -0.012, 0)
+    vtop = sea_top - cone * h * 0.72
+    peak_y = sea_top - 0.80 * h * 0.72
+    vol = (y >= vtop[None, :]) & (y < sea_top) & (cone > 0.002)[None, :]
+    # snow: down to about a third of the height, in tongues down the gullies
+    gul = pnoise(h, w, SS * 30, seed + 1, SS * 12)
+    tongue = np.clip(1 - np.abs(np.sin(np.radians(u - 61) * 70)), 0, 1)[None, :] ** 3
+    snow_line = peak_y + (sea_top - peak_y) * (0.30 + tongue * (0.12 + 0.30 * gul) + (gul - 0.5) * 0.08)
+    snow = vol & (y < snow_line)
+    # lit from the left: the left flank light, the right in shade
+    side = np.clip((60 - u) / 12, -1, 1)[None, :]
+    vs = np.clip(0.55 + side * 0.18 + (gul - 0.5) * 0.25 + fine * 0.08 - (y - peak_y) / h * 0.15, 0, 1)
+    ss_ = np.clip(0.80 + side * 0.18 + (gul - 0.5) * 0.15, 0, 1)
+    # foothills under it and wooded ridges round the bay
+    foot = (bump(52, 34, 0.7) * (0.14 + 0.03 * np.sin(ur * 9 + 1) + 0.015 * np.sin(ur * 31))
+            + bump(18, 5, 0.8) * 0.07)
+    ridge = bump(140, 42, 0.6) * (0.30 + 0.06 * np.sin(ur * 6 + 2) + 0.03 * np.sin(ur * 17 + 1))
+    ridge = np.maximum(ridge, bump(108, 10, 1.2) * 0.16)
+    tops = np.abs(np.sin(u * 3.1)) * 0.015 + np.abs(np.sin(u * 7.3 + 1)) * 0.01   # crowns of trees
+    hill_p = np.maximum(foot, ridge) + np.where(np.maximum(foot, ridge) > 0.01, tops, 0)
+    htop = sea_top - hill_p * h
+    hill = (y >= htop[None, :]) & (y < sea_top) & (hill_p > 0.005)[None, :]
+    near_ridge = (ridge >= foot)[None, :] & hill
+    hs = np.clip(0.55 - (y - htop[None, :]) / h * 1.0 + (pnoise(h, w, SS * 3, seed + 2, SS * 3) - 0.5) * 0.35, 0, 1)
+    hs = np.where(near_ridge, hs * 0.75, hs)
+    # a pagoda on the ridge: stacked roofs, wider at the bottom
+    px = 150 / 180 * w
+    pbase = sea_top - np.interp(px, x[0], hill_p * h) + SS
+    pag = np.zeros((h, w), dtype=bool)
+    for k in range(4):
+        ty = pbase - SS * (1.0 + 1.6 * k)
+        half = SS * (2.0 - 0.3 * k)
+        pag |= (np.abs(x - px) < half) & (y >= ty - SS * 0.6) & (y < ty)
+        pag |= (np.abs(x - px) < SS * 0.8) & (y >= ty) & (y < ty + SS * 1.0)
+    pag |= (np.abs(x - px) < SS * 0.3) & (y >= pbase - SS * 8.5) & (y < pbase - SS * 6)
+    # the sea, a little lighter to the horizon with streaks of swell
+    sea = y >= sea_top
+    ss = np.clip(0.45 + (y - sea_top) / (h - sea_top) * 0.25 +
+                 np.where(((y // SS) % 2 == 0) & (fine > 0.32), 0.25, 0) + fine * 0.1, 0, 1)
+    # thin cloud: long streaks, one band across the volcano's flank
+    band_y = peak_y + (sea_top - peak_y) * 0.42 + h * 0.03 * np.sin(ur * 2 + 0.4)[None, :]
+    streak = pnoise(h, w, SS * 3, seed + 5, SS * 26) * 0.75 + pnoise(h, w, SS * 2, seed + 6, SS * 8) * 0.25
+    want = 0.48 + np.clip(np.abs(y - band_y) / (h * 0.035), 0, 3) * 0.3 - bump(60, 26)[None, :] * 0.06
+    hi_y = h * (0.22 + 0.04 * np.sin(ur * 3 + 2))[None, :]
+    want = np.minimum(want, 0.70 + np.clip(np.abs(y - hi_y) / (h * 0.035), 0, 3) * 0.25 + bump(60, 20)[None, :] * 0.4)
+    cloud = (streak > want) & (y < sea_top - SS * 2)
+    cs = np.clip(0.80 + (streak - want) * 1.5, 0, 1)
+    idx = np.zeros((height, width), dtype=np.uint8)
+    for mask, name, sh, dith in ((vol, 'far', vs * 0.5 + 0.12, 0.9),
+                                 (snow, 'grey', 0.72 + ss_ * 0.28, 0.4),
+                                 (hill, 'far', hs * 0.5 + 0.08, 0.9),
+                                 (pag, 'grey', np.full((h, w), 0.15), 0.1),
+                                 (cloud, 'grey', cs, 0.2),
+                                 (sea, 'water', ss, 0.9)):
+        cov = shrink(mask.astype(float), SS)
+        shd = shrink(np.where(mask, sh, 0), SS) / np.maximum(cov, 1e-6)
+        on = cov >= 0.5
+        kk = ramp_index(name, np.clip(shd, 0, 1), (srng.random(idx.shape) - 0.5) * dith)
+        idx[on] = kk[on]
+    return idx
+
+
+def sakura_art(res, prev):
+    """Scenery 3, Sakura Bay: Bkd8 1030 and 1031."""
+    big = sakura_backdrop(968, 72, 31)
+    for k, idx in enumerate((big.reshape(36, 2, 484, 2)[:, 0, :, 0], big)):
+        res.append(('Bkd8', 1030 + k, bkd8(idx)))
+        if prev:
+            preview(idx, prev / f'backdrop-{1030 + k}.png', 2)
+
+
 def main():
     out = Path(sys.argv[1])
     prev = Path(sys.argv[2]) if len(sys.argv) > 2 else None
@@ -645,6 +742,7 @@ def main():
             preview(idx, prev / f'backdrop-{1000 + k}.png', 2)
     links_art(res, prev)
     carrig_art(res, prev)
+    sakura_art(res, prev)
     import mkstyle
     mkstyle.make(res, prev)
     rcp = ['/* Made by tools/mkobj.py. */']

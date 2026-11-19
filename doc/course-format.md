@@ -59,7 +59,7 @@ Surface types: 0 rough, 1 first cut, 2 fairway, 3 deep rough, 4 green, 5 fringe,
 
 Object types: 1 tree, 2 pine, 3 palm, 4 bush, 5 rock, 6 house, 7 stand (a grandstand), 8 wall (a dry-stone section 6 yd long at scale 64), 9 gorse, 10 grass (dune grass), 11 landmark (16 yd high: the course's kirk, lighthouse, pagoda, windmill, baobab or hotel), 12 animal (1.5 yd: sheep, kangaroo, crane, crocodile, hippo or elk). Other numbers load and are left for later.
 
-Each scenery number has its own sprites for some types (tools/mkstyle.py lists them), in variant 0 and sometimes 1, such as the cherry and the maple for Sakura Bay trees; types it has none for use the shared art, and a variant it has no art for draws as variant 0. Scenery 1 and 2 have their own backdrop; 3 to 6 have object art but no backdrop yet.
+Each scenery number has its own sprites for some types (tools/mkstyle.py lists them), in variant 0 and sometimes 1, such as the cherry and the maple for Sakura Bay trees; types it has none for use the shared art, and a variant it has no art for draws as variant 0. Scenery 1 to 3 have their own backdrop; 4 to 6 have object art but no backdrop yet.
 
 ## Surface grid
 
@@ -101,6 +101,6 @@ object pine 16 60 [variant] [scale]
 
 Surface names: rough, first-cut, fairway, deep-rough, green, fringe, bunker, water, path, oob, tee. Object names: tree, pine, palm, bush, rock, house, stand, wall, gorse, grass, landmark, animal, or a number.
 
-Auld Kirk (`courses/auldkirk/`) is made by `tools/mkauldkirk.py` (`make auldkirk`), which writes the hole files and heightmaps from a table of centre lines, greens and features.
+Auld Kirk (`courses/auldkirk/`) is made by `tools/mkauldkirk.py` (`make auldkirk`), which writes the hole files and heightmaps from a table of centre lines, greens and features. Carrig Head and Sakura Bay are made the same way by `tools/mkcarrig.py` and `tools/mksakura.py`.
 
 The heightmap's top row is the far end of the hole, so the PNG looks like a course map.

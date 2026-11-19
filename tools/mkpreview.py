@@ -36,7 +36,7 @@ STYLES = {
             grass=(86, 150, 62), rough=(70, 110, 52),
             items=[(mkstyle.OBJ_LANDMARK, 0, 176, 17, 11), (OBJ_TREE, 0, 26, 42, 18),
                    (mkstyle.OBJ_HOUSE, 0, 58, 30, 8), (OBJ_BUSH, 0, 192, 48, 10)]),
-    3: dict(sky=((110, 150, 206), (232, 226, 226)), far=('peak', (110, 130, 160), 14),
+    3: dict(sky=((110, 150, 206), (232, 226, 226)), far=('volcano', (70, 104, 140), 3),
             grass=(98, 158, 70), rough=(64, 116, 50),
             items=[(mkstyle.OBJ_LANDMARK, 0, 172, 30, 22), (OBJ_TREE, 0, 26, 42, 22),
                    (OBJ_PINE, 0, 196, 46, 18), (OBJ_TREE, 1, 58, 33, 10)]),
@@ -91,7 +91,7 @@ def paint(s):
     if kind == 'peak':
         prof = np.clip(0.7 * mkobj.vnoise((1, W), 40, 700 + s)[0] + 0.3 * mkobj.vnoise((1, W), 9, 710 + s)[0], 0, 1)
     prof = (prof - prof.min()) / max(1e-6, prof.max() - prof.min())
-    if kind in ('sea', 'cliff'):
+    if kind in ('sea', 'cliff', 'volcano'):
         top_y = np.full(W, HORIZON - bh)
     elif kind == 'peak':
         top_y = HORIZON - bh * (0.15 + 0.85 * prof ** 1.3)
@@ -108,7 +108,7 @@ def paint(s):
         snowy = (y < np.minimum(top_y[None, :] + 3 + 2 * prof[None, :], HORIZON - bh * 0.45)) & band
         img = np.where(band[..., None], rock, img)
         img = np.where(snowy[..., None], mix((236, 240, 248), haze, 0.25)[None, None] * np.clip(lit, 0.8, 1.05), img)
-    elif kind in ('sea', 'cliff'):
+    elif kind in ('sea', 'cliff', 'volcano'):
         img[band] = far
         glint = band & (y > top_y[None, :]) & (r.random((H, W)) > 0.9)
         img[glint] = mix(far, (230, 236, 240), 0.5)
@@ -126,6 +126,27 @@ def paint(s):
         shade = 0.85 + 0.25 * (mkobj.vnoise((H, W), 3, 720 + s) - 0.5) - ((y % 3) == 0) * 0.08
         img = np.where(face[..., None], rock_c[None, None] * shade[..., None], img)
         lab[head] = FAR
+    elif kind == 'volcano':
+        # a snow-capped volcano across the bay: concave sides, a flat top,
+        # lit on the left, snow down the gullies, low wooded hills at its foot
+        xs = np.arange(W)
+        cx = 92
+        cone = np.clip(1 - np.abs(xs - cx) / 74, 0, 1) ** 1.7
+        cone = np.minimum(cone, 0.8)
+        vtop = HORIZON - bh - cone * 27
+        body = (y >= vtop[None, :]) & (y < HORIZON - bh) & (cone[None, :] > 0.01)
+        side = np.clip((cx - xs) / 30, -1, 1)[None, :]
+        body_c = mix((96, 112, 140), haze, 0.3)
+        img = np.where(body[..., None], body_c[None, None] * (0.9 + 0.18 * side[..., None]), img)
+        tongue = np.clip(1 - np.abs(np.sin((xs - cx) * 0.55)), 0, 1) ** 3
+        sline = HORIZON - bh - 0.8 * 27 + 0.8 * 27 * (0.3 + 0.3 * tongue * mkobj.vnoise((1, W), 6, 730 + s)[0])
+        snowy = body & (y < sline[None, :])
+        img = np.where(snowy[..., None], mix((240, 242, 248), haze, 0.15)[None, None] * (0.9 + 0.1 * side[..., None]), img)
+        hp = mkobj.vnoise((1, W), 14, 740 + s)[0]
+        htop = HORIZON - bh - 1 - 4 * hp - 3 * np.clip(1 - np.abs(xs - 175) / 50, 0, 1)
+        hills = (y >= htop[None, :]) & (y < HORIZON - bh)
+        img[hills] = mix((50, 86, 60), haze, 0.35)
+        lab[body | hills] = FAR
     else:
         img[band] = mix(far, haze, 0.2 * (HORIZON - y) / max(1, bh))[band] if False else far
     # ground: rough everywhere, a fairway narrowing to the horizon with mown
