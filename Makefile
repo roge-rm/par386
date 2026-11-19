@@ -22,7 +22,7 @@
 #   make render-ref  makes host/ref/ again from the current renderer
 #   make physics-test plays shots on the host and checks carries, wind, lies, water and the meter
 #   make rules-test  turn order, honour, scores, the scorecard and the saved round
-#   make cpu-round   computer golfers play a course (CR=carrighead) and the scores are shown
+#   make cpu-round   computer golfers play a course (CR=carrighead, TEE=1 for the second tee set) and the scores are shown
 # Both flavours write build/Par386.prc, so build one at a time.
 
 SDK      = ../palm-os-sdk/sdk-5r3
@@ -263,7 +263,7 @@ rules-test: build/rulestest build/courses/Par386-Test.pdb $(ART)/art.rcp
 # course-render) with its wind: mean scores per hole, water, out of bounds
 # and pick-ups. Fails if a round doesn't finish or Good or Pro picks up.
 cpu-round: build/rulestest build/courses/$(CRPDB)
-	build/rulestest --cpu build/courses/$(CRPDB) 8
+	build/rulestest --cpu build/courses/$(CRPDB) 8 $(or $(TEE),0)
 
 tables:
 	python3 tools/mktrig.py

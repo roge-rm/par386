@@ -354,6 +354,7 @@ uint16_t rules_pack(const Round *r, uint8_t *buf)
 	*b++ = r->mode;
 	*b++ = (uint8_t)(r->balls >> 8);
 	*b++ = (uint8_t)r->balls;
+	*b++ = r->tee;
 	for (i = 0; i < r->players; i++) {
 		const RoundPlayer *p = &r->pl[i];
 		b = put_name(b, p->name, RULES_NAME_MAX + 1);
@@ -371,19 +372,20 @@ uint16_t rules_pack(const Round *r, uint8_t *buf)
 int rules_unpack(Round *r, const uint8_t *buf, uint32_t len)
 {
 	const uint8_t *b = buf;
-	uint8_t i, h, seen = 0, players, holes, v2;
+	uint8_t i, h, seen = 0, players, holes, v2, v3;
 	uint8_t *z = (uint8_t *)r;
 	uint16_t k, ver;
 
 	if (len < 2 + 32 + 4 + 9) return -1;
 	ver = (uint16_t)((uint16_t)b[0] << 8 | b[1]);
-	if (ver != 1 && ver != RULES_SAVE_VERSION) return -1;
-	/* version 1 has no mode, practice count or computer golfers */
-	v2 = ver == RULES_SAVE_VERSION;
+	if (ver < 1 || ver > RULES_SAVE_VERSION) return -1;
+	/* version 1 has no mode, practice count or computer golfers, 2 no tee set */
+	v2 = ver >= 2;
+	v3 = ver >= 3;
 	players = b[2 + 32 + 4];
 	holes = b[2 + 32 + 4 + 1];
 	if (players < 1 || players > RULES_PLAYERS || holes < 1 || holes > COURSE_MAX_HOLES) return -1;
-	if (len != 2 + 32 + 4 + 9 + (uint32_t)holes + (v2 ? 3 : 0) + (uint32_t)players * (RULES_NAME_MAX + 1 + 11 + v2 + holes)) return -1;
+	if (len != 2 + 32 + 4 + 9 + (uint32_t)holes + (v2 ? 3 : 0) + v3 + (uint32_t)players * (RULES_NAME_MAX + 1 + 11 + v2 + holes)) return -1;
 
 	for (k = 0; k < sizeof(Round); k++) z[k] = 0;
 	b += 2;
@@ -413,6 +415,10 @@ int rules_unpack(Round *r, const uint8_t *buf, uint32_t len)
 		r->balls = (uint16_t)((uint16_t)b[0] << 8 | b[1]);
 		b += 2;
 		if (!rules_mode_ok(r->mode, players)) return -1;
+	}
+	if (v3) {
+		r->tee = *b++;
+		if (r->tee >= COURSE_MAX_TEES) return -1;
 	}
 	for (i = 0; i < players; i++) {
 		RoundPlayer *p = &r->pl[i];

@@ -86,7 +86,7 @@ static void SEC_UI setup(Play *p)
 	const Hole *h = p->rv.hole;
 	vec2 to = pin(p);
 
-	if (p->rv.ball.x == h->tees[0].pos.x && p->rv.ball.y == h->tees[0].pos.y) to = h->aim;
+	if (p->rv.ball.x == h->tees[h->tee].pos.x && p->rv.ball.y == h->tees[h->tee].pos.y) to = h->aim;
 	p->rv.aim = vec2_angle(vec2_sub(to, p->rv.ball));
 	p->aim = p->rv.aim;
 	p->shape = SHAPE_NORMAL;
@@ -108,7 +108,7 @@ void play_init(Play *p, const Hole *h, const SurfaceGrid *g, uint32_t seed)
 	p->rv.hole = h;
 	p->rv.grid = g;
 	p->rv.pin = 0;
-	p->rv.ball = h->tees[0].pos;
+	p->rv.ball = h->tees[h->tee].pos;
 	p->lie = LIE_TEE;
 	p->stroke = 1;
 	p->view = PLAY_SCENE;
@@ -195,7 +195,7 @@ static void SEC_UI take(Play *p, uint8_t i)
 	} else if (r->mode == MODE_GREEN) {
 		green_spot(p);
 	} else {
-		p->rv.ball = p->rv.hole->tees[0].pos;
+		p->rv.ball = p->rv.hole->tees[p->rv.hole->tee].pos;
 		p->lie = LIE_TEE;
 	}
 	p->stroke = (uint8_t)(rp->taken + 1);
@@ -978,8 +978,9 @@ static void SEC_UI draw_meter(Play *p, Surface *s, int16_t x0, int16_t x1)
 	for (k = 1; k < 4; k++) mfill(s, i0, i1, sx + (MTR_W - MTR_SNAP) * k / 4, y + 8, 1, 2, UIC_PAPER);
 	mfill(s, i0, i1, sx, y + 1, 1, ROW_H - 2, UIC_TEXT_HI);
 	if (p->club == CLUB_PT) {
-		/* the putt that rolls to the cup on a flat green */
+		/* the putt that rolls to the cup on a flat green of the course's speed */
 		fixed d = vec2_len(vec2_sub(pin(p), p->rv.ball));
+		d = hole_putt_len(p->rv.hole, p->rv.grid, p->rv.ball, pin(p), d);
 		k = (int16_t)(sx + (int32_t)(MTR_W - MTR_SNAP) * (d >> 8) / (p->range >> 8));
 		if (k > MTR_X + MTR_W - 1) k = MTR_X + MTR_W - 1;
 		mfill(s, i0, i1, k - 1, y + 1, 3, 1, UIC_WHITE);
@@ -1407,7 +1408,7 @@ static void SEC_UI hole_row(Surface *s, const Hole *h)
 	add(t, &n, "Par ");
 	play_num(t + n, h->par);
 	readout(s, 3 + BOX_W(7), ROW_A, BOX_W(5), t, -1, UIC_PAPER);
-	n = play_num(t, h->tees[0].yards);
+	n = play_num(t, h->tees[h->tee].yards);
 	add(t, &n, " yd");
 	readout(s, 4 + BOX_W(7) + BOX_W(5), ROW_A, BOX_W(6), t, 1, UIC_TEXT_HI);
 }

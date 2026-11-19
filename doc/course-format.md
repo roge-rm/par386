@@ -18,7 +18,7 @@ Points in records are in quarter yards (u16), and must lie on the hole (0 to wid
 
 | Bytes | What |
 |---|---|
-| u16 | version, 1, 2 or 3 |
+| u16 | version, 1 to 4 |
 | u8 | holes, 1 to 36 |
 | u8 | tee sets, 1 to 4 |
 | name | course name, 1 to 31 characters |
@@ -26,7 +26,8 @@ Points in records are in quarter yards (u16), and must lie on the hole (0 to wid
 | per hole: u8, u16 | par, yards from the longest tee |
 | u8 | version 2 and up: scenery, the sky, backdrop and object art (0 parkland, 1 links, 2 Irish clifftop, 3 Japanese seaside, 4 Australian sandbelt, 5 South African bush, 6 Canadian Rockies) |
 | u8 × holes | version 2 and up: each hole's map turned against the course, 256 a turn, which moves the backdrop |
-| u8 | version 3 only: the average wind in mph, 0 to 40, 0 for the usual 10. Each hole's wind is 0 to twice that |
+| u8 | version 3 and up: the average wind in mph, 0 to 40, 0 for the usual 10. Each hole's wind is 0 to twice that |
+| u8 | version 4 only: green speed, 6 to 14, 0 for the usual 10. The green's roll slows by the usual amount times 10 over it, so 13 rolls about a third further |
 
 A name is a length byte and that many Latin-1 characters, no nul.
 
@@ -55,6 +56,8 @@ The heightmap must cover the hole: (points − 1) × spacing is at least the wid
 
 The test hole is 2816 bytes. A 32 × 64 heightmap is 2 KB of that, and it doesn't pack down much, so records aren't compressed. The loader rejects a record that is short, long or has any value out of range.
 
+Players pick a tee set for a round. A hole is played from its tee of that set, or if it has none from the nearest longer set's tee, or else its first tee.
+
 Surface types: 0 rough, 1 first cut, 2 fairway, 3 deep rough, 4 green, 5 fringe, 6 bunker, 7 water, 8 cart path, 9 out of bounds, 10 tee box.
 
 Object types: 1 tree, 2 pine, 3 palm, 4 bush, 5 rock, 6 house, 7 stand (a grandstand), 8 wall (a dry-stone section 6 yd long at scale 64), 9 gorse, 10 grass (dune grass), 11 landmark (16 yd high: the course's kirk, lighthouse, pagoda, windmill, baobab or hotel), 12 animal (1.5 yd: sheep, kangaroo, crane, crocodile, hippo or elk). Other numbers load and are left for later.
@@ -78,6 +81,7 @@ tee White
 holes 18          # reads hole-01.txt to hole-18.txt
 scenery 1         # optional, makes a version 2 header
 wind 15           # optional, average mph, makes a version 3 header
+green 13          # optional, green speed, makes a version 4 header
 ```
 
 `hole-NN.txt`, yards with decimals allowed, `#` starts a comment and an indented line carries on the one above:

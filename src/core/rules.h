@@ -28,9 +28,9 @@ enum { CPU_HUMAN, CPU_EASY, CPU_FAIR, CPU_GOOD, CPU_PRO, CPU_LEVELS };
 /* The tournament's computer field. */
 #define RULES_FIELD 8
 
-#define RULES_SAVE_VERSION 2
+#define RULES_SAVE_VERSION 3
 /* The most a saved round's record takes. */
-#define RULES_SAVE_MAX    (2 + 32 + 4 + 9 + COURSE_MAX_HOLES + 3 + RULES_PLAYERS * (RULES_NAME_MAX + 1 + 12 + COURSE_MAX_HOLES))
+#define RULES_SAVE_MAX    (2 + 32 + 4 + 9 + COURSE_MAX_HOLES + 4 + RULES_PLAYERS * (RULES_NAME_MAX + 1 + 12 + COURSE_MAX_HOLES))
 
 typedef struct {
 	vec2 ball;                          /* where it lies, once it's off the tee */
@@ -53,6 +53,7 @@ typedef struct {
 	uint8_t pars[COURSE_MAX_HOLES];
 	uint8_t mode;                       /* MODE_* */
 	uint16_t balls;                     /* practice: balls played so far */
+	uint8_t tee;                        /* the tee set played, 0 the longest (Hole.tee comes from it) */
 	RoundPlayer pl[RULES_PLAYERS];
 } Round;
 
@@ -128,7 +129,7 @@ uint32_t SEC_CORE rules_shot_seed(const Round *r, uint8_t i);
  * pack returns its length (at most RULES_SAVE_MAX); unpack returns 0, or -1
  * for a record of the wrong version, length or with values out of range.
  * A version 1 record (before the modes) loads as stroke play with every
- * player a person. */
+ * player a person, versions 1 and 2 from the first tee set. */
 uint16_t SEC_CORE rules_pack(const Round *r, uint8_t *buf);
 int SEC_CORE rules_unpack(Round *r, const uint8_t *buf, uint32_t len);
 

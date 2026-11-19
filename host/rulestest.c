@@ -15,6 +15,7 @@
 #include "front.h"
 #include "records.h"
 #include "card.h"
+#include "cpu.h"
 
 static int fails, checks;
 
@@ -243,7 +244,7 @@ static void save_tests(void)
 	memset(r.pl[3].name, 0, sizeof r.pl[3].name);
 	strcpy(r.pl[3].name, "Dan");
 	len = rules_pack(&r, buf);
-	CHECK(len == 2 + 32 + 4 + 9 + 18 + 3 + 4 * (9 + 12 + 18));
+	CHECK(len == 2 + 32 + 4 + 9 + 18 + 4 + 4 * (9 + 12 + 18));
 	CHECK(buf[0] == 0 && buf[1] == RULES_SAVE_VERSION);
 	memset(&q, 0x55, sizeof q);
 	CHECK(rules_unpack(&q, buf, len) == 0);
@@ -252,8 +253,25 @@ static void save_tests(void)
 	/* a short round for 2 */
 	rules_init(&r, "Par386 Test", 2, 3, pars, 0xDEADBEEFUL);
 	len = rules_pack(&r, buf);
-	CHECK(len == 2 + 32 + 4 + 9 + 3 + 3 + 2 * (9 + 12 + 3));
+	CHECK(len == 2 + 32 + 4 + 9 + 3 + 4 + 2 * (9 + 12 + 3));
 	CHECK(rules_unpack(&q, buf, len) == 0 && memcmp(&q, &r, sizeof r) == 0);
+	/* the tee set round trips; a version 2 record (no tee byte) loads from the first */
+	r.tee = 2;
+	len = rules_pack(&r, buf);
+	CHECK(buf[53] == 2 && rules_unpack(&q, buf, len) == 0 && q.tee == 2 && memcmp(&q, &r, sizeof r) == 0);
+	{
+		uint8_t v2[RULES_SAVE_MAX];
+		uint16_t n = 0, i;
+		for (i = 0; i < len; i++)
+			if (i != 53) v2[n++] = buf[i];
+		v2[1] = 2;
+		CHECK(rules_unpack(&q, v2, n) == 0 && q.tee == 0);
+		CHECK(rules_unpack(&q, v2, len) == -1);
+		v2[1] = 3;
+		CHECK(rules_unpack(&q, v2, n) == -1);
+	}
+	r.tee = 0;
+	len = rules_pack(&r, buf);
 
 	/* a version 1 record, before the modes: the same without the mode, the
 	 * practice count and each player's computer level, loads as stroke play */
@@ -264,10 +282,10 @@ static void save_tests(void)
 		r.pl[0].score[0] = 0;
 		len = rules_pack(&r, buf);
 		for (i = 0; i < 50; i++) v1[n++] = buf[i];
-		for (i = 53; i < len; i++)
-			if (i != 53 + 20 && i != 53 + 24 + 20) v1[n++] = buf[i];
+		for (i = 54; i < len; i++)
+			if (i != 54 + 20 && i != 54 + 24 + 20) v1[n++] = buf[i];
 		v1[1] = 1;
-		CHECK(n == len - 3 - 2);
+		CHECK(n == len - 4 - 2);
 		memset(&q, 0x55, sizeof q);
 		CHECK(rules_unpack(&q, v1, n) == 0 && memcmp(&q, &r, sizeof r) == 0 && q.mode == MODE_STROKE && !q.pl[1].cpu);
 		CHECK(rules_unpack(&q, v1, n - 1) == -1);
@@ -299,20 +317,21 @@ static void save_tests(void)
 	BAD(50, MODE_COUNT);                      /* a mode past the last */
 	BAD(50, MODE_BEST);                       /* best ball for 2 */
 	BAD(50, MODE_RANGE);                      /* practice for 2 */
-	BAD(53 + 9 + 8, LIE_COUNT);               /* a lie past the last */
-	BAD(53 + 9 + 8 + 2, 2);                   /* holed isn't 0 or 1 */
-	BAD(53 + 9 + 8 + 3, CPU_LEVELS);          /* a computer level past the last */
-	BAD(53 + 8, 'x');                         /* a name with no end */
-	BAD(53 + 9, 0x7F);                        /* a ball far off the hole */
-	BAD(53 + 9 + 8 + 2, 1);                   /* the turn is a holed player's */
-	BAD(53 + 9 + 12 + 1, 4);                  /* strokes on a hole not reached */
+	BAD(53, COURSE_MAX_TEES);                 /* a tee set past the last */
+	BAD(54 + 9 + 8, LIE_COUNT);               /* a lie past the last */
+	BAD(54 + 9 + 8 + 2, 2);                   /* holed isn't 0 or 1 */
+	BAD(54 + 9 + 8 + 3, CPU_LEVELS);          /* a computer level past the last */
+	BAD(54 + 8, 'x');                         /* a name with no end */
+	BAD(54 + 9, 0x7F);                        /* a ball far off the hole */
+	BAD(54 + 9 + 8 + 2, 1);                   /* the turn is a holed player's */
+	BAD(54 + 9 + 12 + 1, 4);                  /* strokes on a hole not reached */
 	memcpy(bad, buf, len);                    /* match play for 2, player 2 a computer golfer: fine */
-	bad[50] = MODE_MATCH; bad[53 + 24 + 20] = CPU_PRO;
+	bad[50] = MODE_MATCH; bad[54 + 24 + 20] = CPU_PRO;
 	CHECK(rules_unpack(&q, bad, len) == 0 && q.mode == MODE_MATCH && q.pl[1].cpu == CPU_PRO);
 	memcpy(bad, buf, len);                    /* player 1 holed, player 2 to play: fine */
-	bad[42] = 1; bad[53 + 19] = 1;
+	bad[42] = 1; bad[54 + 19] = 1;
 	CHECK(rules_unpack(&q, bad, len) == 0);
-	bad[53 + 24 + 19] = 1;                    /* everyone holed but the hole not over */
+	bad[54 + 24 + 19] = 1;                    /* everyone holed but the hole not over */
 	CHECK(rules_unpack(&q, bad, len) == -1);
 	bad[41] = 1;                              /* over but the last hole's players still holed */
 	CHECK(rules_unpack(&q, bad, len) == -1);
@@ -527,6 +546,67 @@ static void round_tests(const char *pdb)
 
 	resume_tests(&c);
 	mode_tests(&c);
+
+	/* an Easy golfer 100 yd out with water from 20 to 90 yd: carries it with a
+	 * short iron, never a wood at the lay-up's power */
+	{
+		static uint8_t cells[220 * 50];
+		SurfaceGrid wg;
+		CpuView v;
+		CpuShot o;
+		ShotIn in;
+		static Shot sh;
+		int sd, wet = 0;
+		for (k = 0; k < 220; k++) memset(cells + k * 50, k >= 60 && k < 95 ? 0x77 : 0x22, 50);
+		wg.cells = cells;
+		wg.w = 100;
+		wg.h = 220;
+		wg.stride = 50;
+		memset(&v, 0, sizeof v);
+		v.hole = &holes[0].h;
+		v.grid = &wg;
+		v.ball = vec2_make(YD(100), YD(100));
+		v.pin = v.to = vec2_make(YD(100), YD(200));
+		v.lie = LIE_FAIRWAY;
+		for (sd = 1; sd <= 40; sd++) {
+			cpu_shot(&v, CPU_EASY, (uint32_t)sd * 7919, &o);
+			CHECK(o.club >= CLUB_7I && o.club <= CLUB_PW);
+			memset(&in, 0, sizeof in);
+			in.hole = &holes[0].h;
+			in.grid = &wg;
+			in.pos = v.ball;
+			in.pin = v.pin;
+			in.aim = o.aim;
+			in.power = o.power;
+			in.snap = o.snap;
+			in.club = o.club;
+			in.shape = o.shape;
+			in.lie = LIE_FAIRWAY;
+			ball_shot(&in, &sh);
+			if (sh.result == SHOT_WATER) wet++;
+		}
+		printf("cpu: Easy over water 20 to 90 yd from 100 yd out, %d of 40 wet\n", wet);
+		CHECK(wet <= 8);
+	}
+
+	/* a tee set: the hole's own tee, or the nearest longer one; play starts there */
+	hole_use_tee(&holes[0].h, 2);
+	CHECK(holes[0].h.tees[holes[0].h.tee].set == 2 && holes[0].h.tees[holes[0].h.tee].pos.y == YD(40));
+	hole_use_tee(&holes[0].h, 3);
+	CHECK(holes[0].h.tees[holes[0].h.tee].set == 2);
+	rules_init(&r, "Par386 Test", 1, c.hole_count, c.par, 3);
+	r.tee = 2;
+	play_start(&p, &holes[0].h, &holes[0].g, &r);
+	CHECK(p.rv.ball.y == YD(40) && p.lie == LIE_TEE && p.rv.aim == vec2_angle(vec2_sub(holes[0].h.aim, p.rv.ball)));
+	{
+		Hole one = holes[0].h;
+		one.tee_count = 1;
+		one.tees[0].set = 1;
+		hole_use_tee(&one, 0);
+		CHECK(one.tee == 0);
+	}
+	hole_use_tee(&holes[0].h, 0);
+	CHECK(holes[0].h.tee == 0);
 
 	rules_init(&r, "Par386 Test", 2, c.hole_count, c.par, 3);
 	play_start(&p, &holes[0].h, &holes[0].g, &r);
@@ -1447,6 +1527,7 @@ static void draw_front(Surface *s, const Front *f)
 
 static void front_tests(void)
 {
+	char line[20];
 	Front f;
 	Surface s;
 	uint8_t scale;
@@ -1459,8 +1540,9 @@ static void front_tests(void)
 	CHECK(f.menu.count == 5 && front_action(&f, 0) == MAIN_PLAY);
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_GAMES && f.menu.sel == 0 && f.menu.count == 6);
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_PLAYERS && f.mode == MODE_STROKE);
-	CHECK(f.menu.sel == 4 && f.menu.count == 6);
-	CHECK(strcmp(f.players_list, "P1  Human|P2  Off|P3  Off|P4  Off|Tee off|Back") == 0);
+	CHECK(f.menu.sel == 5 && f.menu.count == 7);
+	CHECK(strcmp(f.players_list, "P1  Human|P2  Off|P3  Off|P4  Off|Tees: Back|Tee off|Back") == 0);
+	CHECK(f.menu.y + 6 * f.menu.lineH + UI_CHAR < 150);
 	/* a slot goes round on select and right, back on left; the first is never off */
 	f.menu.sel = 1;
 	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_LINES) && f.slot[1] == CPU_HUMAN && f.menu.sel == 1);
@@ -1474,14 +1556,28 @@ static void front_tests(void)
 	CHECK(front_key(&f, KEY_RIGHT) && f.slot[3] == SLOT_OFF);
 	f.menu.sel = 2;
 	CHECK(front_key(&f, KEY_LEFT) && f.slot[2] == CPU_PRO);
-	CHECK(strcmp(f.players_list, "P1  Human|P2  CPU Fair|P3  CPU Pro|P4  Off|Tee off|Back") == 0);
-	/* Tee off: the slots not off, in order */
+	CHECK(strcmp(f.players_list, "P1  Human|P2  CPU Fair|P3  CPU Pro|P4  Off|Tees: Back|Tee off|Back") == 0);
+	/* the tee set goes round on select, right and left; a course not read yet has three */
 	f.menu.sel = 4;
+	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_LINES) && f.tee == 1 && f.menu.sel == 4);
+	CHECK(strcmp(f.players_list, "P1  Human|P2  CPU Fair|P3  CPU Pro|P4  Off|Tees: Middle|Tee off|Back") == 0);
+	CHECK(front_key(&f, KEY_RIGHT) && f.tee == 2);
+	CHECK(front_key(&f, KEY_RIGHT) && f.tee == 0);
+	CHECK(front_key(&f, KEY_LEFT) && f.tee == 2);
+	CHECK(front_key(&f, KEY_LEFT) && f.tee == 1);
+	/* a tap on the tee line from Tee off moves the highlight: both lines redraw */
+	f.menu.sel = 5;
+	CHECK(front_tap(&f, 60, f.menu.y + 4 * f.menu.lineH + 2) == (FR_REDRAW | FR_LINES) && f.tee == 2);
+	CHECK(f.menu.sel == 4 && f.oldSel == 5);
+	CHECK(front_key(&f, KEY_RIGHT) && f.tee == 0);
+	CHECK(front_key(&f, KEY_RIGHT) && f.tee == 1);
+	/* Tee off: the slots not off, in order */
+	f.menu.sel = 5;
 	CHECK(front_key(&f, KEY_SELECT) == FR_PLAY && f.players == 3 && f.mode == MODE_STROKE);
 	CHECK(f.cpu[0] == CPU_HUMAN && f.cpu[1] == CPU_FAIR && f.cpu[2] == CPU_PRO);
 	CHECK(rules_mode_ok(f.mode, f.players));
 	/* Back goes back to the games, and from there the clubhouse */
-	f.menu.sel = 5;
+	f.menu.sel = 6;
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_GAMES && f.menu.sel == MODE_STROKE);
 	CHECK(front_key(&f, KEY_BACK) == FR_REDRAW && f.screen == SCR_MENU && f.menu.count == 5);
 
@@ -1490,19 +1586,19 @@ static void front_tests(void)
 	front_key(&f, KEY_SELECT);
 	f.menu.sel = MODE_MATCH;
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_PLAYERS && f.mode == MODE_MATCH);
-	CHECK(strcmp(f.players_list, "P1  Human|P2  CPU Fair|Tee off|Back") == 0 && f.menu.sel == 2);
+	CHECK(strcmp(f.players_list, "P1  Human|P2  CPU Fair|Tees: Middle|Tee off|Back") == 0 && f.menu.sel == 3);
 	f.menu.sel = 1;
 	CHECK(front_key(&f, KEY_LEFT) && f.slot[1] == CPU_EASY);
 	CHECK(front_key(&f, KEY_LEFT) && f.slot[1] == CPU_HUMAN);
 	CHECK(front_key(&f, KEY_LEFT) && f.slot[1] == CPU_PRO);
-	f.menu.sel = 2;
+	f.menu.sel = 3;
 	CHECK(front_key(&f, KEY_SELECT) == FR_PLAY && f.players == 2 && f.cpu[1] == CPU_PRO && rules_mode_ok(f.mode, f.players));
 	/* best ball: four, none off; skins: at least two; a tap on Tee off */
 	CHECK(front_key(&f, KEY_BACK) == FR_REDRAW && f.screen == SCR_GAMES && f.menu.sel == MODE_MATCH);
 	f.menu.sel = MODE_BEST;
 	front_key(&f, KEY_SELECT);
 	CHECK(f.slot[1] == CPU_PRO && f.slot[2] == CPU_PRO && f.slot[3] == CPU_FAIR);
-	CHECK(front_tap(&f, 60, f.menu.y + 4 * f.menu.lineH + 2) & FR_PLAY);
+	CHECK(front_tap(&f, 60, f.menu.y + 5 * f.menu.lineH + 2) & FR_PLAY);
 	CHECK(f.players == 4 && rules_mode_ok(MODE_BEST, f.players));
 	front_key(&f, KEY_BACK);
 	f.menu.sel = MODE_SKINS;
@@ -1510,7 +1606,7 @@ static void front_tests(void)
 	front_key(&f, KEY_SELECT);
 	f.menu.sel = 1;
 	CHECK(front_key(&f, KEY_RIGHT) && f.slot[1] == CPU_HUMAN);
-	f.menu.sel = 4;
+	f.menu.sel = 5;
 	CHECK(front_key(&f, KEY_SELECT) == FR_PLAY && f.players == 2 && f.mode == MODE_SKINS);
 
 	/* Practice: the range and the green, one player */
@@ -1544,16 +1640,78 @@ static void front_tests(void)
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.dialog == DLG_NEW_ROUND);
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_PRACTICE);
 
+	/* seven courses: pages of 4 with More and Back, round to the first */
+	{
+		static const char *seven[7] = { "A1", "B2", "C3", "D4", "E5", "F6", "G7" };
+		front_clubhouse(&f, 0);
+		front_courses(&f, seven, NULL, 7, 0);
+		f.menu.sel = MAIN_COURSES;
+		CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_COURSES);
+		CHECK(strcmp(f.course_list, "A1|B2|C3|D4|More|Back") == 0 && f.menu.sel == 0);
+		f.menu.sel = 4;
+		CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && strcmp(f.course_list, "E5|F6|G7|More|Back") == 0 && f.menu.sel == 3);
+		f.menu.sel = 1;
+		CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_MENU && f.course == 5);
+		f.menu.sel = MAIN_COURSES;
+		front_key(&f, KEY_SELECT);
+		CHECK(f.page == 1 && f.menu.sel == 1 && strcmp(f.course_list, "E5|F6|G7|More|Back") == 0);
+		f.menu.sel = 3;
+		CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && strcmp(f.course_list, "A1|B2|C3|D4|More|Back") == 0);
+		CHECK(front_key(&f, KEY_BACK) == FR_REDRAW && f.screen == SCR_MENU && f.course == 5);
+		/* five fit with Back */
+		front_courses(&f, seven, NULL, 5, 0);
+		f.menu.sel = MAIN_COURSES;
+		front_key(&f, KEY_SELECT);
+		CHECK(strcmp(f.course_list, "A1|B2|C3|D4|E5|Back") == 0);
+		f.menu.sel = 4;
+		CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_MENU && f.course == 4);
+		f.course = 0;
+	}
+
 	/* course records under the preview */
 	front_courses(&f, names, scenery, 2, 0);
-	front_record(&f, 0, 71, -1);
-	front_record(&f, 1, 0, 0);
-	CHECK(strcmp(f.record[0], "Record 71 (-1)") == 0 && f.record[1][0] == 0);
-	front_record(&f, 1, 13, 1);
-	CHECK(strcmp(f.record[1], "Record 13 (+1)") == 0);
-	front_record(&f, 1, 12, 0);
-	CHECK(strcmp(f.record[1], "Record 12 (E)") == 0);
-	front_record(&f, 1, 0, 0);
+	f.tee = 0;
+	front_record(&f, 0, 0, 71, -1);
+	front_record(&f, 1, 0, 0, 0);
+	front_record_line(&f, 0, line);
+	CHECK(strcmp(line, "Record 71 (-1)") == 0);
+	front_record_line(&f, 1, line);
+	CHECK(line[0] == 0);
+	front_record(&f, 1, 0, 13, 1);
+	front_record_line(&f, 1, line);
+	CHECK(strcmp(line, "Record 13 (+1)") == 0);
+	front_record(&f, 1, 0, 12, 0);
+	front_record_line(&f, 1, line);
+	CHECK(strcmp(line, "Record 12 (E)") == 0);
+	front_record(&f, 1, 0, 0, 0);
+	/* with the course's tee sets known: the picked set's record under its name */
+	{
+		Course tc;
+		memset(&tc, 0, sizeof tc);
+		tc.tee_count = 3;
+		strcpy(tc.tee_names[0], "Medal");
+		strcpy(tc.tee_names[1], "Club");
+		strcpy(tc.tee_names[2], "Forwardmost");
+		front_course_tees(&f, 0, &tc);
+		front_record(&f, 0, 2, 101, 29);
+		front_record_line(&f, 0, line);
+		CHECK(strcmp(line, "Medal 71 (-1)") == 0);
+		f.tee = 1;
+		front_record_line(&f, 0, line);
+		CHECK(line[0] == 0);
+		f.tee = 2;
+		front_record_line(&f, 0, line);
+		CHECK(strcmp(line, "Forwar 101 (+29)") == 0);
+		f.tee = 3;
+		front_record_line(&f, 0, line);
+		CHECK(strcmp(line, "Forwar 101 (+29)") == 0);
+		f.course = 0;
+		CHECK(front_tee_count(&f) == 3 && strcmp(front_tee_name(&f, 1), "Club") == 0);
+		front_course_tees(&f, 0, NULL);
+		CHECK(front_tee_count(&f) == 3 && strcmp(front_tee_name(&f, 1), "Middle") == 0);
+		front_course_tees(&f, 0, &tc);
+		f.tee = 0;
+	}
 
 	for (scale = 1; scale <= 2; scale++) {
 		surface(&s, scale);
@@ -1726,7 +1884,7 @@ static void sound_tests(void)
  * Prints each hole's mean score per level, shots in the water or out of
  * bounds and pick-ups (5 over par), and fails if a round doesn't finish
  * or a Good or Pro golfer picks up. */
-static int cpu_course(const char *path, int rounds)
+static int cpu_course(const char *path, int rounds, int tee)
 {
 	static const uint8_t four[4] = { CPU_EASY, CPU_FAIR, CPU_GOOD, CPU_PRO };
 	static const char *lv[4] = { "Easy", "Fair", "Good", "Pro" };
@@ -1737,10 +1895,14 @@ static int cpu_course(const char *path, int rounds)
 	int k, i, seed, sum[4][COURSE_MAX_HOLES], wet[COURSE_MAX_HOLES], oob[COURSE_MAX_HOLES], up[4][COURSE_MAX_HOLES];
 	int tot[4] = { 0 }, best[4], worst[4], par = 0;
 
+	if (rounds < 1) { printf("FAIL rounds must be 1 or more\n"); return 1; }
 	if (!load_course(path, &c)) { printf("FAIL can't load %s\n", path); return 1; }
+	if (tee < 0 || tee >= c.tee_count) { printf("FAIL %s has tee sets 0 to %d\n", path, c.tee_count - 1); return 1; }
 	for (k = 0; k < c.hole_count; k++) {
 		holes[k].h.turn = (uint16_t)(c.turn[k] << 8);
 		holes[k].h.wind = c.wind;
+		holes[k].h.green = c.green;
+		hole_use_tee(&holes[k].h, (uint8_t)tee);
 		par += c.par[k];
 	}
 	memset(sum, 0, sizeof sum);
@@ -1756,6 +1918,7 @@ static int cpu_course(const char *path, int rounds)
 		int lastc = -1, lasth = -1, lasts = -1, f;
 		rules_init(&r, c.name, 4, c.hole_count, c.par, (uint32_t)seed * 7919);
 		rules_mode(&r, MODE_STROKE, four, 0);
+		r.tee = (uint8_t)tee;
 		memset(&p, 0, sizeof p);
 		p.quick = 1;
 		play_start(&p, &holes[r.hole].h, &holes[r.hole].g, &r);
@@ -1768,7 +1931,8 @@ static int cpu_course(const char *path, int rounds)
 				lasts = p.stroke;
 				if (p.shot.result == SHOT_WATER) wet[r.hole]++;
 				if (p.shot.result == SHOT_OOB) oob[r.hole]++;
-				if (getenv("CPU_TRACE") && seed == 1)
+				/* CPU_TRACE=1 prints every shot of round 1, CPU_TRACE=wet every shot into the water */
+				if (getenv("CPU_TRACE") && (strcmp(getenv("CPU_TRACE"), "wet") == 0 ? p.shot.result == SHOT_WATER : seed == 1))
 					printf("  h%d %s s%d club %d from %.0f,%.0f land %.0f,%.0f (surf %d) stop %.0f,%.0f lie %d result %d\n",
 					       r.hole + 1, lv[p.cur], p.stroke, p.club, p.shot.start.x / 65536.0, p.shot.start.y / 65536.0,
 					       p.shot.land.x / 65536.0, p.shot.land.y / 65536.0, p.shot.land_surf,
@@ -1810,7 +1974,7 @@ static int cpu_course(const char *path, int rounds)
 					memset(&in, 0, sizeof in);
 					in.hole = h;
 					in.grid = &holes[k >> 1].g;
-					in.pos = from_aim ? h->aim : h->tees[0].pos;
+					in.pos = from_aim ? h->aim : h->tees[h->tee].pos;
 					in.pin = h->pins[0];
 					in.aim = vec2_angle(vec2_sub(h->par == 3 || from_aim ? h->pins[0] : h->aim, in.pos));
 					in.power = FIX_ONE * (4 + pi * 2) / 10;
@@ -1835,7 +1999,8 @@ static int cpu_course(const char *path, int rounds)
 		               (k >> 1) + 1, from_aim ? "aim" : "tee", nw, far, again, bad);
 		CHECK(bad == 0);
 	}
-	printf("%s, par %d, wind %d, %d rounds of 4 computer golfers\n", c.name, par, c.wind ? c.wind : 10, rounds);
+	printf("%s, %s tees, par %d, wind %d, green speed %d, %d rounds of 4 computer golfers\n", c.name, c.tee_names[tee], par,
+	       c.wind ? c.wind : 10, c.green ? c.green : GREEN_USUAL, rounds);
 	printf("hole par   easy  fair  good   pro  water oob  pick-ups (e f g p)\n");
 	for (k = 0; k < c.hole_count; k++) {
 		printf("%4d %3d ", k + 1, c.par[k]);
@@ -1857,8 +2022,9 @@ int main(int argc, char **argv)
 	uint32_t len;
 	uint8_t *p;
 
-	if (argc >= 3 && strcmp(argv[1], "--cpu") == 0) return cpu_course(argv[2], argc > 3 ? atoi(argv[3]) : 8);
-	if (argc < 4) { fprintf(stderr, "usage: rulestest COURSE.pdb ARTDIR OUTDIR, or rulestest --cpu COURSE.pdb [ROUNDS]\n"); return 2; }
+	if (argc >= 3 && strcmp(argv[1], "--cpu") == 0)
+		return cpu_course(argv[2], argc > 3 ? atoi(argv[3]) : 8, argc > 4 ? atoi(argv[4]) : 0);
+	if (argc < 4) { fprintf(stderr, "usage: rulestest COURSE.pdb ARTDIR OUTDIR, or rulestest --cpu COURSE.pdb [ROUNDS [TEE]]\n"); return 2; }
 	artdir = argv[2];
 	outdir = argv[3];
 	p = load_art("Pal8-1000.bin", &len);

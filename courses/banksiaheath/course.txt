@@ -7,3 +7,4 @@ tee Red
 holes 18
 scenery 4         # the sandbelt backdrop: low sandy hills in the heat haze
 wind 12           # a moderate breeze
+green 13          # firm, fast sandbelt greens

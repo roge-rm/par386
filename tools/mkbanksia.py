@@ -461,7 +461,8 @@ def main():
         "name Banksia Heath\n" + "".join("tee %s\n" % t for t in TEES) +
         "holes %d\n" % len(HOLES) +
         "scenery 4         # the sandbelt backdrop: low sandy hills in the heat haze\n"
-        "wind 12           # a moderate breeze\n")
+        "wind 12           # a moderate breeze\n"
+        "green 13          # firm, fast sandbelt greens\n")
     total, pars, tot_t = 0, 0, [0, 0]
     for n, d in enumerate(HOLES, 1):
         par, yards, others, nobj, nsh = make_hole(n, d, out)

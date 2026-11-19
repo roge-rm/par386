@@ -1320,8 +1320,8 @@ static int SEC_RENDER map_draw(Surface *s, const RenderView *v, RenderMap *out)
 			dot(&r, MX(o.pos.x) - (sc >> 1), MY(o.pos.y) - (sc >> 1), sc + 1, PAL_TREE + 1);
 	}
 	/* the tee: a white square with a black edge */
-	x = MX(h->tees[0].pos.x);
-	y = MY(h->tees[0].pos.y);
+	x = MX(h->tees[h->tee].pos.x);
+	y = MY(h->tees[h->tee].pos.y);
 	dot(&r, x - sc, y - sc, 3 * sc, PAL_BLACK);
 	dot(&r, x, y, sc, PAL_WHITE);
 

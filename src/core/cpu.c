@@ -3,19 +3,20 @@
 
 /* Skill levels, CPU_EASY to CPU_PRO: how far off each part of the swing
  * can be (power and snap in 1/256, aim in binary angle units, 182 a
- * degree), the chance in 256 of a duffed shot, and how much of the wind
- * and the green's slope they allow for, in quarters. */
+ * degree), the chance in 256 of a duffed shot, how much of the wind and
+ * the green's slope they allow for, in quarters, and the share of a
+ * shot's carry (1/256) they trust to clear water. */
 typedef struct {
 	uint8_t power, snap;
 	uint16_t aim;
-	uint8_t putt, putt_aim, duff, read;
+	uint8_t putt, putt_aim, duff, read, trust;
 } Skill;
 
 static const Skill skills[4] = {
-	{ 40, 110, 455, 34, 200, 8, 0 },
-	{ 24, 64, 270, 22, 140, 3, 2 },
-	{ 14, 34, 150, 13, 90, 0, 3 },
-	{ 8, 16, 90, 8, 60, 0, 4 },
+	{ 40, 110, 455, 34, 200, 8, 0, 180 },
+	{ 24, 64, 270, 22, 140, 3, 2, 205 },
+	{ 14, 34, 150, 13, 90, 0, 3, 222 },
+	{ 8, 16, 90, 8, 60, 0, 4, 232 },
 };
 
 /* Carry out of 256 of full power at power 0.2, 0.3 ... 1.0 (physics-test's
@@ -61,6 +62,21 @@ static uint8_t SEC_CORE wet(const CpuView *v, angle a, int32_t yards)
 	return s == SURF_WATER || s == SURF_OOB;
 }
 
+/* Water along a short of end yards out: its near and far edge in yards
+ * (from 20 yd out, 4 yd steps), or 0 if none. */
+static int32_t SEC_CORE water(const CpuView *v, angle a, int32_t end, int32_t *near)
+{
+	int32_t d, far = 0;
+	*near = 0;
+	for (d = 20; d < end; d += 4) {
+		fixed f = (fixed)d << 16;
+		if (surface_at(v->grid, v->ball.x + fix_mulq14(f, icos(a)), v->ball.y + fix_mulq14(f, isin(a))) != SURF_WATER) continue;
+		if (!*near) *near = d;
+		far = d + 4;
+	}
+	return far;
+}
+
 static void SEC_CORE putt(const CpuView *v, const Skill *k, uint32_t *rs, CpuShot *o)
 {
 	vec2 d = vec2_sub(v->pin, v->ball), m;
@@ -72,8 +88,10 @@ static void SEC_CORE putt(const CpuView *v, const Skill *k, uint32_t *rs, CpuSho
 	dz = hole_height(v->hole, v->pin.x, v->pin.y) - hole_height(v->hole, v->ball.x, v->ball.y);
 	m = vec2_make(v->ball.x + (d.x >> 1), v->ball.y + (d.y >> 1));
 	side = (hole_height(v->hole, m.x + off.x, m.y + off.y) - hole_height(v->hole, m.x - off.x, m.y - off.y)) >> 1;
-	/* a foot past the cup, plus the climb */
-	want = len + FIX_ONE / 3 + ((dz * SLOPE_K) >> 2) * k->read;
+	/* a foot past the cup on a green of the course's speed, plus the climb */
+	want = len + FIX_ONE / 3;
+	want = hole_putt_len(v->hole, v->grid, v->ball, v->pin, want);
+	want += ((dz * SLOPE_K) >> 2) * k->read;
 	if (want < FIX_ONE / 2) want = FIX_ONE / 2;
 	/* higher on the left breaks it right: aim left, 10430 angle units a radian */
 	side = ((((side * SLOPE_K) >> 6) * 10430L) >> 10) * k->read >> 2;
@@ -130,6 +148,38 @@ void cpu_shot(const CpuView *v, uint8_t skill, uint32_t seed, CpuShot *o)
 	a = (angle)(a - (int16_t)(cross * 28 * k->read / 4));
 	c = ball_shape_carry(club, v->lie, shape);
 	roll = club < CLUB_PW ? c / 16 : 1;
+	/* water to carry past what they trust of the carry: carry it by more
+	 * if a club can, else lay up short of it, clear of the roll */
+	{
+		int32_t land = want < c ? want - roll : c, near, far = water(v, a, land + 2 * roll + 10, &near), t;
+		if (far && far * 256 > land * k->trust) {
+			int32_t need = far * 256 / k->trust, most = ball_carry(v->lie == LIE_TEE ? CLUB_DR : CLUB_3W, v->lie);
+			uint8_t pick;
+			/* where they'd lay up: short of the near edge, in still air as want is */
+			t = near - 20 - (256 - k->trust) / 4;
+			t -= t / 16;
+			t += (t * (head > 0 ? head : head / 2) / 130) * k->read / 4;
+			if ((need <= yards + 15 && need <= most) || t <= 20) {
+				/* carry it, or with no room to lay up as near the margin as the pin and the bag allow */
+				t = need;
+				if (t > yards + 15) t = yards + 15;
+				if (t > most) t = most;
+				pick = ball_pick((uint16_t)t, v->lie);
+				while (pick > CLUB_3W && ball_carry(pick, v->lie) < t) pick--;
+				if (ball_carry(pick, v->lie) < t) pick = v->lie == LIE_TEE ? CLUB_DR : CLUB_3W;
+			} else {
+				pick = ball_pick((uint16_t)(t + t / 16), v->lie);
+			}
+			if (t > 20) {
+				club = pick;
+				shape = SHAPE_NORMAL;
+				c = ball_carry(club, v->lie);
+				roll = club < CLUB_PW ? c / 16 : 1;
+				want = t + roll;
+				if (want > c + roll) want = c + roll;
+			}
+		}
+	}
 	/* from the fairway on, short of what's lost: water or out of bounds where it would land */
 	if (skill >= CPU_FAIR) {
 		for (tries = 0; tries < 3 && club < CLUB_LW && wet(v, a, want < c ? want - roll : c); tries++) {

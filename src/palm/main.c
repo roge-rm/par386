@@ -314,14 +314,14 @@ static const char *const kCardDirs[] = { "/PALM/Launcher", "/PALM/Programs/Par38
 static Boolean gImported;               /* the open course was imported from a card */
 static char gImpName[dmDBNameLength];
 
-static Boolean HaveVfs(void)
+static Boolean SEC_MENU HaveVfs(void)
 {
 	UInt32 v;
 	return FtrGet(sysFileCVFSMgr, vfsFtrIDVersion, &v) == errNone;
 }
 
 /* Reads the database name of a Par 386 course PDB on the card into name. */
-static Boolean CardCourseName(UInt16 vol, const char *path, char *name)
+static Boolean SEC_MENU CardCourseName(UInt16 vol, const char *path, char *name)
 {
 	FileRef f;
 	UInt32 type = 0, creator = 0;
@@ -340,7 +340,7 @@ typedef Boolean (*CardVisit)(const char *name, UInt16 vol, const char *path, voi
 
 static char gFileName[256];             /* a directory entry's name */
 
-static void CardScan(CardVisit visit, void *ctx)
+static void SEC_MENU CardScan(CardVisit visit, void *ctx)
 {
 	UInt16 vol;
 	UInt32 vi = vfsIteratorStart;
@@ -384,7 +384,7 @@ static void CardScan(CardVisit visit, void *ctx)
  * RAM, so a copy left by a crash or reset is deleted at the next launch. */
 #define kImpPref 1
 
-static void ImpPrefSet(const char *name)
+static void SEC_MENU ImpPrefSet(const char *name)
 {
 	char buf[dmDBNameLength];
 
@@ -394,7 +394,7 @@ static void ImpPrefSet(const char *name)
 }
 
 /* Deletes a copy recorded by ImpPrefSet if it's still ours. */
-static void DropLeftover(void)
+static void SEC_MENU DropLeftover(void)
 {
 	char buf[dmDBNameLength];
 	UInt16 size = sizeof buf;
@@ -413,7 +413,7 @@ static void DropLeftover(void)
 
 typedef struct { const char *want; Boolean found; Err err; } CardWant;
 
-static Boolean ImportVisit(const char *name, UInt16 vol, const char *path, void *ctx)
+static Boolean SEC_MENU ImportVisit(const char *name, UInt16 vol, const char *path, void *ctx)
 {
 	CardWant *w = ctx;
 	UInt16 card;
@@ -430,7 +430,7 @@ static Boolean ImportVisit(const char *name, UInt16 vol, const char *path, void 
 	return true;
 }
 
-static Boolean FindVisit(const char *name, UInt16 vol, const char *path, void *ctx)
+static Boolean SEC_MENU FindVisit(const char *name, UInt16 vol, const char *path, void *ctx)
 {
 	CardWant *w = ctx;
 
@@ -442,7 +442,7 @@ static Boolean FindVisit(const char *name, UInt16 vol, const char *path, void *c
 enum { EC_OK, EC_MISSING, EC_NOMEM };
 
 /* EC_OK if the course is in RAM, else imports it from a card. */
-static UInt8 EnsureCourse(const char *name)
+static UInt8 SEC_MENU EnsureCourse(const char *name)
 {
 	CardWant w;
 
@@ -458,7 +458,7 @@ static UInt8 EnsureCourse(const char *name)
 
 /* True if the course is on a card, or no card is in, so a resume can say to
  * insert it. */
-static Boolean CardMayHave(const char *name)
+static Boolean SEC_MENU CardMayHave(const char *name)
 {
 	CardWant w;
 	UInt16 vol;
@@ -473,7 +473,7 @@ static Boolean CardMayHave(const char *name)
 }
 
 /* Deletes the imported card course, if any. */
-static void DropImported(void)
+static void SEC_MENU DropImported(void)
 {
 	LocalID id;
 
@@ -484,7 +484,7 @@ static void DropImported(void)
 }
 
 /* Adds a name to the sorted, capped course list, unless it's there. */
-static void AddCourse(const char *name)
+static void SEC_MENU AddCourse(const char *name)
 {
 	UInt8 i;
 
@@ -500,7 +500,7 @@ static void AddCourse(const char *name)
 	StrCopy(gCourseNames[i], name);
 }
 
-static Boolean ListVisit(const char *name, UInt16 vol, const char *path, void *ctx)
+static Boolean SEC_MENU ListVisit(const char *name, UInt16 vol, const char *path, void *ctx)
 {
 	/* a course in RAM wins */
 	if (DmFindDatabase(0, name) == 0) AddCourse(name);
@@ -575,16 +575,19 @@ static void PlayEnd(void)
 }
 
 /* Each course's record line on the courses screen. */
-static void RecordsShow(void)
+static void SEC_MENU RecordsShow(void)
 {
 	UInt8 k;
 	for (k = 0; k < gCourseCount; k++) {
-		const CourseRecord *c = rec_find(&gRecords, gCourseNames[k], 0);
-		front_record(&gFront, k, c ? c->strokes : 0, c ? c->to_par : 0);
+		UInt8 t;
+		for (t = 0; t < COURSE_MAX_TEES; t++) {
+			const CourseRecord *c = rec_find(&gRecords, gCourseNames[k], t);
+			front_record(&gFront, k, t, c ? c->strokes : 0, c ? c->to_par : 0);
+		}
 	}
 }
 
-static void RecordsLoad(void)
+static void SEC_MENU RecordsLoad(void)
 {
 	UInt8 *buf = MemPtrNew(REC_SAVE_MAX);
 	UInt16 size = REC_SAVE_MAX;
@@ -596,7 +599,7 @@ static void RecordsLoad(void)
 	MemPtrFree(buf);
 }
 
-static void RecordsSave(void)
+static void SEC_MENU RecordsSave(void)
 {
 	UInt8 *buf = MemPtrNew(REC_SAVE_MAX);
 	if (!buf) return;
@@ -605,7 +608,7 @@ static void RecordsSave(void)
 	RecordsShow();
 }
 
-static void DeleteSave(void)
+static void SEC_MENU DeleteSave(void)
 {
 	LocalID id = DmFindDatabase(0, kSaveName);
 	if (id) DmDeleteDatabase(0, id);
@@ -613,7 +616,7 @@ static void DeleteSave(void)
 
 /* Saves the round, as it will be after any shot in the air lands, or
  * deletes the save once the round is over. */
-static void SaveRound(void)
+static void SEC_MENU SaveRound(void)
 {
 	LocalID id;
 	DmOpenRef db;
@@ -626,7 +629,7 @@ static void SaveRound(void)
 	play_settle(&gPlay);
 	if (gRound.over) {
 		/* a finished round may set course records; a second save of it sets none */
-		if (rec_round(&gRecords, &gRound, 0)) RecordsSave();
+		if (rec_round(&gRecords, &gRound, gRound.tee)) RecordsSave();
 		DeleteSave();
 		return;
 	}
@@ -659,7 +662,7 @@ static void SaveRound(void)
 }
 
 /* Reads the course header from record 0 of an open course database. */
-static Boolean CourseHeader(DmOpenRef db, Course *c)
+static Boolean SEC_MENU CourseHeader(DmOpenRef db, Course *c)
 {
 	MemHandle h = DmQueryRecord(db, 0);
 	Boolean ok;
@@ -678,7 +681,7 @@ enum { LS_OK, LS_NONE, LS_CHANGED, LS_MISSING, LS_NOMEM };
  * card in, LS_NOMEM if it couldn't be imported for lack of memory. With
  * full a card course is imported and checked and stays imported; without,
  * it's only looked for on a card. */
-static UInt8 LoadSave(Round *r, Boolean full)
+static UInt8 SEC_MENU LoadSave(Round *r, Boolean full)
 {
 	LocalID id = DmFindDatabase(0, kSaveName);
 	DmOpenRef db;
@@ -711,7 +714,7 @@ static UInt8 LoadSave(Round *r, Boolean full)
 /* Hole n (from 1) of the open course: parses it, keeping its record
  * locked, and draws its surface grid into record 0 of the scratch database
  * in place of the last hole's. */
-static Boolean LoadHole(UInt16 n)
+static Boolean SEC_MENU LoadHole(UInt16 n)
 {
 	MemHandle h;
 	UInt16 at = 0;
@@ -729,6 +732,8 @@ static Boolean LoadHole(UInt16 n)
 	if (hole_parse(&gHole, MemHandleLock(h), MemHandleSize(h)) != HOLE_OK) return false;
 	if (n >= 1 && n <= COURSE_MAX_HOLES) gHole.turn = (UInt16)gCourseHdr.turn[n - 1] << 8;
 	gHole.wind = gCourseHdr.wind;
+	gHole.green = gCourseHdr.green;
+	hole_use_tee(&gHole, gRound.tee);
 	surface_size(&gHole, &gGrid);
 	if ((h = DmNewRecord(gScratchDb, &at, (UInt32)gGrid.stride * gGrid.h)) == NULL) return false;
 	surface_raster(&gHole, row, GridRow, MemHandleLock(h));
@@ -746,7 +751,7 @@ static Boolean LoadHole(UInt16 n)
 enum { PF_MEM, PF_SAVE, PF_MISSING, PF_NOCOURSE };
 static UInt8 gFail;
 
-static Boolean PlayStart(Boolean resume)
+static Boolean SEC_MENU PlayStart(Boolean resume)
 {
 	LocalID id;
 	Course c;
@@ -788,6 +793,11 @@ static Boolean PlayStart(Boolean resume)
 					if (c.par[k] >= 5) { h = k; break; }
 			rules_mode(&gRound, gFront.mode, gFront.cpu, h);
 		}
+		/* practice from the first tee set */
+		/* a card course's tee sets are known now: the players line and the record show the set played */
+		front_course_tees(&gFront, gFront.course, &c);
+		if (gFront.tee >= c.tee_count) gFront.tee = (UInt8)(c.tee_count - 1);
+		if (!MODE_PRACTICE(gFront.mode)) gRound.tee = gFront.tee;
 	}
 	if ((id = DmFindDatabase(0, gRound.course)) == 0 || (gCourseDb = DmOpenDatabase(0, id, dmModeReadOnly)) == 0)
 		return false;
@@ -1321,7 +1331,7 @@ static void EventLoop(void)
 
 /* Finds the installed course databases (type Crse, ours, in RAM or on a card) and gives their
  * names, less "Par386 ", to the clubhouse, sorted, the first picked. */
-static void FindCourses(void)
+static void SEC_MENU FindCourses(void)
 {
 	DmSearchStateType st;
 	UInt16 card;
@@ -1346,8 +1356,12 @@ static void FindCourses(void)
 	for (k = 0; k < gCourseCount; k++) {
 		shown[k] = gCourseNames[k] + pre;
 		scenery[k] = SCENERY_UNKNOWN;
+		front_course_tees(&gFront, k, NULL);
 		if ((id = DmFindDatabase(0, gCourseNames[k])) != 0 && (db = DmOpenDatabase(0, id, dmModeReadOnly)) != NULL) {
-			if (CourseHeader(db, &c)) scenery[k] = c.scenery;
+			if (CourseHeader(db, &c)) {
+				scenery[k] = c.scenery;
+				front_course_tees(&gFront, k, &c);
+			}
 			DmCloseDatabase(db);
 		}
 	}

@@ -366,10 +366,12 @@ def make_hole(n, d, out):
             fw_mask |= inside(pts, xs, ys)
     soft = np.where(fw_mask, 0.5, 1.0)
     z = smooth + (z - smooth) * soft
-    # the green: a plane tilting up to the back, and a gentle crown off it
-    gd = np.hypot((xs - gcx) / (g_rx + 14), (ys - gy) / (gry + 14))
-    gw = np.clip(1.4 - gd, 0, 1)
-    gz = smooth + (ys - gy) * 0.018 + (xs - gcx) * 0.006 * rng.choice([-1, 1])
+    # the green: a plane tilting up to the back, level over the whole green
+    # and fringe and blending into the ground 10 yd past them
+    gd = np.hypot((xs - gcx) / (g_rx + 4), (ys - gy) / (gry + 4))
+    gw = np.clip((1.8 - gd) / 0.8, 0, 1)
+    gz0 = smooth[int(round(gy / CELL)), int(round(gcx / CELL))]
+    gz = gz0 + (ys - gy) * 0.018 + (xs - gcx) * 0.006 * rng.choice([-1, 1])
     if d.get("shore"):
         gz += 0.6
     z = z * (1 - gw) + gz * gw

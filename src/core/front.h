@@ -50,9 +50,12 @@ enum { SCR_TITLE, SCR_MENU, SCR_PLAYERS, SCR_COURSES, SCR_SETTINGS, SCR_GAMES, S
 /* The sound setting: everything, effects without the tunes and birds, or none. */
 enum { SOUND_ON, SOUND_FX, SOUND_OFF, SOUND_MODES };
 
-/* Courses the platform found, at most FRONT_COURSES, names up to 23 characters. */
-#define FRONT_COURSES 5
-#define FRONT_COURSE_LIST (FRONT_COURSES * 24 + 5)
+/* Courses the platform found, at most FRONT_COURSES, names up to 23
+ * characters. The courses screen has room for 5 and Back; past that it
+ * shows FRONT_PAGE a page with More and Back. */
+#define FRONT_COURSES 12
+#define FRONT_PAGE 4
+#define FRONT_COURSE_LIST (5 * 24 + 10)
 
 /* Main menu actions. With a saved round Continue round comes first and the
  * rest move down a line. */
@@ -76,9 +79,15 @@ typedef struct {
 	uint8_t course;          /* the one picked on the courses screen */
 	uint8_t sound;           /* SOUND_* */
 	char settings_list[40];  /* "Sound: On|CPU: Quick|Back" */
-	char players_list[RULES_PLAYERS * 13 + 14];   /* "P1  Human|P2  CPU Fair|Tee off|Back" */
-	char record[FRONT_COURSES][20];         /* each course's record line, or empty */
-	char course_list[FRONT_COURSE_LIST];    /* their names and Back, "A|B|Back" */
+	char players_list[RULES_PLAYERS * 13 + 16 + 14];   /* "P1  Human|P2  CPU Fair|Tees: Medal|Tee off|Back" */
+	uint8_t tee;             /* the tee set picked on the players screen, 0 the longest */
+	uint8_t tee_count[FRONT_COURSES];       /* each course's tee sets, 0 if not known (a card course) */
+	char tee_names[FRONT_COURSES][COURSE_MAX_TEES][TEE_NAME_MAX + 1];
+	uint16_t rec_strokes[FRONT_COURSES][COURSE_MAX_TEES];   /* each course's record per tee set, 0 for none */
+	int16_t rec_par[FRONT_COURSES][COURSE_MAX_TEES];
+	char course_names[FRONT_COURSES][24];
+	char course_list[FRONT_COURSE_LIST];    /* the page's names, More and Back: "A|B|More|Back" */
+	uint8_t page;            /* the courses screen's page */
 	uint8_t scenery[FRONT_COURSES];         /* each one's scenery, or SCENERY_UNKNOWN */
 	UiMenu menu;
 	UiDialog dlg;
@@ -100,9 +109,17 @@ void SEC_MENU front_courses(Front *f, const char *const *names, const uint8_t *s
 uint16_t SEC_MENU front_preview(const Front *f);
 /* Draws one band of the preview picture into its box; -1 if it doesn't fit. */
 int SEC_MENU front_preview_band(Surface *s, const uint8_t *d, uint32_t len);
-/* Course i's record for the courses screen: strokes over holes against
- * to_par; strokes 0 for none yet. */
-void SEC_MENU front_record(Front *f, uint8_t i, uint16_t strokes, int16_t to_par);
+/* Course i's tee set names, from its header, or NULL if it isn't known. */
+void SEC_MENU front_course_tees(Front *f, uint8_t i, const Course *c);
+/* Course i's record from tee set tee for the courses screen: strokes
+ * against to_par; strokes 0 for none yet. */
+void SEC_MENU front_record(Front *f, uint8_t i, uint8_t tee, uint16_t strokes, int16_t to_par);
+/* The courses screen's record line for course i from the picked tee set,
+ * "Medal 71 (-1)", or empty for none. t takes 20 characters. */
+void SEC_MENU front_record_line(const Front *f, uint8_t i, char *t);
+/* How many tee sets the picked course has and the name of set t. */
+uint8_t SEC_MENU front_tee_count(const Front *f);
+const char *SEC_MENU front_tee_name(const Front *f, uint8_t t);
 /* The main menu action for a line of the menu. */
 uint8_t SEC_MENU front_action(const Front *f, uint8_t line);
 

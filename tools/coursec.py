@@ -14,7 +14,7 @@ from decimal import Decimal
 
 from PIL import Image
 
-COURSE_VERSION = 1    # 2 with a scenery line, 3 with a wind line
+COURSE_VERSION = 1    # 2 with a scenery line, 3 with a wind line, 4 with a green line
 HOLE_VERSION = 1
 MAX_HOLES = 36
 MAX_TEES = 4
@@ -85,7 +85,7 @@ def name_bytes(where, s, lo, hi):
 
 def read_course(folder):
     path = os.path.join(folder, "course.txt")
-    course = {"name": None, "tees": [], "holes": None, "scenery": None, "wind": None}
+    course = {"name": None, "tees": [], "holes": None, "scenery": None, "wind": None, "green": None}
     for n, w in read_lines(path):
         where = "%s:%d" % (path, n)
         key, rest = w[0], " ".join(w[1:])
@@ -103,6 +103,10 @@ def read_course(folder):
             course["wind"] = int(number(where, rest))
             if not 0 <= course["wind"] <= 40:
                 fail(where, "wind 0 to 40 mph")
+        elif key == "green":
+            course["green"] = int(number(where, rest))
+            if course["green"] and not 6 <= course["green"] <= 14:
+                fail(where, "green speed 6 to 14, or 0 for the usual 10")
         else:
             fail(where, "unknown line %r" % key)
     if not course["name"] or not course["tees"] or not course["holes"]:
@@ -313,6 +317,8 @@ def course_record(course, holes):
     version = 2 if course["scenery"] is not None or turns else COURSE_VERSION
     if course["wind"] is not None:
         version = 3
+    if course["green"] is not None:
+        version = 4
     out = struct.pack(">HBB", version, course["holes"], len(course["tees"]))
     if "|" in course["name"]:
         fail("course.txt", "course name can't contain '|': %r" % course["name"])
@@ -324,7 +330,9 @@ def course_record(course, holes):
     if version >= 2:
         out += bytes([course["scenery"] or 0] + [h["turn"] or 0 for h in holes])
     if version >= 3:
-        out += bytes([course["wind"]])
+        out += bytes([course["wind"] or 0])
+    if version >= 4:
+        out += bytes([course["green"]])
     return out
 
 
@@ -411,6 +419,8 @@ def dump(pdb, outdir):
             turns = [c.take("B") for _ in range(nholes)]
         if version >= 3:
             f.write("wind %d\n" % c.take("B"))
+        if version >= 4:
+            f.write("green %d\n" % c.take("B"))
     for n in range(1, nholes + 1):
         c = Cursor(records[n])
         (version, num, par, W, L, hm_w, hm_h, shift, surf, base, step,

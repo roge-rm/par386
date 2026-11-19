@@ -380,8 +380,11 @@ void ball_shot(const ShotIn *in, Shot *o)
 	angle dir;
 	int16_t elev;
 	uint16_t step;
+	fixed gdec = (fixed)bounces[SURF_GREEN].roll << 12;
 	uint8_t rolling = 0, landed = 0, s = surf(in, x, y), holed = 0, cool = 0;
 
+	/* the course's green speed: the green's slow-down times the usual over it */
+	if (h->green && h->green != GREEN_USUAL) gdec = gdec * GREEN_USUAL / h->green;
 	if (power < 0) power = 0;
 	if (power > FIX_ONE) power = FIX_ONE;
 	if (snap > FIX_ONE) snap = FIX_ONE;
@@ -526,6 +529,7 @@ void ball_shot(const ShotIn *in, Shot *o)
 		/* rolling: slowed by the surface, pulled down the slope (the slope looked at every 1/16 s) */
 		{
 			fixed dec = (fixed)bounces[s].roll << 12, v = len(vx, vy, 0), pull;
+			if (s == SURF_GREEN) dec = gdec;
 			if (step & 1 || rolling == 1) {
 				gx = (hole_height(h, x + FIX_ONE, y) - hole_height(h, x - FIX_ONE, y)) >> 1;
 				gy = (hole_height(h, x, y + FIX_ONE) - hole_height(h, x, y - FIX_ONE)) >> 1;

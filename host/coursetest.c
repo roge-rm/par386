@@ -206,6 +206,77 @@ static void fuzz(const uint8_t *rec, uint32_t len, int is_hole)
 	free(b);
 }
 
+/* Writes a course header of version ver (1 to 4) from c; returns its length. */
+static uint32_t header(const Course *c, int ver, uint8_t *b)
+{
+	uint32_t n = 0;
+	int i, k;
+	b[n++] = 0;
+	b[n++] = (uint8_t)ver;
+	b[n++] = c->hole_count;
+	b[n++] = c->tee_count;
+	b[n++] = (uint8_t)strlen(c->name);
+	for (k = 0; c->name[k]; k++) b[n++] = (uint8_t)c->name[k];
+	for (i = 0; i < c->tee_count; i++) {
+		b[n++] = (uint8_t)strlen(c->tee_names[i]);
+		for (k = 0; c->tee_names[i][k]; k++) b[n++] = (uint8_t)c->tee_names[i][k];
+	}
+	for (i = 0; i < c->hole_count; i++) {
+		b[n++] = c->par[i];
+		b[n++] = (uint8_t)(c->yards[i] >> 8);
+		b[n++] = (uint8_t)c->yards[i];
+	}
+	if (ver >= 2) {
+		b[n++] = c->scenery;
+		for (i = 0; i < c->hole_count; i++) b[n++] = c->turn[i];
+	}
+	if (ver >= 3) b[n++] = c->wind;
+	if (ver >= 4) b[n++] = c->green;
+	return n;
+}
+
+/* Headers of every version: each loads with its own fields and the
+ * defaults for the ones it hasn't, and goes through the fuzz. */
+static void header_versions(const uint8_t *rec, uint32_t len)
+{
+	Course c, d;
+	uint8_t b[512];
+	uint32_t n;
+	int v;
+
+	CHECK(course_parse(&c, rec, len) == HOLE_OK);
+	c.scenery = 4;
+	c.turn[0] = 12;
+	c.turn[2] = 200;
+	c.wind = 15;
+	c.green = 13;
+	for (v = 1; v <= 4; v++) {
+		n = header(&c, v, b);
+		memset(&d, 0x55, sizeof d);
+		CHECK(course_parse(&d, b, n) == HOLE_OK);
+		CHECK(strcmp(d.name, c.name) == 0 && d.hole_count == c.hole_count && d.tee_count == c.tee_count);
+		CHECK(d.scenery == (v >= 2 ? 4 : 0) && d.turn[2] == (v >= 2 ? 200 : 0) && d.turn[COURSE_MAX_HOLES - 1] == 0);
+		CHECK(d.wind == (v >= 3 ? 15 : 0) && d.green == (v >= 4 ? 13 : 0));
+		fuzz(b, n, 0);
+	}
+	n = header(&c, 3, b);
+	b[n - 1] = 41;
+	CHECK(course_parse(&d, b, n) == HOLE_ERR_VALUE);
+	n = header(&c, 4, b);
+	b[n - 1] = 0;
+	CHECK(course_parse(&d, b, n) == HOLE_OK && d.green == 0);
+	b[n - 1] = 6;
+	CHECK(course_parse(&d, b, n) == HOLE_OK && d.green == 6);
+	b[n - 1] = 14;
+	CHECK(course_parse(&d, b, n) == HOLE_OK);
+	b[n - 1] = 5;
+	CHECK(course_parse(&d, b, n) == HOLE_ERR_VALUE);
+	b[n - 1] = 15;
+	CHECK(course_parse(&d, b, n) == HOLE_ERR_VALUE);
+	b[1] = 5;
+	CHECK(course_parse(&d, b, n) == HOLE_ERR_VERSION);
+}
+
 /* Checks every hole of any course. */
 static int any_course(const char *pa, const char *pb)
 {
@@ -393,6 +464,7 @@ int main(int argc, char **argv)
 	CHECK(at(&g, 158, 420) == SURF_BUNKER && at(&g, 5, 470) == SURF_OOB);
 
 	fuzz(a.rec[0], a.len[0], 0);
+	header_versions(a.rec[0], a.len[0]);
 	fuzz(a.rec[1], a.len[1], 1);
 
 	for (i = 0; i < a.count; i++) free(a.rec[i]);

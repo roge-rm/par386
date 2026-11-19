@@ -6,7 +6,8 @@
 
 #include "vec.h"
 
-#define COURSE_VERSION    3      /* 1 and 2 are read too: scenery 0, the usual wind */
+#define COURSE_VERSION    4      /* 1 to 3 are read too: scenery 0, the usual wind and green speed */
+#define GREEN_USUAL       10     /* Course.green: the usual speed, also given by 0 */
 #define HOLE_VERSION      1
 #define COURSE_MAX_HOLES  36
 #define COURSE_MAX_TEES   4
@@ -50,6 +51,7 @@ typedef struct {
 	uint8_t scenery;    /* which sky and backdrop art, 0 the parkland one */
 	uint8_t turn[COURSE_MAX_HOLES];       /* each hole's map turned against the course, 256 a turn */
 	uint8_t wind;       /* average wind in mph, 0 for the usual 10 */
+	uint8_t green;      /* green speed, 6 to 14, 0 for the usual GREEN_USUAL; higher rolls further */
 } Course;
 
 typedef struct {
@@ -76,6 +78,8 @@ typedef struct {
 	uint16_t object_count;
 	uint16_t turn;             /* Course.turn << 8 for the backdrop; hole_parse leaves it 0, the caller sets it */
 	uint8_t wind;              /* Course.wind, set by the caller as turn is */
+	uint8_t green;             /* Course.green, set by the caller */
+	uint8_t tee;               /* index into tees of the tee being played, set by hole_use_tee */
 	uint8_t number, par, hm_w, hm_h, hm_shift, base_surface, tee_count, shape_count;
 	char name[HOLE_NAME_MAX + 1];
 } Hole;
@@ -95,6 +99,15 @@ typedef void (*SurfaceRowFn)(void *ctx, uint16_t row, const uint8_t *bytes, uint
 /* Both return HOLE_OK or an error and never read past len. */
 int SEC_CORE course_parse(Course *c, const uint8_t *buf, uint32_t len);
 int SEC_CORE hole_parse(Hole *h, const uint8_t *buf, uint32_t len);
+
+/* Plays the hole from tee set set: its own tee, else the nearest longer one,
+ * else the first. */
+void SEC_CORE hole_use_tee(Hole *h, uint8_t set);
+
+/* A putt of len yards from a to b as the length that rolls the same on a
+ * green of the usual speed: only the part over the green is scaled by
+ * the course's speed (8 points along the line). */
+fixed SEC_CORE hole_putt_len(const Hole *h, const SurfaceGrid *g, vec2 a, vec2 b, fixed len);
 
 /* Object i of the hole, i < object_count. */
 void SEC_CORE hole_object(const Hole *h, uint16_t i, HoleObject *o);

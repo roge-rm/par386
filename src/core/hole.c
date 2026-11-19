@@ -98,6 +98,7 @@ int course_parse(Course *c, const uint8_t *buf, uint32_t len)
 	}
 	c->scenery = 0;
 	c->wind = 0;
+	c->green = 0;
 	for (i = 0; i < COURSE_MAX_HOLES; i++) c->turn[i] = 0;
 	if (ok && v >= 2) {
 		c->scenery = rd8(&r);
@@ -107,7 +108,31 @@ int course_parse(Course *c, const uint8_t *buf, uint32_t len)
 		c->wind = rd8(&r);
 		if (c->wind > 40) ok = 0;
 	}
+	if (ok && v >= 4) {
+		c->green = rd8(&r);
+		if (c->green && (c->green < 6 || c->green > 14)) ok = 0;
+	}
 	return finish(&r, ok);
+}
+
+void hole_use_tee(Hole *h, uint8_t set)
+{
+	uint8_t i, best = 0xFF;
+	for (i = 0; i < h->tee_count; i++)
+		if (h->tees[i].set <= set && (best == 0xFF || h->tees[i].set > h->tees[best].set)) best = i;
+	h->tee = best == 0xFF ? 0 : best;
+}
+
+fixed hole_putt_len(const Hole *h, const SurfaceGrid *g, vec2 a, vec2 b, fixed len)
+{
+	fixed dx = (b.x - a.x) >> 4, dy = (b.y - a.y) >> 4, on;
+	uint8_t k, n = 0;
+
+	if (!h->green || h->green == GREEN_USUAL) return len;
+	for (k = 1; k < 16; k += 2)
+		if (surface_at(g, a.x + dx * k, a.y + dy * k) == SURF_GREEN) n++;
+	on = (len >> 3) * n;
+	return len - on + on / h->green * GREEN_USUAL;
 }
 
 /* Reads a point in quarter yards, checking it's on the hole. */
@@ -131,6 +156,8 @@ int hole_parse(Hole *h, const uint8_t *buf, uint32_t len)
 	if (rd16(&r) != HOLE_VERSION) return r.err ? r.err : HOLE_ERR_VERSION;
 	h->turn = 0;
 	h->wind = 0;
+	h->green = 0;
+	h->tee = 0;
 	h->number = rd8(&r);
 	h->par = rd8(&r);
 	h->width = rd16(&r);
