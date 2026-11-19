@@ -7,7 +7,9 @@ from the session, installs the PRC, launches Par 386, waits and saves a
 screenshot as OUTDIR/end.png. Steps after that (tools/frondsteps.py) press
 keys, tap and save more screenshots.
 
-Usage: frond-iiix.py OUTDIR [--seconds N] [--rom ROM] [--prc PRC] [--install PDB ...] [--speed original|uncapped] [STEP ...]
+--audio WAV writes the piezo sound to WAV and each tone change to OUTDIR/core.log.
+
+Usage: frond-iiix.py OUTDIR [--seconds N] [--rom ROM] [--prc PRC] [--install PDB ...] [--speed original|uncapped] [--audio WAV] [STEP ...]
 """
 import argparse
 import sys
@@ -48,14 +50,18 @@ def main():
     p.add_argument('--prc', type=Path, default=ROOT / 'build/Par386.prc')
     p.add_argument('--install', type=Path, action='append', default=[],
                    help='another PRC or PDB to install first, such as a course')
+    p.add_argument('--audio', type=Path, help='write the piezo sound to this WAV')
     p.add_argument('steps', nargs='*')
     a = p.parse_args()
     out = a.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     session = session_for(a.rom)
-    core = palm_boot.Core([session, '--device', 'palm-iiix', '--speed', a.speed], out / 'core.log')
+    extra = ['--audio-output', a.audio.resolve(), '--tone-log'] if a.audio else []
+    core = palm_boot.Core([session, '--device', 'palm-iiix', '--speed', a.speed], out / 'core.log', *extra)
     try:
         core.until('speed-state', 'speed:', 'speed', 30)
+        if a.audio:
+            core.send('audio-on')
         for f in a.install + [a.prc]:
             reply = core.send(f'install "{f.resolve()}"', 'install', 60)
             if 'successful' not in reply:

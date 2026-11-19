@@ -1,4 +1,5 @@
 #include "play.h"
+#include "sound.h"
 
 /* What play_frame draws again. */
 #define R_STRIP  1
@@ -84,6 +85,7 @@ static void SEC_UI setup(Play *p)
 	p->redraw = R_ALL;
 	p->shown = -2;
 	p->mishit = 0;
+	snd_ambient(p->lie == LIE_TEE);
 }
 
 void play_init(Play *p, const Hole *h, const SurfaceGrid *g, uint32_t seed)
@@ -182,11 +184,40 @@ static void SEC_UI launch(Play *p)
 	in.range = p->range;
 	in.lie = p->lie;
 	in.mishit = p->mishit;
+	snd_play(p->club == CLUB_PT ? SND_HIT_PUTT : p->club <= CLUB_5W ? SND_HIT_WOOD : SND_HIT_IRON);
 	ball_shot(&in, &p->shot);
 	p->have_shot = 1;
 	p->state = PS_FLY;
 	p->shown = -2;
 	p->redraw |= R_OVER;
+}
+
+/* The sound of the ball first coming down, once the flight gets to point
+ * i: the last point if the shot ends before landing (in the water). */
+static void SEC_UI landed(const Play *p, int16_t i)
+{
+	const Shot *sh = &p->shot;
+	int16_t l = sh->fly_n < sh->n - 1 ? sh->fly_n : sh->n - 1;
+	uint8_t id;
+
+	if (p->club == CLUB_PT || !sh->fly_n || p->shown >= l || i < l) return;
+	switch (sh->land_surf) {
+	case SURF_WATER: id = SND_SPLASH; break;
+	case SURF_BUNKER: id = SND_LAND_SAND; break;
+	case SURF_ROUGH: case SURF_DEEP_ROUGH: id = SND_LAND_ROUGH; break;
+	case SURF_OOB: return;
+	default: id = SND_LAND_FAIRWAY; break;
+	}
+	snd_play(id);
+}
+
+/* The sound of how the shot ended, as the ball stops. */
+static void SEC_UI stopped(const Play *p)
+{
+	const Shot *sh = &p->shot;
+	if (sh->result == SHOT_HOLED) snd_play(SND_CUP);
+	else if (sh->result == SHOT_OOB) snd_play(SND_OOB);
+	else if (sh->result == SHOT_WATER && (p->club == CLUB_PT || sh->land_surf != SURF_WATER)) snd_play(SND_SPLASH);
 }
 
 /* After a player's hole is done: the next player, or the scorecard once
@@ -257,6 +288,8 @@ static int SEC_UI click(Play *p, uint32_t now)
 
 	switch (p->state) {
 	case PS_AIM:
+		snd_ambient(0);
+		snd_play(SND_SWING);
 		p->state = PS_UP;
 		p->t0 = now;
 		p->mpos = S16;
@@ -279,6 +312,7 @@ static int SEC_UI click(Play *p, uint32_t now)
 			launch(p);
 			return PL_ANIM;
 		}
+		snd_play(SND_CLICK);
 		p->state = PS_DOWN;
 		return PL_ANIM;
 	case PS_DOWN: {
@@ -751,7 +785,11 @@ static int SEC_UI next(Play *p)
 {
 	int n;
 	apply(p);
-	if (p->state == PS_DONE) return 0;
+	if (p->state == PS_DONE) {
+		int16_t d = (int16_t)p->score - p->rv.hole->par;
+		snd_play(d < 0 ? SND_BIRDIE : d == 0 ? SND_HOLED : SND_BOGEY);
+		return 0;
+	}
 	if (p->round && (n = rules_next(p->round, pin(p))) >= 0 && n != p->cur) {
 		take(p, (uint8_t)n);
 		return PL_RENDER | PL_TURN;
@@ -844,8 +882,10 @@ int play_frame(Play *p, Surface *s, const Surface *bg, uint32_t now)
 			if (k > p->shot.n - 1) k = p->shot.n - 1;
 			i = (int16_t)k;
 		}
+		landed(p, i);
 		if (i >= p->shot.n - 1) {
 			i = (int16_t)(p->shot.n - 1);
+			stopped(p);
 			result(p);
 			p->state = PS_RESULT;
 			p->t0 = now;

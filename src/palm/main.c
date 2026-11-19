@@ -9,6 +9,8 @@
 #include "play.h"
 #include "screen.h"
 #include "sonykeys.h"
+#include "audio.h"
+#include "sound.h"
 
 #define kMinRomVersion sysMakeROMVersion(3, 1, 0, sysROMStageRelease, 0)
 #define kRom35 sysMakeROMVersion(3, 5, 0, sysROMStageRelease, 0)
@@ -136,6 +138,12 @@ static void Redraw(void)
 		gfx_text(&gS, 0, 0, debugLine, StrLen(debugLine), UIC_WHITE);
 		ScreenDescribe(m);
 		gfx_text(&gS, 0, 8 * gS.scale, m, StrLen(m), UIC_WHITE);
+		AudioDescribe(m);
+		gfx_text(&gS, 0, 16 * gS.scale, m, StrLen(m), UIC_WHITE);
+	} else if (gFront.screen == SCR_SETTINGS) {
+		char m[32];
+		AudioDescribe(m);
+		gfx_text(&gS, 0, 0, m, StrLen(m), UIC_WHITE);
 	}
 	{
 		/* Ticks for the background, the front's drawing and the last copy to
@@ -149,6 +157,8 @@ static void Redraw(void)
 #endif
 	ScreenShowAll();
 }
+
+static Boolean gTxCenter;               /* the centre key has come as vchrTxCenter */
 
 /* Our keys, or KEY_NONE for ones the system should have (app buttons, Home, power). */
 static UInt8 MapKey(const EventType *e)
@@ -178,7 +188,13 @@ static UInt8 MapKey(const EventType *e)
 	case vchrPageDown: case vchrRockerDown: case chrDownArrow: return KEY_DOWN;
 	case vchrRockerLeft: case chrLeftArrow: return KEY_LEFT;
 	case vchrRockerRight: case chrRightArrow: return KEY_RIGHT;
-	case vchrRockerCenter: case vchrTxCenter: case chrLineFeed: case chrCarriageReturn: case chrSpace:
+	case vchrTxCenter:
+		gTxCenter = true;
+		return KEY_SELECT;
+	case vchrRockerCenter:
+		/* the TX sends vchrTxCenter and then this one for the same press */
+		return gTxCenter ? KEY_NONE : KEY_SELECT;
+	case chrLineFeed: case chrCarriageReturn: case chrSpace:
 		return KEY_SELECT;
 	}
 	if (e->data.keyDown.modifiers & commandKeyMask) return KEY_NONE;
@@ -690,6 +706,12 @@ static UInt32 NowMs(void)
 
 static void SceneRender(void);
 
+/* Plays what the core queued; the birds only on the scene while playing. */
+static void Sound(void)
+{
+	AudioTick(gPlaying && gPlay.view == PLAY_SCENE && snd_ambient_on());
+}
+
 /* Shows the strip saying whose turn it is while the scene draws. */
 static void TurnStrip(void)
 {
@@ -838,6 +860,8 @@ static void SceneRender(void)
 
 static void PlayAct(int f)
 {
+	/* sounds start before any long draw */
+	Sound();
 	if (!gS.bits) return;
 	if (f & PL_BACK) {
 		/* the round is kept to continue, unless it's over */
@@ -906,6 +930,8 @@ static char gMsg[48];                  /* the message dialog keeps its text */
 
 static void Act(int r)
 {
+	Sound();
+	if (r & FR_SOUND) AudioSetMode(gFront.sound);
 	if (r & (FR_PLAY | FR_CONTINUE)) {
 		if (PlayStart((r & FR_CONTINUE) != 0)) {
 			TurnStrip();
@@ -1080,8 +1106,9 @@ static void EventLoop(void)
 	UInt8 key;
 
 	do {
-		/* a tick between frames while the meter or the ball moves */
-		EvtGetEvent(&e, gAnim ? 1 : evtWaitForever);
+		/* a tick between frames while the meter or the ball moves, or until the next step of a sound */
+		Sound();
+		EvtGetEvent(&e, gAnim ? 1 : AudioWait());
 		if (gAnim) PlayFrame();
 		if (e.eType == nilEvent && gPlaying) continue;
 		/* with no screen buffers only the system gets keys */
@@ -1168,6 +1195,8 @@ UInt32 PilotMain(UInt16 cmd, void *cmdPBP, UInt16 launchFlags)
 	DebugCoreCheck();
 #endif
 	front_init(&gFront);
+	gFront.sound = AudioOpen();
+	snd_set_hook(Sound);
 	DropLeftover();
 	FindCourses();
 	front_clubhouse(&gFront, LoadSave(&gRound, false) == LS_OK);
@@ -1180,6 +1209,8 @@ UInt32 PilotMain(UInt16 cmd, void *cmdPBP, UInt16 launchFlags)
 		SaveRound();
 		PlayEnd();
 	}
+	snd_set_hook(NULL);
+	AudioClose();
 	ScreenClose();
 	return 0;
 }

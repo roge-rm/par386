@@ -1,4 +1,5 @@
 #include "front.h"
+#include "sound.h"
 
 /* The menu board's felt and name plate in the menu picture (tools/mkart.py). */
 #define PLATE_CX 80
@@ -26,6 +27,7 @@ void front_init(Front *f)
 	f->courses = 0;
 	f->course = 0;
 	f->course_list[0] = 0;
+	f->sound = SOUND_ON;
 	main_menu(f);
 }
 
@@ -67,7 +69,8 @@ uint16_t front_picture(const Front *f)
 
 void front_draw(const Front *f, Surface *s)
 {
-	const char *plate = f->screen == SCR_PLAYERS ? "PLAYERS" : f->screen == SCR_COURSES ? "COURSES" : "CLUBHOUSE";
+	const char *plate = f->screen == SCR_PLAYERS ? "PLAYERS" : f->screen == SCR_COURSES ? "COURSES" :
+	                    f->screen == SCR_SETTINGS ? "SETTINGS" : "CLUBHOUSE";
 	int16_t n;
 
 	if (f->screen == SCR_TITLE) {
@@ -98,8 +101,33 @@ static int SEC_UI courses_screen(Front *f)
 	return FR_REDRAW;
 }
 
+/* The settings screen's lines: the sound setting, then Back. */
+static void SEC_UI settings_menu(Front *f)
+{
+	const char *a = "Sound: ", *b = f->sound == SOUND_FX ? "Effects" : f->sound == SOUND_OFF ? "Off" : "On", *c = "|Back";
+	uint8_t n = 0, sel = f->screen == SCR_SETTINGS ? f->menu.sel : 0;
+
+	while (*a) f->settings_list[n++] = *a++;
+	while (*b) f->settings_list[n++] = *b++;
+	while (*c) f->settings_list[n++] = *c++;
+	f->settings_list[n] = 0;
+	f->screen = SCR_SETTINGS;
+	ui_menu_init(&f->menu, f->settings_list, 16, 36, 128, 20);
+	f->menu.sel = sel;
+}
+
 static int SEC_UI open_item(Front *f, uint8_t i)
 {
+	if (f->screen == SCR_SETTINGS) {
+		if (i == 0) {
+			f->sound = (uint8_t)((f->sound + 1) % SOUND_MODES);
+			settings_menu(f);
+			return FR_REDRAW | FR_SOUND;
+		}
+		front_clubhouse(f, f->saved);
+		f->menu.sel = (uint8_t)(MAIN_SETTINGS + (f->saved ? 1 : 0));
+		return FR_REDRAW;
+	}
 	if (f->screen == SCR_COURSES) {
 		if (i < f->courses) f->course = i;
 		front_clubhouse(f, f->saved);
@@ -130,7 +158,9 @@ static int SEC_UI open_item(Front *f, uint8_t i)
 		if (f->courses) return courses_screen(f);
 		ui_dialog_init(&f->dlg, "Courses", "No courses are\ninstalled.", "OK");
 		break;
-	default: ui_dialog_init(&f->dlg, "Settings", "Nothing to set yet.", "OK"); break;
+	default:
+		settings_menu(f);
+		return FR_REDRAW;
 	}
 	f->dialog = DLG_MESSAGE;
 	return FR_REDRAW;
@@ -152,7 +182,7 @@ void front_message(Front *f, const char *title, const char *text)
 	f->dialog = DLG_MESSAGE;
 }
 
-int front_key(Front *f, uint8_t key)
+static int SEC_UI key_in(Front *f, uint8_t key)
 {
 	if (key == KEY_NONE) return 0;
 	if (f->screen == SCR_TITLE) {
@@ -181,12 +211,30 @@ int front_key(Front *f, uint8_t key)
 	case KEY_BACK:
 		if (f->screen == SCR_PLAYERS) return open_item(f, BACK_LINE);
 		if (f->screen == SCR_COURSES) return open_item(f, f->courses);
+		if (f->screen == SCR_SETTINGS) return open_item(f, 1);
 		return 0;
 	}
 	return 0;
 }
 
+static int SEC_UI tap_in(Front *f, int16_t x, int16_t y);
+
+/* A click for anything a key did: a move or a pick. */
+int front_key(Front *f, uint8_t key)
+{
+	int r = key_in(f, key);
+	if (r) snd_play(key == KEY_UP || key == KEY_DOWN || key == KEY_LEFT || key == KEY_RIGHT ? SND_MENU_MOVE : SND_MENU_SELECT);
+	return r;
+}
+
 int front_tap(Front *f, int16_t x, int16_t y)
+{
+	int r = tap_in(f, x, y);
+	if (r) snd_play(SND_MENU_SELECT);
+	return r;
+}
+
+static int SEC_UI tap_in(Front *f, int16_t x, int16_t y)
 {
 	int i;
 

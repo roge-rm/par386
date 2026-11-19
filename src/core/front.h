@@ -23,9 +23,14 @@ enum { KEY_NONE, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_SELECT, KEY_OTHER, K
 #define FR_PLAY   8
 /* Continue round was picked: the platform loads the saved round. */
 #define FR_CONTINUE 16
+/* The sound setting changed: the platform saves it and plays by it. */
+#define FR_SOUND  32
 
 /* The players and courses screens are the menu board with a list. */
-enum { SCR_TITLE, SCR_MENU, SCR_PLAYERS, SCR_COURSES };
+enum { SCR_TITLE, SCR_MENU, SCR_PLAYERS, SCR_COURSES, SCR_SETTINGS };
+
+/* The sound setting: everything, effects without the tunes and birds, or none. */
+enum { SOUND_ON, SOUND_FX, SOUND_OFF, SOUND_MODES };
 
 /* Courses the platform found, at most FRONT_COURSES, names up to 23 characters. */
 #define FRONT_COURSES 5
@@ -46,6 +51,8 @@ typedef struct {
 	uint8_t players;         /* picked on the players screen */
 	uint8_t courses;         /* how many courses are installed */
 	uint8_t course;          /* the one picked on the courses screen */
+	uint8_t sound;           /* SOUND_* */
+	char settings_list[24];  /* "Sound: On|Back" */
 	char course_list[FRONT_COURSE_LIST];    /* their names and Back, "A|B|Back" */
 	UiMenu menu;
 	UiDialog dlg;

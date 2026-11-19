@@ -8,7 +8,10 @@ starts from the session, installs the PRC, launches Par 386, waits, saves
 OUTDIR/end.png and then runs the steps (tools/frondsteps.py; taps are in
 160x160 units and doubled here).
 
-Usage: frond-tx.py OUTDIR [--seconds N] [--prc PRC] [--install PDB ...] [--sd IMG] [STEP ...]
+--audio WAV runs the core with sound on through SDL's disk audio driver and
+writes what it played to WAV (44.1 kHz 16-bit stereo, as the core opens it).
+
+Usage: frond-tx.py OUTDIR [--seconds N] [--prc PRC] [--install PDB ...] [--sd IMG] [--audio WAV] [STEP ...]
 """
 import argparse
 import os
@@ -46,13 +49,15 @@ class SockCore:
     """The core run on its desktop control socket, which has the sd-* commands the console lacks.
     It has the same calls as palm_boot.Core that the steps use."""
 
-    def __init__(self, session, log, sd):
+    def __init__(self, session, log, sd, audio=None):
         self.dir = tempfile.mkdtemp(prefix='par386-')
         self.listener = socket.socket(socket.AF_UNIX)
         self.listener.bind(self.dir + '/c.sock')
         self.listener.listen(1)
-        cmd = [str(palm_boot.core_for(DEVICE)), str(session), '--device', DEVICE, '--no-sound',
+        cmd = [str(palm_boot.core_for(DEVICE)), str(session), '--device', DEVICE,
                '--desktop-socket', self.dir + '/c.sock']
+        if not audio:
+            cmd.insert(4, '--no-sound')
         if sd:
             cmd += ['--sd', str(sd)]
         if shutil.which('heavy'):
@@ -60,7 +65,9 @@ class SockCore:
         self.log = log.open('w')
         self.process = subprocess.Popen(cmd, stdout=self.log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                         start_new_session=True,
-                                        env={**os.environ, 'SDL_VIDEODRIVER': 'dummy', 'SDL_AUDIODRIVER': 'dummy'})
+                                        env={**os.environ, 'SDL_VIDEODRIVER': 'dummy',
+                                             **({'SDL_AUDIODRIVER': 'disk', 'SDL_DISKAUDIOFILE': str(audio)}
+                                                if audio else {'SDL_AUDIODRIVER': 'dummy'})})
         self.conn, _ = self.listener.accept()
         self.buf = b''
         self.n = 0
@@ -142,17 +149,19 @@ def main():
     p.add_argument('--install', type=Path, action='append', default=[],
                    help='another PRC or PDB to install first, such as a course')
     p.add_argument('--sd', type=Path, help='an SD card image to put in the slot (it is written to)')
+    p.add_argument('--audio', type=Path, help='write the sound played to this WAV')
     p.add_argument('steps', nargs='*')
     a = p.parse_args()
     out = a.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     session = session_for(NOR)
-    if a.sd:
-        core = SockCore(session, out / 'core.log', a.sd.resolve())
+    raw = a.audio.resolve().with_suffix('.raw') if a.audio else None
+    if a.sd or a.audio:
+        core = SockCore(session, out / 'core.log', a.sd.resolve() if a.sd else None, raw)
     else:
         core = palm_boot.Core([session, '--device', DEVICE], out / 'core.log')
     try:
-        if a.sd:
+        if a.sd or a.audio:
             core.install(a.prc.resolve())
             for f in a.install:
                 core.retry('install', f.resolve())
@@ -178,6 +187,14 @@ def main():
         core.close()
         for f in out.glob('console-*.replay'):
             f.unlink()
+        if raw and raw.is_file():
+            import wave
+            with wave.open(str(a.audio.resolve()), 'wb') as w:
+                w.setnchannels(2)
+                w.setsampwidth(2)
+                w.setframerate(44100)
+                w.writeframes(raw.read_bytes())
+            raw.unlink()
 
 
 if __name__ == '__main__':

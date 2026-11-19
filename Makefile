@@ -6,6 +6,7 @@
 #   make courses     compiles every course in courses/ to build/courses/
 #   make tables      makes src/core/trigtab.h, fonttab.h, pal.h and paltab.h again (the output is committed)
 #   make art         makes the title and menu pictures and the renderer's sprites in build/art/ (part of the PRC)
+#   make sounds      makes the sampled sounds in build/snd/ (part of the PRC)
 #   make ui-test     draws the title and menu with the core UI kit on the host, to PNGs
 #   make render-test draws the test hole from 3 places and compares with host/ref/
 #   make course-render draws every hole of Auld Kirk from the tee, the landing area and near the green
@@ -31,8 +32,8 @@ INCLUDES = $(addprefix -I,$(shell find $(SDK)/include -type d))
 CFLAGS   = -O2 -Wall -Wno-unknown-pragmas $(DEFS) $(INCLUDES) -Isrc/core -Isrc/palm
 LDFLAGS  = -L$(SDK)/lib/m68k-palmos-coff
 
-PALMSRCS = main screen
-CORESRCS = fixed trig vec hole gfx ui front render play ball rules card
+PALMSRCS = main screen audio
+CORESRCS = fixed trig vec hole gfx ui front render play ball rules card sound
 OBJS     = $(addprefix $(BUILD)/,$(addsuffix .o,$(PALMSRCS) $(CORESRCS)))
 
 all: build/$(PRC) courses
@@ -87,8 +88,17 @@ $(ART)/obj.ro: $(ART)/obj.rcp
 
 art: $(ART)/art.rcp $(ART)/obj.rcp
 
-build/$(PRC): src/par386.def $(BUILD)/par386 $(BUILD)/par386.ro $(ART)/art.ro $(ART)/obj.ro
-	build-prc -o $@ src/par386.def $(BUILD)/par386 $(BUILD)/par386.ro $(ART)/art.ro $(ART)/obj.ro
+# The sampled sounds for OS 5 Palms (src/palm/audio.c), made by a script; WAVs of them go to $(DEBUGDIR)/m10/samples.
+SND      = build/snd
+
+$(SND)/snd.rcp: tools/mksound.py
+	python3 tools/mksound.py $(SND) $(DEBUGDIR)/m10/samples
+
+$(SND)/snd.ro: $(SND)/snd.rcp
+	pilrc -q -ro $(SND)/snd.rcp $@
+
+build/$(PRC): src/par386.def $(BUILD)/par386 $(BUILD)/par386.ro $(ART)/art.ro $(ART)/obj.ro $(SND)/snd.ro
+	build-prc -o $@ src/par386.def $(BUILD)/par386 $(BUILD)/par386.ro $(ART)/art.ro $(ART)/obj.ro $(SND)/snd.ro
 
 HOSTSRC  = $(addprefix src/core/,$(addsuffix .c,$(CORESRCS)))
 HOSTCC   = gcc -Wall -Wextra -O2 -Isrc/core -fsanitize=address,undefined -fno-sanitize-recover=all
@@ -221,4 +231,6 @@ tables:
 clean:
 	rm -rf build
 
-.PHONY: all release clean host-test course-test course-render auldkirk ui-test ui-ref render-test render-ref physics-test rules-test courses tables art
+sounds: $(SND)/snd.rcp
+
+.PHONY: sounds all release clean host-test course-test course-render auldkirk ui-test ui-ref render-test render-ref physics-test rules-test courses tables art

@@ -4,11 +4,13 @@
  * saved round's record and bad records, then plays a 2 player round of the
  * test course through play.c, saving and restoring it on the way. Draws the
  * scorecard, the strips and the clubhouse with Continue round and the
- * players screen at 160x160 2-bit and 320x320 8-bit to OUTDIR as PPMs. */
+ * players screen at 160x160 2-bit and 320x320 8-bit to OUTDIR as PPMs.
+ * Last, the sounds hole 1 of the test course makes and the menu clicks. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "play.h"
+#include "sound.h"
 #include "front.h"
 
 static int fails, checks;
@@ -852,6 +854,128 @@ static void front_tests(void)
 	}
 }
 
+/* Hole 1 of the test course alone with the wind of PLAY_SEED=3, as
+ * tools/replay/hole1.replay plays it on the Palm: the sounds each shot
+ * makes, in order, and the tune at the end. Then the menu clicks. */
+static void sound_tests(void)
+{
+	static Play p;
+	Surface s, bg;
+	Front f;
+	uint32_t t = 0;
+	uint16_t k, start, swings = 0, clicks = 0, hits = 0, putts = 0, lands = 0, cups = 0, tunes = 0;
+	int shots = 0;
+	static const char *const names[SND_COUNT] = {
+		"none", "swing", "click", "wood", "iron", "putt", "land-fairway", "land-rough", "land-sand",
+		"splash", "cup", "oob", "holed", "birdie", "bogey", "menu-move", "menu-select"
+	};
+
+	surface(&s, 1);
+	surface(&bg, 1);
+	snd_log_n = 0;
+	while (snd_take() != SND_NONE) {}
+	play_init(&p, &holes[0].h, &holes[0].g, 3);
+	CHECK(snd_ambient_on() && snd_log_n == 1 && snd_log[0] == 0x81);
+	play_frame(&p, &s, &bg, t);
+	while (p.state != PS_DONE && shots < 12) {
+		start = snd_log_n;
+		shot(&p, &s, &bg, &t);
+		shots++;
+		/* the swing starts with the birds off from the tee */
+		CHECK(snd_log[start] == 0x80 || snd_log[start] == SND_SWING);
+	}
+	CHECK(p.state == PS_DONE);
+	printf("sound: hole 1 in %d:", p.score);
+	for (k = 0; k < snd_log_n; k++) {
+		uint8_t v = snd_log[k];
+		printf(" %s", v >= 0x80 ? (v & 1 ? "birds-on" : "birds-off") : v < SND_COUNT ? names[v] : "?");
+		switch (v) {
+		case SND_SWING: swings++; break;
+		case SND_CLICK: clicks++; break;
+		case SND_HIT_WOOD: case SND_HIT_IRON: hits++; break;
+		case SND_HIT_PUTT: hits++; putts++; break;
+		case SND_LAND_FAIRWAY: case SND_LAND_ROUGH: case SND_LAND_SAND: case SND_SPLASH: lands++; break;
+		case SND_CUP: cups++; break;
+		case SND_HOLED: case SND_BIRDIE: case SND_BOGEY: tunes++; break;
+		}
+		/* a putt has no power click before it, a swing does */
+		if (v == SND_HIT_PUTT) CHECK(k > 0 && snd_log[k - 1] == SND_SWING);
+		if (v == SND_HIT_WOOD || v == SND_HIT_IRON) CHECK(k > 0 && snd_log[k - 1] == SND_CLICK);
+	}
+	printf("\n");
+	CHECK(swings == shots && hits == shots && clicks == shots - putts && putts >= 1);
+	/* every full shot comes down once; the driver from the tee */
+	CHECK(lands == shots - putts && snd_log[4] == SND_HIT_WOOD);
+	CHECK(tunes == 1 && snd_log[snd_log_n - 1] == (p.score < 4 ? SND_BIRDIE : p.score == 4 ? SND_HOLED : SND_BOGEY));
+	CHECK(cups <= 1);
+	/* the queue holds the newest SND_QUEUE */
+	k = 0;
+	while (snd_take() != SND_NONE) k++;
+	CHECK(k == SND_QUEUE || k == snd_log_n);
+
+	/* putts from 7 yd at a range of powers until one drops: the cup, then the
+	 * birdie tune (2 on a par 4), with no landing sound for the putter */
+	{
+		Round r;
+		uint8_t pars[3] = { 4, 3, 5 };
+		uint32_t ms = 0;
+		int holed = 0, left;
+		/* it breaks right: aimed a degree or more left */
+		for (left = 0; left < 6 && !holed; left++)
+		for (ms = 700; ms <= 1000 && !holed; ms += 10) {
+			vec2 pin = holes[0].h.pins[0];
+			rules_init(&r, "Par386 Test", 1, 3, pars, 3);
+			r.pl[0].taken = 1;
+			r.pl[0].ball = vec2_make(pin.x - (2L << 16), pin.y - (7L << 16));
+			r.pl[0].lie = LIE_GREEN;
+			play_start(&p, &holes[0].h, &holes[0].g, &r);
+			CHECK(p.club == CLUB_PT && !snd_ambient_on());
+			snd_log_n = 0;
+			t += 1000;
+			for (k = 0; k < left; k++) play_key(&p, KEY_LEFT, t);
+			play_key(&p, KEY_SELECT, t);
+			t += ms;
+			play_tap(&p, 80, 60, t);
+			run(&p, &s, &bg, &t, PS_FLY);
+			run(&p, &s, &bg, &t, PS_RESULT);
+			if (p.shot.result != SHOT_HOLED) continue;
+			holed = 1;
+			CHECK(snd_log_n == 4 && snd_log[0] == SND_SWING && snd_log[1] == SND_HIT_PUTT && snd_log[2] == SND_CUP &&
+			      snd_log[3] == SND_BIRDIE);
+		}
+		printf("sound: holed a 7 yd putt aimed %d degrees left at %u ms\n", left - 1, (unsigned)(ms - 10));
+		CHECK(holed);
+		while (snd_take() != SND_NONE) {}
+	}
+
+	/* menus: a move, a pick, the settings screen's sound line going round */
+	snd_log_n = 0;
+	front_init(&f);
+	front_clubhouse(&f, 0);
+	CHECK(front_key(&f, KEY_DOWN) & FR_LINES);
+	CHECK(snd_log_n == 1 && snd_log[0] == SND_MENU_MOVE);
+	f.menu.sel = MAIN_SETTINGS;
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_SETTINGS && f.menu.count == 2);
+	CHECK(snd_log_n == 2 && snd_log[1] == SND_MENU_SELECT);
+	CHECK(strcmp(f.settings_list, "Sound: On|Back") == 0);
+	draw_front(&s, &f);
+	save(&s, "settings");
+	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_SOUND) && f.sound == SOUND_FX && f.menu.sel == 0);
+	CHECK(strcmp(f.settings_list, "Sound: Effects|Back") == 0);
+	draw_front(&s, &f);
+	save(&s, "settings-fx");
+	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_SOUND) && f.sound == SOUND_OFF);
+	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_SOUND) && f.sound == SOUND_ON);
+	CHECK(front_key(&f, KEY_DOWN) & FR_LINES);
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_MENU && f.menu.sel == MAIN_SETTINGS);
+	front_key(&f, KEY_SELECT);
+	CHECK(f.screen == SCR_SETTINGS && f.menu.sel == 0);
+	CHECK(front_key(&f, KEY_BACK) == FR_REDRAW && f.screen == SCR_MENU);
+	free(s.bits);
+	free(bg.bits);
+	while (snd_take() != SND_NONE) {}
+}
+
 int main(int argc, char **argv)
 {
 	uint32_t len;
@@ -870,6 +994,7 @@ int main(int argc, char **argv)
 	card_tests();
 	front_tests();
 	round_tests(argv[1]);
+	sound_tests();
 	printf("rules-test: %d checks, %d failed\n", checks, fails);
 	return fails != 0;
 }

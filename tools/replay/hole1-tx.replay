@@ -1,0 +1,34 @@
+# hole1.replay for the TX (320x448 screen, pen in its pixels) with no map
+# visits: the swing starts with a tap on the strip, the clicks are taps on the
+# scene. Same build (EXTRA=-DPLAY_SEED=3) and timing. Start it on the tee
+# view once it's drawn.
+0 pen-down 120 430
+60 pen-up
+700 snapshot "{out}/s1-meter.png"
+950 pen-down 160 120
+1010 pen-up
+1660 pen-down 160 120
+1720 pen-up
+3500 snapshot "{out}/s1-flight.png"
+9000 snapshot "{out}/s1-result.png"
+19000 snapshot "{out}/s2-aim.png"
+20000 pen-down 120 430
+20060 pen-up
+20950 pen-down 160 120
+21010 pen-up
+21660 pen-down 160 120
+21720 pen-up
+28800 snapshot "{out}/s2-result.png"
+38000 snapshot "{out}/p1-aim.png"
+40000 pen-down 120 430
+40060 pen-up
+40730 pen-down 160 120
+40790 pen-up
+44400 snapshot "{out}/p1-result.png"
+51000 snapshot "{out}/p2-aim.png"
+52000 pen-down 120 430
+52060 pen-up
+52390 pen-down 160 120
+52450 pen-up
+54300 snapshot "{out}/p2-result.png"
+57000 snapshot "{out}/done.png"
