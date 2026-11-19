@@ -181,6 +181,15 @@ int SEC_UI play_map_wanted(const Play *p);
  * platform fades from the scene to m, calling play_frame on m for each
  * step, and then copies m to the scene's surface. */
 int SEC_UI play_map_prep(Surface *m, Play *p, int16_t rows);
+/* From the swing on (the shot's flight and where it stops are worked out
+ * then) until its result is taken: sets *v to the view the next shot will
+ * be drawn from (the scene, or the green view for the putter) and returns
+ * 1, if that's known now: the same player's next shot, or a person's
+ * turn. Returns 0 for the end of the hole, a computer golfer's turn,
+ * practice, or with no shot flying or showing. The platform can draw it ahead
+ * (render_scene_begin, render_green_begin) and use it if rv matches it
+ * once PL_RENDER comes. */
+int SEC_CORE play_next_view(const Play *p, RenderView *v);
 /* One press of a select key counts once. Some devices send two codes
  * for one press (the TX centre sends vchrTxCenter and vchrRockerCenter),
  * repeat a held key, or a worn switch bounces. A select press counts

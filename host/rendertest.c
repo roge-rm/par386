@@ -255,6 +255,119 @@ static void poses(const RenderView *v, const RenderArt *a, int scale, int depth,
 	sfree(&s);
 }
 
+/* A clock for render_scene_step that moves on one a look. */
+static uint32_t fake_t;
+static uint32_t fake_clock(void) { return fake_t++; }
+
+/* The scene drawn in slices (render_scene_begin and _step, a slice every
+ * per looks at the clock) is byte for byte the one drawn in one go, the
+ * golfer's box and the pixels kept under him too; at 8 bits the 16-bit
+ * colour made from it as well. */
+static void sliced(const RenderView *v, const RenderArt *a, int w, int h, int scale, int depth, int half, uint32_t per)
+{
+	Surface s, t;
+	RenderGolfer g0 = *a->golfer, g1;
+	RenderArt a1 = *a;
+	RenderStats st0, st1;
+	uint32_t un = 0, n;
+	uint8_t *work, *u0 = 0;
+	size_t bytes;
+	int k, slices = 0;
+
+	surface_wh(&s, w, h, scale, depth);
+	surface_wh(&t, w, h, scale, depth);
+	s.half = t.half = (uint8_t)half;
+	bytes = (size_t)s.rowBytes * s.h;
+	un = render_under_size(&s);
+	n = render_work_size(&s);
+	work = malloc(n);
+	/* in one go, with the golfer's under buffer as the art gave it */
+	memset(s.bits, 0x33, bytes);
+	CHECK(render_scene(&s, v, a, work, &st0) == 0);
+	g0 = *a->golfer;
+	if (g0.under) {
+		u0 = malloc(un);
+		memcpy(u0, g0.under, un);
+	}
+	/* in slices, into a golfer of its own */
+	g1 = *a->golfer;
+	g1.under = malloc(un);
+	memset(g1.under, 0x77, un);
+	g1.w = 0;
+	g1.shown = POSE_TOP;
+	a1.golfer = &g1;
+	memset(work, 0xEE, n);
+	memset(t.bits, 0x33, bytes);
+	CHECK(render_scene_begin(&t, v, &a1, work, &st1) == 0);
+	do {
+		k = render_scene_step(work, fake_clock, fake_t + per);
+		CHECK(k >= 0);
+		slices++;
+	} while (k == 0 && slices < 100000);
+	CHECK(k == 1 && render_scene_step(work, fake_clock, fake_t + per) == 1);
+	CHECK(slices > (int)(40 / per));
+	if (slices <= (int)(40 / per)) printf("  %d slices of %u\n", slices, (unsigned)per);
+	CHECK(memcmp(s.bits, t.bits, bytes) == 0);
+	CHECK(g1.x == g0.x && g1.y == g0.y && g1.w == g0.w && g1.h == g0.h && g1.bx == g0.bx && g1.by == g0.by);
+	CHECK(g1.shown == g0.shown && g1.ball == g0.ball && g1.half == g0.half && g0.w > 0);
+	if (u0) {
+		/* the bytes of the box in use: whole bytes of each row, or a byte a pixel at half size */
+		int lg = depth == 8 ? 3 : depth == 4 ? 2 : depth == 2 ? 1 : 0;
+		uint32_t used = g0.half ? (uint32_t)g0.w * g0.h :
+		                (uint32_t)((((g0.x + g0.w - 1) >> (3 - lg)) - (g0.x >> (3 - lg)) + 1) * g0.h);
+		CHECK(used <= un && memcmp(u0, g1.under, used) == 0);
+	}
+	for (k = 0; k < RS_COUNT; k++) st0.ticks[k] = st1.ticks[k] = 0;
+	CHECK(memcmp(&st0, &st1, sizeof st0) == 0);
+	if (memcmp(s.bits, t.bits, bytes)) printf("  sliced %dx%d %d-bit half %d: pixels differ\n", w, h, depth, half);
+	if (depth == 8) {
+		uint16_t rb = (uint16_t)(w * 2);
+		uint8_t *c0 = malloc((size_t)rb * h), *c1 = malloc((size_t)rb * h);
+		gfx_to16(&s, c0, rb, 0, 0, s.w, s.h, 0);
+		gfx_to16(&t, c1, rb, 0, 0, t.w, t.h, 0);
+		CHECK(memcmp(c0, c1, (size_t)rb * h) == 0);
+		free(c0);
+		free(c1);
+	}
+	free(u0);
+	free(g1.under);
+	free(work);
+	sfree(&s);
+	sfree(&t);
+}
+
+/* The green view drawn in slices is byte for byte the one drawn in one go. */
+static void sliced_green(const RenderView *v, int w, int h, int scale, int depth, int half)
+{
+	Surface s, t;
+	size_t bytes;
+	uint32_t n;
+	uint8_t *work;
+	int k, slices = 0;
+
+	surface_wh(&s, w, h, scale, depth);
+	surface_wh(&t, w, h, scale, depth);
+	s.half = t.half = (uint8_t)half;
+	bytes = (size_t)s.rowBytes * s.h;
+	n = render_work_size(&s);
+	work = malloc(n);
+	memset(s.bits, 0x33, bytes);
+	memset(t.bits, 0x44, bytes);
+	memset(work, 0xEE, n);
+	CHECK(render_green(&s, v) == 0);
+	CHECK(render_green_begin(&t, v, work) == 0);
+	do {
+		k = render_green_step(work, fake_clock, fake_t + 1);
+		slices++;
+	} while (k == 0 && slices < 10000);
+	CHECK(k == 1 && render_green_step(work, fake_clock, fake_t + 1) == 1 && slices > 5);
+	CHECK(memcmp(s.bits, t.bits, bytes) == 0);
+	if (memcmp(s.bits, t.bits, bytes)) printf("  sliced green %dx%d %d-bit half %d: pixels differ\n", w, h, depth, half);
+	free(work);
+	sfree(&s);
+	sfree(&t);
+}
+
 /* Draws a 160 view at 8 bits only to check it has no gaps. */
 static void gap160(const RenderView *v, const RenderArt *a)
 {
@@ -420,6 +533,40 @@ int main(int argc, char **argv)
 	poses(&v, &art[0], 1, 8, 0, 0);
 	poses(&v, &art[0], 2, 4, 1, "h4-tee");
 	poses(&v, &art[0], 2, 2, 1, 0);
+
+	/* Drawn in slices, the same as in one go: 160 and 320, half size, 2, 8 and 16 bits (8 turned to 16), tall. */
+	{
+		RenderView fv = v;
+		int q;
+		fv.ball = vec2_make(Y(pos[1].x), Y(pos[1].y));
+		fv.aim = toward(fv.ball, h.pins[0]);
+		for (q = 0; q < 2; q++) {
+			const RenderView *w = q ? &fv : &v;
+			sliced(w, &art[0], 160, 160, 1, 2, 0, 1);
+			sliced(w, &art[0], 160, 160, 1, 2, 0, 7);
+			sliced(w, &art[0], 160, 160, 1, 8, 0, 3);
+			sliced(w, &art[0], 160, 160, 1, 1, 0, 3);
+			sliced(w, &art[0], 160, 160, 1, 4, 0, 3);
+			sliced(w, &art[1], 320, 320, 2, 8, 0, 1);
+			sliced(w, &art[1], 320, 320, 2, 8, 0, 5);
+			sliced(w, &art[0], 320, 320, 2, 2, 1, 1);
+			sliced(w, &art[0], 320, 320, 2, 8, 1, 4);
+			sliced(w, &art[0], 320, 320, 2, 4, 1, 2);
+			sliced(w, &art[1], 320, 448, 2, 8, 0, 2);
+		}
+		fv.green = 1;
+		fv.ball = vec2_make(h.pins[0].x - (2L << 16), h.pins[0].y - (7L << 16));
+		fv.aim = toward(fv.ball, h.pins[0]);
+		sliced_green(&fv, 160, 160, 1, 2, 0);
+		sliced_green(&fv, 160, 160, 1, 1, 0);
+		sliced_green(&fv, 320, 320, 2, 8, 0);
+		sliced_green(&fv, 320, 320, 2, 4, 1);
+		sliced_green(&fv, 320, 448, 2, 8, 0);
+		fv.ball = vec2_make(h.pins[0].x - (12L << 16), h.pins[0].y - (25L << 16));
+		fv.aim = toward(fv.ball, h.pins[0]);
+		sliced_green(&fv, 160, 160, 1, 2, 0);
+		sliced_green(&fv, 320, 320, 2, 2, 1);
+	}
 
 	/* Odd cameras: off the side looking out of bounds, past the far end, in a corner looking back. */
 	{

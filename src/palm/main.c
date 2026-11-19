@@ -47,6 +47,7 @@ static UInt32 gHeapStart;      /* free dynamic heap at launch */
 #define kSaveType    'Save'
 #define PIC_SCENE    0xFFFF     /* gBgPic when the kept copy holds the scene */
 #define PIC_MAP      0xFFFE     /* or the map of a shot, to fade the next scene in from */
+#define NEXT_MAP_MS  80         /* the next view drawn this long a frame while the ball moves on the map */
 #define FADE_MS      320        /* the fade between the scene and a shot on the map */
 #define PREP_MS      60         /* the shot's map drawn this long a frame while the ball flies in the scene */
 /* App preferences: the computer golfers' shots setting (one byte, backed
@@ -78,7 +79,7 @@ static Boolean gFadeHold;      /* the next scene frame fades in from the picture
 static RenderStats gStats;
 static UInt32 gDrawTicks, gMapTicks;
 /* the shot view: its map, the whole fade and the slowest fade step, in ticks */
-static UInt32 gFadeStep, gGapTicks, gLastFrame;
+static UInt32 gFadeStep, gFadeAll, gGapTicks, gLastFrame;
 /* ticks and counts of meter and flight frames, and ticks for the last shot's physics */
 static UInt32 gMtrTicks, gMtrN, gFlyTicks, gFlyN, gSimTicks;
 /* the last swing: the key or tap, its first meter frame on the screen, the meter's clock starting and the longest gap between meter frames, in ticks;
@@ -302,12 +303,10 @@ static Boolean RedrawLines(void)
 	return true;
 }
 
-#ifdef DEBUG
 static UInt32 Ticks(void)
 {
 	return TimGetTicks();
 }
-#endif
 
 static UInt32 FreeHeap(void)
 {
@@ -575,10 +574,13 @@ static void GolferLock(UInt16 sc)
 	}
 }
 
+static void NextDrop(void);
+
 static void PlayEnd(void)
 {
 	LocalID id;
 
+	NextDrop();
 	ScreenSpareDrop();
 	if (gGridH) MemHandleUnlock(gGridH);
 	if (gHoleH) MemHandleUnlock(gHoleH);
@@ -856,7 +858,9 @@ static Int16 ViewRows(void)
 static void Fade(void)
 {
 #ifdef DEBUG
+	UInt32 t0 = TimGetTicks();
 	gFadeStep = ScreenDissolve(ViewRows(), FADE_MS);
+	gFadeAll = TimGetTicks() - t0;
 #else
 	ScreenDissolve(ViewRows(), FADE_MS);
 #endif
@@ -879,8 +883,29 @@ static UInt32 NowMs(void)
 	return (t / tps) * 1000 + (t % tps) * 1000 / tps;
 }
 
+/* The next shot's scene, drawn ahead on the spare surface in slices while
+ * a result shows (NextPrep), with its own art locks, work memory and
+ * golfer box. gNext: 0 nothing yet, 1 drawing, 2 done, 3 none for this
+ * result. At 1 and 2 the spare surface is the draw ahead's and MapPrep
+ * leaves it alone; NextStart only takes it once the shot's map is done
+ * with it (NextRoom). */
+static UInt8 gNext;
+static RenderView gNextView;
+static RenderArt gNextArt;
+static MemHandle gNextHs[RENDER_TYPES * RENDER_VARIANTS * RENDER_SIZES + 3];
+static UInt16 gNextN;
+static void *gNextWork;
+static RenderGolfer gNextGolf;
+static UInt32 gNextTicks;      /* drawing it so far */
+#ifdef DEBUG
+static UInt32 gStopTicks;      /* when the ball stopped (the result's first frame) */
+static UInt32 gT[5];           /* the switch's times: start, view copied, kept, first frame done, the stop */
+static UInt32 gNextShow, gNextLeft, gNextAhead, gNextFly, gNextFlyN, gNextFlyN0;    /* to the scene on the screen, finishing it then, drawn ahead, drawn by the ball stopping (ticks), slices by then and in all */
+#endif
+
 static void SceneRender(void);
 static void PlayAct(int f);
+static void NextPrep(void);
 
 /* Plays what the core queued; the birds only on the scene while playing. */
 static void Sound(void)
@@ -932,7 +957,7 @@ static void MapPrep(void)
 {
 	static Int16 rows;
 	static UInt32 done, spent;
-	Surface *m = ScreenSpare();
+	Surface *m = gNext == 1 || gNext == 2 ? NULL : ScreenSpare();    /* not while the draw ahead holds it */
 	UInt32 t0, d, want = (UInt32)PREP_MS * SysTicksPerSecond() / 1000, r;
 
 	if (!m) {
@@ -995,8 +1020,12 @@ static void PlayFrame(void)
 		f = play_frame(&gPlay, &gS, NULL, NowMs());
 		if (f & PL_DIRTY) ScreenShow(&gPlay.dirty);
 		f &= ~PL_DIRTY;
-		if (f & ~PL_ANIM) PlayAct(f);
-		else gAnim = (f & PL_ANIM) != 0;
+		if (f & ~PL_ANIM) {
+			PlayAct(f);
+		} else {
+			gAnim = (f & PL_ANIM) != 0;
+			NextPrep();
+		}
 		return;
 	}
 	if (gPlay.view != PLAY_SCENE) return;
@@ -1054,6 +1083,7 @@ static void PlayFrame(void)
 	gLastPrep = 0;
 #endif
 	if (play_map_wanted(&gPlay)) MapPrep();
+	else if (gPlay.state == PS_FLY || gPlay.state == PS_RESULT || gNext) NextPrep();    /* the next view drawn ahead */
 	else if (gPlay.mprep == 3) ScreenSpareDrop();    /* the shot stays in the scene */
 #ifdef DEBUG
 	SimTime(st, t0);
@@ -1102,27 +1132,274 @@ static void PlayStatus(void)
 	          gSwClock ? (gSwClock - gSwKey) * 1000 / tps : 0, gSwPos, gSwGap * 1000 / tps);
 	gfx_fill(&gS, 0, 24 * gS.scale, (Int16)(StrLen(t) * 8 * gS.scale), 8 * gS.scale, UIC_BLACK);
 	gfx_text(&gS, 0, 24 * gS.scale, t, StrLen(t), UIC_WHITE);
+	/* the last shot's next scene, in ms: from the ball stopping to it on the screen, finishing it then, drawn ahead */
+	StrPrintF(t, "n%lu f%lu a%lu", gNextShow * 1000 / tps, gNextLeft * 1000 / tps, gNextAhead * 1000 / tps);
+	gfx_fill(&gS, 0, 32 * gS.scale, (Int16)(StrLen(t) * 8 * gS.scale), 8 * gS.scale, UIC_BLACK);
+	gfx_text(&gS, 0, 32 * gS.scale, t, StrLen(t), UIC_WHITE);
+	/* drawn by the ball stopping in ms, slices by then and in all, and from the stop to the switch; then the
+	 * switch's parts: finishing and copying the view, keeping it, its first frame with the fade, and the fade alone */
+	StrPrintF(t, "y%lu s%lu/%lu h%lu", gNextFly * 1000 / tps, gNextFlyN0, gNextFlyN, (gT[0] - gT[4]) * 1000 / tps);
+	gfx_fill(&gS, 0, 40 * gS.scale, (Int16)(StrLen(t) * 8 * gS.scale), 8 * gS.scale, UIC_BLACK);
+	gfx_text(&gS, 0, 40 * gS.scale, t, StrLen(t), UIC_WHITE);
+	StrPrintF(t, "u%lu k%lu p%lu d%lu", (gT[1] - gT[0]) * 1000 / tps, (gT[2] - gT[1]) * 1000 / tps, (gT[3] - gT[2]) * 1000 / tps, gFadeAll * 1000 / tps);
+	gfx_fill(&gS, 0, 48 * gS.scale, (Int16)(StrLen(t) * 8 * gS.scale), 8 * gS.scale, UIC_BLACK);
+	gfx_text(&gS, 0, 48 * gS.scale, t, StrLen(t), UIC_WHITE);
 #else
 	play_status(&gS, &gPlay, NULL);
 #endif
 }
 
+#define ART_MAX (RENDER_TYPES * RENDER_VARIANTS * RENDER_SIZES + 3)
+
+/* Locks the sprites and backdrop for the scene at scale sc (handles in hs
+ * for ArtFree). */
+static void ArtLock(RenderArt *art, MemHandle *hs, UInt16 *n, UInt16 sc)
+{
+	UInt16 t, v, k, s = gCourseHdr.scenery;
+
+	MemSet(art, sizeof(*art), 0);
+	*n = 0;
+	/* the course style's sprites (tools/mkstyle.py), else the shared ones;
+	 * a variant the style doesn't have is left out and render.c uses the first */
+	for (t = 0; t < RENDER_TYPES; t++)
+		for (v = 0; v < RENDER_VARIANTS; v++)
+			for (k = 0; k < RENDER_SIZES; k++) {
+				if (s) LockArt(&art->spr[t][v][k], 'Spr8', 3000 + 200 * s + 10 * t + 2 * v + k, hs, n);
+				if (!art->spr[t][v][k].p && !v) LockArt(&art->spr[t][v][k], 'Spr8', 1000 + t * 10 + k, hs, n);
+			}
+	/* the course's backdrop, or the first one if it's not in this build */
+	LockArt(&art->backdrop, 'Bkd8', 1000 + 10 * s + sc - 1, hs, n);
+	if (!art->backdrop.p) LockArt(&art->backdrop, 'Bkd8', 1000 + sc - 1, hs, n);
+}
+
+static void ArtFree(MemHandle *hs, UInt16 *n)
+{
+	UInt16 k;
+	for (k = 0; k < *n; k++) {
+		MemHandleUnlock(hs[k]);
+		DmReleaseResource(hs[k]);
+	}
+	*n = 0;
+}
+
+/* Lets go of the scene drawn ahead. */
+static void NextDrop(void)
+{
+	if (gNext == 1 || gNext == 2) ScreenSpareDrop();
+	ArtFree(gNextHs, &gNextN);
+	if (gNextWork) MemPtrFree(gNextWork);
+	if (gNextGolf.under) MemPtrFree(gNextGolf.under);
+	gNextWork = NULL;
+	gNextGolf.under = NULL;
+	gNext = 0;
+}
+
+/* No view drawn ahead for this result: lets go of what was taken. */
+static void NextFail(void)
+{
+	NextDrop();
+	ScreenSpareDrop();
+	gNext = 3;
+}
+
+/* Starts the next scene on the spare surface, if it's known and there's
+ * memory for it. */
+static void NextStart(void)
+{
+	Surface *m;
+	UInt16 sc = gS.half ? 1 : gS.scale;
+	int ok;
+
+	/* a shot's map that wasn't used (NextRoom only lets this happen once the map is done with the spare) */
+	ScreenSpareDrop();
+	gNext = 3;
+#ifdef NO_AHEAD
+	return;    /* for timing against */
+#endif
+	if (!gS.bits || !play_next_view(&gPlay, &gNextView)) return;
+	m = ScreenSpare();
+	gNextWork = MemPtrNew(render_work_size(&gS));
+	gNextTicks = 0;
+#ifdef DEBUG
+	gNextFlyN = 0;
+#endif
+	if (!m || !gNextWork) {
+		NextFail();
+		return;
+	}
+	if (gNextView.green) {
+		/* the green view: no art or golfer */
+		gNext = 1;
+		if (render_green_begin(m, &gNextView, gNextWork) < 0) NextFail();
+		return;
+	}
+	/* the golfer's frames, if no scene has locked them yet (a round continued on the green) */
+	if (!gGolf.pose[POSE_ADDRESS].p) GolferLock(sc);
+	gNextGolf = gGolf;
+	gNextGolf.under = gGolf.under ? MemPtrNew(gUnderLen) : NULL;
+	gNextGolf.w = 0;
+	gNext = 1;
+	if (!gNextGolf.under) {
+		NextFail();
+		return;
+	}
+	ArtLock(&gNextArt, gNextHs, &gNextN, sc);
+	gNextArt.golfer = &gNextGolf;
+#ifdef DEBUG
+	render_clock(Ticks);
+	ok = render_scene_begin(m, &gNextView, &gNextArt, gNextWork, &gStats);
+#else
+	ok = render_scene_begin(m, &gNextView, &gNextArt, gNextWork, NULL);
+#endif
+	if (ok < 0) NextFail();
+}
+
+/* Whether the next view can be drawn ahead now: 2 flat out (nothing moves
+ * while a result holds), 1 a slice a frame (the ball on the map, or in the
+ * scene with no map for it on the spare surface), 0 not now. */
+static UInt8 NextRoom(void)
+{
+	if (gPlay.state == PS_RESULT) return 2;
+	if (gPlay.state != PS_FLY) return 0;
+	if (gPlay.view == PLAY_MAP) return gPlay.onmap;
+	return gPlay.mprep == 3 || (!gPlay.mprep && !play_map_wanted(&gPlay));
+}
+
+/* A slice of the next view of about ms. */
+static void NextSlice(UInt16 ms)
+{
+	UInt32 t0 = TimGetTicks(), until = t0 + (UInt32)ms * SysTicksPerSecond() / 1000;
+	if ((gNextView.green ? render_green_step(gNextWork, Ticks, until) : render_scene_step(gNextWork, Ticks, until)) == 1) gNext = 2;
+	gNextTicks += TimGetTicks() - t0;
+#ifdef DEBUG
+	gLastPrep = TimGetTicks() - t0;
+	gNextFlyN++;
+#endif
+}
+
+/* From the swing on: the next view drawn ahead, a slice a frame while the
+ * ball moves, then flat out while the result holds, stopping between
+ * slices for a key, a tap or anything else that comes in. */
+static void NextPrep(void)
+{
+	UInt8 room = NextRoom();
+
+#ifdef DEBUG
+	if (gPlay.state == PS_RESULT && !gStopTicks) {
+		gStopTicks = TimGetTicks();
+		gNextFly = gNext == 1 || gNext == 2 ? gNextTicks : 0;
+		gNextFlyN0 = gNextFlyN;
+	}
+#endif
+	if (!room) {
+		if (gNext && gPlay.state != PS_FLY) NextDrop();
+		return;
+	}
+	if (!gNext) NextStart();
+	if (gNext != 1) return;
+	if (!ScreenSpareHas()) {
+		/* the spare went (a resize) */
+		NextDrop();
+		gNext = 3;
+		return;
+	}
+	if (room == 1) {
+		NextSlice(gPlay.view == PLAY_MAP ? NEXT_MAP_MS : PREP_MS);
+		return;
+	}
+	do {
+		Sound();
+		NextSlice(PREP_MS);
+	} while (gNext == 1 && !EvtSysEventAvail(true) && !EvtEventAvail());
+}
+
+/* Puts the scene drawn ahead in gS, finishing it first if it isn't done,
+ * if it's the view play wants. Returns 0 if there's none to use. */
+static Boolean NextUse(void)
+{
+	Surface *m = ScreenSpareHas();
+	UInt8 *u;
+	UInt32 t0 = TimGetTicks();
+	const RenderView *a = &gNextView, *b = &gPlay.rv;
+
+	if ((gNext != 1 && gNext != 2) || !m || a->hole != b->hole || a->grid != b->grid || a->ball.x != b->ball.x ||
+	    a->ball.y != b->ball.y || a->aim != b->aim || a->pin != b->pin || a->green != b->green) {
+		if (gNext) NextDrop();
+		return false;
+	}
+	if (gNext == 1 && a->green) render_green_step(gNextWork, NULL, 0);
+	else if (gNext == 1) render_scene_step(gNextWork, NULL, 0);
+	MemMove(gS.bits, m->bits, (Int32)gS.rowBytes * gS.h);
+	if (!a->green) {
+		/* the golfer and the pixels under him as drawn there */
+		u = gGolf.under;
+		gGolf = gNextGolf;
+		gNextGolf.under = u;
+		gPlay.golf = &gGolf;
+	}
+#ifdef DEBUG
+	else MemSet(&gStats, sizeof(gStats), 0);
+#endif
+	gNextTicks += TimGetTicks() - t0;
+#ifdef DEBUG
+	gDrawTicks = gNextTicks;
+	gNextLeft = TimGetTicks() - t0;
+	gNextAhead = gNextTicks - gNextLeft;
+#endif
+	NextDrop();
+	return true;
+}
+
 /* Draws the scene with the art resources locked and the work memory
- * borrowed for the draw, or the green view, which needs neither. */
+ * borrowed for the draw, or the green view, which needs neither; or puts
+ * in the one drawn ahead. */
 static void SceneRender(void)
 {
 	RenderArt art;
-	MemHandle hs[RENDER_TYPES * RENDER_VARIANTS * RENDER_SIZES + 3];
-	UInt16 n = 0, t, v, k, sc, s = gCourseHdr.scenery;
+	MemHandle hs[ART_MAX];
+	UInt16 n = 0, sc;
 	void *work;
 	UInt32 fr;
+	Boolean ahead;
 #ifdef DEBUG
 	UInt32 t0;
 #endif
 
+	if (!gS.bits) {
+		NextDrop();
+		ScreenSpareDrop();
+		return;
+	}
+	ahead = gNext == 2;
+#ifdef DEBUG
+	gT[0] = TimGetTicks();
+#endif
+	if (NextUse()) {
+#ifdef DEBUG
+		gT[1] = TimGetTicks();
+#endif
+		KeepScene();
+#ifdef DEBUG
+		gT[2] = TimGetTicks();
+#endif
+		/* drawn ahead, it's there at once: keys stay, so the gate still knows a press held from the result;
+		 * taps go, so a double tap on the skip doesn't reach the aim view */
+		EvtFlushPenQueue();
+		if (!ahead) {
+			EvtFlushKeyQueue();
+			gate_flush(&gGate);
+		}
+		PlayFrame();
+#ifdef DEBUG
+		gT[3] = TimGetTicks();
+		gT[4] = gStopTicks;
+		if (gStopTicks) gNextShow = TimGetTicks() - gStopTicks;
+		gStopTicks = 0;
+#endif
+		return;
+	}
 	/* a shot's map that wasn't used isn't kept through the draw */
 	ScreenSpareDrop();
-	if (!gS.bits) return;
 	if (gPlay.rv.green) {
 #ifdef DEBUG
 		t0 = TimGetTicks();
@@ -1137,25 +1414,20 @@ static void SceneRender(void)
 		EvtFlushKeyQueue();
 		gate_flush(&gGate);
 		PlayFrame();
+#ifdef DEBUG
+		if (gStopTicks) gNextShow = TimGetTicks() - gStopTicks;
+		gStopTicks = 0;
+		gNextLeft = gDrawTicks;
+		gNextAhead = 0;
+#endif
 		return;
 	}
-	MemSet(&art, sizeof(art), 0);
-	/* the course style's sprites (tools/mkstyle.py), else the shared ones;
-	 * a variant the style doesn't have is left out and render.c uses the first */
-	for (t = 0; t < RENDER_TYPES; t++)
-		for (v = 0; v < RENDER_VARIANTS; v++)
-			for (k = 0; k < RENDER_SIZES; k++) {
-				if (s) LockArt(&art.spr[t][v][k], 'Spr8', 3000 + 200 * s + 10 * t + 2 * v + k, hs, &n);
-				if (!art.spr[t][v][k].p && !v) LockArt(&art.spr[t][v][k], 'Spr8', 1000 + t * 10 + k, hs, &n);
-			}
 	/* the golfer and backdrop for the scale the scene is drawn at */
 	sc = gS.half ? 1 : gS.scale;
+	ArtLock(&art, hs, &n, sc);
 	GolferLock(sc);
 	art.golfer = &gGolf;
 	gPlay.golf = &gGolf;
-	/* the course's backdrop, or the first one if it's not in this build */
-	LockArt(&art.backdrop, 'Bkd8', 1000 + 10 * gCourseHdr.scenery + sc - 1, hs, &n);
-	if (!art.backdrop.p) LockArt(&art.backdrop, 'Bkd8', 1000 + sc - 1, hs, &n);
 	gGolf.w = 0;    /* no golfer box until render_scene sets one */
 	work = MemPtrNew(render_work_size(&gS));
 	fr = FreeHeap();
@@ -1173,16 +1445,19 @@ static void SceneRender(void)
 	} else {
 		gfx_fill(&gS, 0, 0, gS.w, gS.h, UIC_BLACK);
 	}
-	for (k = 0; k < n; k++) {
-		MemHandleUnlock(hs[k]);
-		DmReleaseResource(hs[k]);
-	}
+	ArtFree(hs, &n);
 	KeepScene();
 	/* taps and keys made while it drew are dropped */
 	EvtFlushPenQueue();
 	EvtFlushKeyQueue();
 	gate_flush(&gGate);
 	PlayFrame();
+#ifdef DEBUG
+	if (gStopTicks) gNextShow = TimGetTicks() - gStopTicks;
+	gStopTicks = 0;
+	gNextLeft = gDrawTicks;
+	gNextAhead = 0;
+#endif
 }
 
 /* The first view of a turn: the scene with the turn panel while it draws,
@@ -1201,6 +1476,8 @@ static void PlayAct(int f)
 {
 	/* sounds start before any long draw */
 	Sound();
+	/* anything but the next scene: no scene drawn ahead is wanted, and the next result looks again */
+	if (gNext && (f & (PL_BACK | PL_NEXT | PL_CARD | PL_MAP | PL_SCENE))) NextDrop();
 	if (!gS.bits) return;
 	if (f & (PL_BACK | PL_NEXT | PL_CARD)) gFadeBack = false;
 	if (f & PL_BACK) {
@@ -1389,6 +1666,7 @@ static void Resized(void)
 	Int16 r;
 
 	if (gQuitting) return;
+	NextDrop();
 	r = ScreenResize();
 	if (r == SCREEN_FAILED) {
 		ScreenLost();

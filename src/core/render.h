@@ -116,6 +116,16 @@ int SEC_RENDER render_pose(Surface *s, const RenderGolfer *g, uint8_t pose, uint
  * Returns 0, or -1 if the surface isn't 160 or 320 wide. */
 int SEC_RENDER render_scene(Surface *s, const RenderView *v, const RenderArt *a,
                             void *work, RenderStats *stats);
+/* render_scene in slices, to draw the next scene while something else
+ * shows. render_scene_begin sets the draw up in work (render_work_size
+ * bytes; v is copied, s's pixels, the hole, the grid, a and what it points
+ * to have to stay put until it's done). Each render_scene_step then draws
+ * on, stage by stage and a depth step, 8 sky rows or an object at a time,
+ * until clock() reaches until (at least one piece a call), or to the end
+ * if clock is 0. Returns 1 once the scene is as render_scene draws it, 0
+ * while there's more. begin returns -1 if s won't do. */
+int SEC_RENDER render_scene_begin(Surface *s, const RenderView *v, const RenderArt *a, void *work, RenderStats *stats);
+int SEC_RENDER render_scene_step(void *work, RenderClock clock, uint32_t until);
 /* Sets the clock render_scene times its stages with, or 0 for none. */
 void SEC_RENDER render_clock(RenderClock fn);
 /* Draws the whole hole from above into the view area, scaled to fit with
@@ -143,6 +153,11 @@ int SEC_RENDER render_map_rows(Surface *s, const RenderView *v, const MapBox *bo
  * steep so the slope reads, the cup and the flag. The ball is left to the
  * caller. Returns 0, or -1 if the surface isn't 160 or 320 wide. */
 int SEC_RENDER render_green(Surface *s, const RenderView *v);
+/* render_green in slices, as render_scene_begin and _step: work holds
+ * render_work_size bytes, s's pixels, the hole and the grid stay put until
+ * it's done, a row of cells at a time. */
+int SEC_RENDER render_green_begin(Surface *s, const RenderView *v, void *work);
+int SEC_RENDER render_green_step(void *work, RenderClock clock, uint32_t until);
 /* The camera for the view on surface s: render_scene's, or render_green's
  * if v->green is set. */
 void SEC_RENDER render_camera(const Surface *s, const RenderView *v, RenderCam *c);

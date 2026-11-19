@@ -384,13 +384,50 @@ static int load_course(const char *path, Course *c)
 	return 1;
 }
 
-/* Frames from t until the state changes or the view wants drawing again, as the platform's loop. */
+/* play_next_view during each result against the scene asked for after it:
+ * views drawn ahead, ones that matched, and scenes asked for with none ahead. */
+static int ahead_n, ahead_ok, ahead_none, ahead_fly;
+/* the view play_next_view gave during the flight, to match the result's */
+static int fly_have;
+static RenderView fly_v;
+
+/* Frames from t until the state changes or the view wants drawing again,
+ * as the platform's loop; a scene drawn ahead during a result has to be
+ * the one asked for next. */
 static int run(Play *p, Surface *s, Surface *bg, uint32_t *t, uint8_t until_not)
 {
-	int f = 0, k;
+	int f = 0, k, have = 0;
+	RenderView v;
 	for (k = 0; k < 4000 && p->state == until_not; k++) {
+		uint8_t st = p->state;
+		if (st == PS_FLY && !have) {
+			fly_have = have = play_next_view(p, &fly_v) ? 1 : -1;
+		}
+		if (st == PS_RESULT && !have) {
+			have = play_next_view(p, &v) ? 1 : -1;
+			if (have > 0) ahead_n++;
+			if (fly_have) {
+				CHECK(fly_have == have);
+				if (fly_have > 0 && have > 0)
+					CHECK(fly_v.hole == v.hole && fly_v.grid == v.grid && fly_v.ball.x == v.ball.x && fly_v.ball.y == v.ball.y &&
+					      fly_v.aim == v.aim && fly_v.pin == v.pin && fly_v.green == v.green);
+				ahead_fly++;
+				fly_have = 0;
+			}
+		}
 		*t += 20;
 		f = play_frame(p, s, bg, *t);
+		if (st == PS_RESULT && have && (f & PL_RENDER)) {
+			if (have > 0) {
+				int same = p->rv.hole == v.hole && p->rv.grid == v.grid && p->rv.ball.x == v.ball.x && p->rv.ball.y == v.ball.y &&
+				           p->rv.aim == v.aim && p->rv.pin == v.pin && p->rv.green == v.green;
+				CHECK(same);
+				ahead_ok += same;
+			} else if (!p->cpu) {
+				ahead_none++;
+			}
+		}
+		if (st == PS_RESULT && have > 0 && p->state != PS_RESULT && !(f & PL_RENDER)) CHECK(!"drawn ahead for no scene");
 		if (f & (PL_RENDER | PL_CARD | PL_BACK)) break;
 	}
 	return f;
@@ -2070,6 +2107,8 @@ int main(int argc, char **argv)
 	front_tests();
 	round_tests(argv[1]);
 	sound_tests();
+	printf("next scene drawn ahead: %d of %d matched, %d scenes not drawn ahead, %d known in flight\n", ahead_ok, ahead_n, ahead_none, ahead_fly);
+	CHECK(ahead_n > 0 && ahead_ok == ahead_n && ahead_fly > 0);
 	printf("rules-test: %d checks, %d failed\n", checks, fails);
 	return fails != 0;
 }

@@ -683,8 +683,12 @@ UInt32 ScreenDissolve(Int16 y1, UInt16 ms)
 		Blit(&u);
 		d = TimGetTicks() - ts;
 		if (d > worst) worst = d;
-		/* a slow first step: the rest in 3 */
-		if (!k && d > 2 * per) step = 5;
+		/* a slow first step: the rest in as many as fit the time, at least 1 */
+		if (!k && d > per) {
+			UInt32 rest = d < 8 * per ? (8 * per - d) / d : 1;
+			if (rest < 1) rest = 1;
+			step = (UInt8)(rest >= 7 ? 2 : (14 + rest - 1) / rest);
+		}
 		lo = hi;
 		k++;
 	}

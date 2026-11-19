@@ -1204,6 +1204,50 @@ static int SEC_UI next(Play *p)
 	return PL_RENDER;
 }
 
+int play_next_view(const Play *p, RenderView *v)
+{
+	const Shot *sh = &p->shot;
+	const Hole *h = p->rv.hole;
+	vec2 ball = sh->stop, to = h->pins[p->rv.pin & 3];
+	uint8_t lie = sh->lie, stroke;
+	uint16_t yd;
+
+	/* as apply and next would have it, with nothing changed */
+	if ((p->state != PS_FLY && p->state != PS_RESULT) || p->applied || !p->have_shot || (p->round && MODE_PRACTICE(p->round->mode)) || sh->result == SHOT_HOLED) return 0;
+	stroke = (uint8_t)(p->stroke + (sh->result == SHOT_OK ? 1 : 2));
+	if (lie == LIE_GREEN && ((vec2_len(vec2_sub(to, ball)) * 3 + FIX_HALF) >> 16) <= PLAY_GIMME_FT) return 0;
+	if (p->cpu && stroke > h->par + 4) return 0;
+	if (p->round) {
+		Round r = *p->round;
+		RoundPlayer *rp = &r.pl[p->cur];
+		int n;
+		rp->ball = ball;
+		rp->lie = lie;
+		rp->taken = (uint8_t)(stroke - 1);
+		n = rules_next(&r, to);
+		if (n >= 0 && (n != p->cur || p->cpu)) {
+			/* another player's turn: only a person's, whose aim is known */
+			rp = &r.pl[n];
+			if (rp->cpu || r.mode == MODE_GREEN) return 0;
+			if (rp->taken) {
+				ball = rp->ball;
+				lie = rp->lie;
+			} else {
+				ball = h->tees[h->tee].pos;
+				lie = LIE_TEE;
+			}
+		}
+	}
+	/* as setup: aimed at the pin, or the hole's aim point from the tee; the putter has the green view */
+	yd = (uint16_t)((vec2_len(vec2_sub(to, ball)) + FIX_HALF) >> 16);
+	if (ball.x == h->tees[h->tee].pos.x && ball.y == h->tees[h->tee].pos.y) to = h->aim;
+	*v = p->rv;
+	v->ball = ball;
+	v->aim = vec2_angle(vec2_sub(to, ball));
+	v->green = lie == LIE_GREEN || lie == LIE_FRINGE || ball_pick(yd, lie) == CLUB_PT;
+	return 1;
+}
+
 #ifdef DEBUG
 int play_debug_green(Play *p)
 {

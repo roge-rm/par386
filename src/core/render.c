@@ -90,6 +90,34 @@ typedef struct {
 	RenderStats *st;
 } R;
 
+/* A scene being drawn (render_scene_begin and _step), at the start of the
+ * work memory: where each stage got to. */
+typedef struct {
+	R r;
+	RenderStats local;          /* the stats when the caller wants none */
+	RenderView v;
+	Surface s;                  /* the surface asked for */
+	Surface d;                  /* the one drawn into: s, or its top left quarter at half size */
+	const RenderArt *a;
+	int32_t bh;                 /* the ground at the ball, heightmap byte steps */
+	fixed z, zl;                /* terrain: the next depth step and the last */
+	uint16_t step;
+	uint8_t on;                 /* objects given their clip columns so far */
+	uint8_t stage;              /* JS_* */
+	uint8_t half;
+	int16_t y, ymax, bw, bh2, btop, off;    /* sky: the next row, where the sky ends, the backdrop */
+	uint32_t pos;               /* the backdrop's next packed row */
+	int16_t k;                  /* objects still to draw */
+} Job;
+
+enum { JS_GATHER, JS_TERRAIN, JS_SKY, JS_OBJECTS, JS_GOLFER, JS_DOUBLE, JS_DONE };
+
+/* Whether a slice's time is up. */
+static int SEC_RENDER late(RenderClock clk, uint32_t until)
+{
+	return clk && (int32_t)(clk() - until) >= 0;
+}
+
 /* a * q / 16384 for a 2.14 q, as fix_mulq14 but in this segment. */
 static fixed SEC_RENDER mulq(fixed a, int16_t q)
 {
@@ -669,14 +697,15 @@ static void SEC_RENDER far_span(R *r, int16_t xx, int16_t y, int16_t ye, uint8_t
 	if (wf & WF_EDGE) bank_line(r, xx, y, ye, pair);
 }
 
-static void SEC_RENDER terrain(R *r)
+static int SEC_RENDER terrain(Job *j, RenderClock clk, uint32_t until)
 {
+	R *r = &j->r;
 	const Hole *h = r->h;
 	const SurfaceGrid *g = r->g;
-	fixed z = near_start(r), zl = z;
-	uint8_t on = 0, dith = r->lg == 3, ks = (uint8_t)(SEG_SHIFT + (r->scale > 1));
+	fixed z = j->z, zl = j->zl;
+	uint8_t on = j->on, dith = r->lg == 3, ks = (uint8_t)(SEG_SHIFT + (r->scale > 1));
 	int16_t sand_drop, water_drop, stripe = dith ? 12 : 18, seg;
-	uint16_t step = 0, rb = r->rb, gw = g->w, gh = g->h, gs = g->stride;
+	uint16_t step = j->step, rb = r->rb, gw = g->w, gh = g->h, gs = g->stride;
 	int16_t *ybuf = r->ybuf;
 	uint8_t *prevs = r->prev;
 	const uint8_t *cells = g->cells;
@@ -943,8 +972,17 @@ static void SEC_RENDER terrain(R *r)
 		 * z / 21 from 32 yards and z / 11 from 160, where a step is under a row. */
 		if (z < (32L << 16)) z += r->scale > 1 ? (z >> 5) + (z >> 7) : z < (NEAR_Z << 16) ? (z >> 4) + (z >> 5) : (z >> 4);
 		else z += z < (160L << 16) ? (z >> 5) + (z >> 6) : (z >> 4) + (z >> 5);
+		if (late(clk, until) && z < Z_FAR) {
+			/* time's up: the march goes on from here next call */
+			j->z = z;
+			j->zl = zl;
+			j->on = on;
+			j->step = step;
+			return 0;
+		}
 	}
 	while (on < r->nobj) snap(r, &r->obj[on++]);
+	return 1;
 }
 #undef SHADE
 
@@ -987,11 +1025,11 @@ static int SEC_RENDER unpack_row(const uint8_t *d, uint32_t len, uint32_t *pos, 
 }
 
 /* Sky, the backdrop strip and far haze above the terrain in each column. */
-static void SEC_RENDER sky(R *r, const RenderData *bk, angle aim)
+/* Where the sky ends and where the backdrop goes, for sky. */
+static void SEC_RENDER sky_start(Job *j, const RenderData *bk, angle aim)
 {
-	int16_t x, y, ymax = 0, bw = 0, bh = 0, btop = 0, off = 0;
-	uint32_t pos = 4;
-	uint8_t dith = r->lg == 3;
+	R *r = &j->r;
+	int16_t x, ymax = 0, bw = 0, bh = 0, btop = 0, off = 0;
 
 	for (x = 0; x < r->w; x++)
 		if (r->ybuf[x] > ymax) ymax = r->ybuf[x];
@@ -1005,10 +1043,34 @@ static void SEC_RENDER sky(R *r, const RenderData *bk, angle aim)
 		while (off >= bw && bw) off -= bw;
 		btop = r->yh + 2 * r->scale - bh;
 	}
-	for (y = 0; y < ymax; y++) {
+	j->y = 0;
+	j->ymax = ymax;
+	j->bw = bw;
+	j->bh2 = bh;
+	j->btop = btop;
+	j->off = off;
+	j->pos = 4;
+}
+
+/* The sky rows from j->y down to where the ground starts, 8 rows between
+ * looks at the clock. Returns 1 when they're done. */
+static int SEC_RENDER sky(Job *j, const RenderData *bk, RenderClock clk, uint32_t until)
+{
+	R *r = &j->r;
+	int16_t x, y, y0 = j->y, ymax = j->ymax, bw = j->bw, bh = j->bh2, btop = j->btop, off = j->off;
+	uint32_t pos = j->pos;
+	uint8_t dith = r->lg == 3;
+
+	for (y = y0; y < ymax; y++) {
 		uint8_t *row = 0, *p;
 		int16_t sv = y < r->yh ? (int16_t)((int32_t)y * (16 * (PAL_SKY_N - 1)) / r->yh) : 16 * (PAL_SKY_N - 1);
 		int16_t sx;
+		if (y > y0 && !(y & 7) && late(clk, until)) {
+			j->y = y;
+			j->pos = pos;
+			j->bw = bw;
+			return 0;
+		}
 		if (bw && y >= btop && y < btop + bh) {
 			if (unpack_row(bk->p, bk->len, &pos, r->row, (uint16_t)bw, (uint16_t)(bw > r->w ? off : 0), (uint16_t)(bw > r->w ? off + r->w : bw)) == 0) row = r->row;
 			else bw = 0;
@@ -1064,6 +1126,7 @@ static void SEC_RENDER sky(R *r, const RenderData *bk, angle aim)
 			if (++sx >= bw) sx = 0;
 		}
 	}
+	return 1;
 }
 
 /* An object sprite or the pin, clipped by the y-buffer it was given. */
@@ -1292,7 +1355,8 @@ uint32_t render_work_size(const Surface *s)
 {
 	int half = s->half && s->scale == 2;
 	uint32_t w = (uint32_t)(half ? s->w >> 1 : s->w);
-	return w * 2 + w * 2 + WBOX_MAX * 8 + sizeof(RObj) * MAX_OBJ + w * POOL_COLS * 2 + BKD_MAX * (half ? 1 : s->scale) + 16;
+	return ((sizeof(Job) + 3) & ~3UL) + w * 2 + w * 2 + WBOX_MAX * 8 + sizeof(RObj) * MAX_OBJ + w * POOL_COLS * 2 +
+	       BKD_MAX * (half ? 1 : s->scale) + 16;
 }
 
 /* Half size drawing (Surface.half): a surface over the top left quarter of
@@ -1353,17 +1417,10 @@ static void SEC_RENDER double_up(Surface *s)
 	}
 }
 
-static int SEC_RENDER scene_draw(Surface *s, const RenderView *v, const RenderArt *a, void *work, RenderStats *stats);
-
 int render_scene(Surface *s, const RenderView *v, const RenderArt *a, void *work, RenderStats *stats)
 {
-	Surface h;
-	if (a->golfer) a->golfer->half = 0;
-	if (!half_of(s, &h)) return scene_draw(s, v, a, work, stats);
-	if (a->golfer) a->golfer->half = 1;
-	if (scene_draw(&h, v, a, work, stats) < 0) return -1;
-	double_up(s);
-	return 0;
+	if (render_scene_begin(s, v, a, work, stats) < 0) return -1;
+	return render_scene_step(work, 0, 0) < 0 ? -1 : 0;
 }
 
 int render_pose(Surface *s, const RenderGolfer *g, uint8_t pose, uint8_t ball,
@@ -1392,110 +1449,166 @@ int render_pose(Surface *s, const RenderGolfer *g, uint8_t pose, uint8_t ball,
 	return 0;
 }
 
-static int SEC_RENDER scene_draw(Surface *s, const RenderView *v, const RenderArt *a, void *work, RenderStats *stats)
+int render_scene_begin(Surface *s, const RenderView *v, const RenderArt *a, void *work, RenderStats *stats)
 {
-	R r;
-	RenderStats local;
-	uint8_t *wp = (uint8_t *)work;
-	int16_t x, y, bx, by;
+	Job *j = (Job *)work;
+	R *r;
+	uint8_t *wp;
+	Surface *d, hs;
+	int16_t x, y;
 	fixed groundz;
-	int32_t bh;
-	uint32_t t;
+	uint8_t half = (uint8_t)half_of(s, &hs);
 
-	if (fit(s, &r.vh) < 0) return -1;
-	r.st = stats ? stats : &local;
+	if (fit(half ? &hs : s, &y) < 0) return -1;
+	r = &j->r;
+	j->s = *s;
+	j->half = half;
+	j->d = half ? hs : *s;
+	d = &j->d;
+	j->v = *v;
+	j->a = a;
+	if (a->golfer) a->golfer->half = j->half;
+	fit(d, &r->vh);
+	r->st = stats ? stats : &j->local;
 	{
 		RenderStats z = { 0, 0, 0, 0, 0, 0, 0, 0, 0, { 0, 0, 0, 0, 0 } };
-		*r.st = z;
+		*r->st = z;
 	}
-	r.bits = s->bits;
-	r.rb = s->rowBytes;
-	r.w = s->w;
-	r.scale = s->scale;
-	r.yh = (int16_t)(HORIZON * s->scale + fit(s, &y));
-	r.f = (int16_t)(FOCAL * s->scale);
-	r.cx = s->w / 2;
-	r.lg = (uint8_t)(s->depth == 8 ? 3 : s->depth == 4 ? 2 : s->depth == 2 ? 1 : 0);
-	r.h = v->hole;
-	r.g = v->grid;
-	r.hw = r.h->hm_w;
-	r.hh = r.h->hm_h;
-	r.mx = (fixed)(r.hw - 1) << 16;
-	r.my = (fixed)(r.hh - 1) << 16;
+	r->bits = d->bits;
+	r->rb = d->rowBytes;
+	r->w = d->w;
+	r->scale = d->scale;
+	r->yh = (int16_t)(HORIZON * d->scale + fit(d, &y));
+	r->f = (int16_t)(FOCAL * d->scale);
+	r->cx = d->w / 2;
+	r->lg = (uint8_t)(d->depth == 8 ? 3 : d->depth == 4 ? 2 : d->depth == 2 ? 1 : 0);
+	r->h = v->hole;
+	r->g = v->grid;
+	r->hw = r->h->hm_w;
+	r->hh = r->h->hm_h;
+	r->mx = (fixed)(r->hw - 1) << 16;
+	r->my = (fixed)(r->hh - 1) << 16;
 
-	/* work: y-buffer, last surfaces, objects, clip pool, a backdrop row; ints first for alignment */
-	r.ybuf = (int16_t *)wp;
-	wp += (uint32_t)r.w * 2;
-	r.pool = (int16_t *)wp;
-	r.pool_size = (uint16_t)(r.w * POOL_COLS);
-	wp += (uint32_t)r.pool_size * 2;
-	r.obj = (RObj *)wp;
+	/* work after the job: y-buffer, last surfaces, objects, clip pool, a backdrop row; ints first for alignment */
+	wp = (uint8_t *)work + ((sizeof(Job) + 3) & ~3UL);
+	r->ybuf = (int16_t *)wp;
+	wp += (uint32_t)r->w * 2;
+	r->pool = (int16_t *)wp;
+	r->pool_size = (uint16_t)(r->w * POOL_COLS);
+	wp += (uint32_t)r->pool_size * 2;
+	r->obj = (RObj *)wp;
 	wp += sizeof(RObj) * MAX_OBJ;
-	r.prev = wp;
-	wp += r.w;
-	r.wet = wp;
-	wp += r.w;
-	r.wbox = (int16_t *)wp;
+	r->prev = wp;
+	wp += r->w;
+	r->wet = wp;
+	wp += r->w;
+	r->wbox = (int16_t *)wp;
 	wp += WBOX_MAX * 8;
-	r.row = wp;
-	r.pool_used = 0;
-	r.nobj = 0;
-	water_boxes(&r, v->hole);
-	for (x = 0; x < r.w; x++) {
-		r.ybuf[x] = r.vh;
-		r.prev[x] = SURF_COUNT;
-		r.wet[x] = 0;
+	r->row = wp;
+	r->pool_used = 0;
+	r->nobj = 0;
+	water_boxes(r, v->hole);
+	for (x = 0; x < r->w; x++) {
+		r->ybuf[x] = r->vh;
+		r->prev[x] = SURF_COUNT;
+		r->wet[x] = 0;
 	}
 
 	/* camera */
-	r.fx = icos(v->aim);
-	r.fy = isin(v->aim);
-	r.rx = r.fy;
-	r.ry = (int16_t)-r.fx;
-	r.camx = v->ball.x - mulq(CAM_BACK, r.fx);
-	r.camy = v->ball.y - mulq(CAM_BACK, r.fy);
-	bh = hb_at(r.h, v->ball.x, v->ball.y);
-	groundz = r.h->base + fix_mul(bh << 8, r.h->step);
-	r.camb = fix_div(groundz + cam_up(r.vh, r.yh, r.scale) - r.h->base, r.h->step) >> 8;
-	r.stepf = (uint32_t)r.h->step * (uint32_t)r.f;
-
-	t = lap(r.st, 0, 0);
-	gather(&r, v, a);
-	t = lap(r.st, RS_GATHER, t);
-	terrain(&r);
-	t = lap(r.st, RS_TERRAIN, t);
-	sky(&r, &a->backdrop, (angle)(v->aim + v->hole->turn));
-	t = lap(r.st, RS_SKY, t);
-	for (x = r.nobj; x > 0; x--) draw_obj(&r, &r.obj[x - 1]);
-	t = lap(r.st, RS_OBJECTS, t);
-
-	{
-		int16_t m;
-		uint8_t sh;
-		kz(&r, r.stepf, (uint32_t)CAM_BACK, &m, &sh);
-		bx = r.cx;
-		by = (int16_t)(r.yh + (MULS16(dz6(r.camb, bh), m) >> sh));
-	}
-	if (a->golfer) {
-		RenderGolfer *g = a->golfer;
-		golfer_box(&r, g, bx, by);
-		if (g->w && g->under) {
-			under_io(&r, g, 1, 0);
-		} else {
-			g->w = 0;
-		}
-		g->shown = POSE_ADDRESS;
-		g->ball = 1;
-		golfer(&r, &g->pose[POSE_ADDRESS], bx, by, 1, 0);
-	}
-	lap(r.st, RS_GOLFER, t);
-
-	/* the status strip, black for now */
-	for (y = r.vh; y < s->h; y++) {
-		uint8_t *p = r.bits + MULU16(y, r.rb);
-		for (x = 0; x < (int16_t)r.rb; x++) p[x] = 0xFF;
-	}
+	r->fx = icos(v->aim);
+	r->fy = isin(v->aim);
+	r->rx = r->fy;
+	r->ry = (int16_t)-r->fx;
+	r->camx = v->ball.x - mulq(CAM_BACK, r->fx);
+	r->camy = v->ball.y - mulq(CAM_BACK, r->fy);
+	j->bh = hb_at(r->h, v->ball.x, v->ball.y);
+	groundz = r->h->base + fix_mul(j->bh << 8, r->h->step);
+	r->camb = fix_div(groundz + cam_up(r->vh, r->yh, r->scale) - r->h->base, r->h->step) >> 8;
+	r->stepf = (uint32_t)r->h->step * (uint32_t)r->f;
+	j->stage = JS_GATHER;
 	return 0;
+}
+
+int render_scene_step(void *work, RenderClock clk, uint32_t until)
+{
+	Job *j = (Job *)work;
+	R *r = &j->r;
+	const RenderArt *a = j->a;
+	int16_t x, y, bx, by;
+	uint32_t t = lap(r->st, 0, 0);
+
+	/* a stage at a time, the terrain, sky and objects in pieces, until the time's up */
+	do {
+		switch (j->stage) {
+		case JS_GATHER:
+			gather(r, &j->v, a);
+			t = lap(r->st, RS_GATHER, t);
+			j->z = j->zl = near_start(r);
+			j->on = 0;
+			j->step = 0;
+			j->stage = JS_TERRAIN;
+			break;
+		case JS_TERRAIN:
+			x = (int16_t)terrain(j, clk, until);
+			t = lap(r->st, RS_TERRAIN, t);
+			if (!x) return 0;
+			sky_start(j, &a->backdrop, (angle)(j->v.aim + j->v.hole->turn));
+			j->stage = JS_SKY;
+			break;
+		case JS_SKY:
+			x = (int16_t)sky(j, &a->backdrop, clk, until);
+			t = lap(r->st, RS_SKY, t);
+			if (!x) return 0;
+			j->k = r->nobj;
+			j->stage = JS_OBJECTS;
+			break;
+		case JS_OBJECTS:
+			/* back to front */
+			while (j->k > 0) {
+				draw_obj(r, &r->obj[--j->k]);
+				if (j->k > 0 && late(clk, until)) break;
+			}
+			t = lap(r->st, RS_OBJECTS, t);
+			if (j->k > 0) return 0;
+			j->stage = JS_GOLFER;
+			break;
+		case JS_GOLFER:
+			{
+				int16_t m;
+				uint8_t sh;
+				kz(r, r->stepf, (uint32_t)CAM_BACK, &m, &sh);
+				bx = r->cx;
+				by = (int16_t)(r->yh + (MULS16(dz6(r->camb, j->bh), m) >> sh));
+			}
+			if (a->golfer) {
+				RenderGolfer *g = a->golfer;
+				golfer_box(r, g, bx, by);
+				if (g->w && g->under) {
+					under_io(r, g, 1, 0);
+				} else {
+					g->w = 0;
+				}
+				g->shown = POSE_ADDRESS;
+				g->ball = 1;
+				golfer(r, &g->pose[POSE_ADDRESS], bx, by, 1, 0);
+			}
+			t = lap(r->st, RS_GOLFER, t);
+			/* the status strip, black for now */
+			for (y = r->vh; y < j->d.h; y++) {
+				uint8_t *p = r->bits + MULU16(y, r->rb);
+				for (x = 0; x < (int16_t)r->rb; x++) p[x] = 0xFF;
+			}
+			j->stage = j->half ? JS_DOUBLE : JS_DONE;
+			break;
+		case JS_DOUBLE:
+			double_up(&j->s);
+			j->stage = JS_DONE;
+			break;
+		default:
+			return 1;
+		}
+	} while (j->stage != JS_DONE && !late(clk, until));
+	return j->stage == JS_DONE;
 }
 
 /* A filled square of n pixels, clipped to the view. */
@@ -1873,42 +1986,59 @@ static void SEC_RENDER gline(const R *r, int16_t x0, int16_t y0, int16_t x1, int
 	}
 }
 
-static int SEC_RENDER green_draw(Surface *s, const RenderView *v);
+/* The green view being drawn (render_green_begin and _step), at the start
+ * of the work memory. */
+typedef struct {
+	R r;
+	RenderCam c;
+	RenderView v;
+	Surface s;                  /* the surface asked for */
+	uint8_t half, line, done;
+	GPt rows[2][GRID_N], *far, *near;
+	fixed len, sp;
+	int16_t k, k0, k1, n;       /* the next row of cells, the first and last, and the cells either side */
+	int32_t hbb;
+	uint32_t past;              /* cells with lines in the row of cells past this one */
+} GJob;
 
 int render_green(Surface *s, const RenderView *v)
 {
-	Surface h;
-	if (!half_of(s, &h)) return green_draw(s, v);
-	if (green_draw(&h, v) < 0) return -1;
-	double_up(s);
+	GJob j;
+	if (render_green_begin(s, v, &j) < 0) return -1;
+	render_green_step(&j, 0, 0);
 	return 0;
 }
 
-static int SEC_RENDER green_draw(Surface *s, const RenderView *v)
+int render_green_begin(Surface *s, const RenderView *v, void *work)
 {
-	R r;
-	RenderCam c;
+	GJob *j = (GJob *)work;
+	Surface hs, *d;
+	R *r;
 	const Hole *h = v->hole;
-	GPt rows[2][GRID_N], *far, *near, *t;
-	fixed len, sp, a, up, depth, down;
-	vec2 pin = h->pins[v->pin & 3];
-	int16_t k, k0, k1, i, n, x, y, px, py;
-	int32_t hbb;
-	uint32_t lined, past = 0;     /* cells with lines in this row of cells and the one past it */
-	uint8_t line = s->depth == 8 ? PAL_GREEN : PAL_BLACK;
+	fixed len, sp;
+	int16_t x, y, n;
+	uint8_t half = (uint8_t)half_of(s, &hs);
 
-	if (fit(s, &r.vh) < 0) return -1;
-	r.bits = s->bits;
-	r.rb = s->rowBytes;
-	r.w = s->w;
-	r.lg = (uint8_t)(s->depth == 8 ? 3 : s->depth == 4 ? 2 : s->depth == 2 ? 1 : 0);
-	len = green_cam(s, v, &c);
-	hbb = hb_at(h, v->ball.x, v->ball.y);
+	d = half ? &hs : s;
+	if (fit(d, &y) < 0) return -1;
+	r = &j->r;
+	j->s = *s;
+	j->half = half;
+	j->v = *v;
+	j->done = 0;
+	fit(d, &r->vh);
+	r->bits = d->bits;
+	r->rb = d->rowBytes;
+	r->w = d->w;
+	r->lg = (uint8_t)(d->depth == 8 ? 3 : d->depth == 4 ? 2 : d->depth == 2 ? 1 : 0);
+	j->line = d->depth == 8 ? PAL_GREEN : PAL_BLACK;
+	j->len = len = green_cam(d, v, &j->c);
+	j->hbb = hb_at(h, v->ball.x, v->ball.y);
 
 	/* black, then the grid over it */
-	for (y = 0; y < s->h; y++) {
-		uint8_t *p = r.bits + MULU16(y, r.rb);
-		for (x = 0; x < (int16_t)r.rb; x++) p[x] = 0xFF;
+	for (y = 0; y < d->h; y++) {
+		uint8_t *p = r->bits + MULU16(y, r->rb);
+		for (x = 0; x < (int16_t)r->rb; x++) p[x] = 0xFF;
 	}
 
 	/* cells of half a yard, 1, 2, 4 or 8, so there are at most 16 along, from
@@ -1916,14 +2046,38 @@ static int SEC_RENDER green_draw(Surface *s, const RenderView *v)
 	 * the ball and the pin's line sit in the middle of a cell */
 	sp = FIX_HALF;
 	while (len * 3 > sp * 16) sp <<= 1;
-	k0 = (int16_t)-((len * 2 / 5 + sp - 1) / sp);
-	k1 = (int16_t)((len * 13 / 5 + sp - 1) / sp);
+	j->sp = sp;
+	j->k0 = (int16_t)-((len * 2 / 5 + sp - 1) / sp);
+	j->k1 = (int16_t)((len * 13 / 5 + sp - 1) / sp);
 	n = (int16_t)((len * 7 / 5 + sp - 1) / sp);
 	if (n > GRID_N / 2) n = GRID_N / 2;
+	j->n = n;
+	j->k = j->k1;
+	j->past = 0;
+	j->far = j->rows[0];
+	j->near = j->rows[1];
+	return 0;
+}
 
-	far = rows[0];
-	near = rows[1];
-	for (k = k1; k >= k0; k--) {
+int render_green_step(void *work, RenderClock clk, uint32_t until)
+{
+	GJob *j = (GJob *)work;
+	R *r = &j->r;
+	const RenderView *v = &j->v;
+	const Hole *h = v->hole;
+	const RenderCam *cp = &j->c;
+	RenderCam c = *cp;
+	GPt *far = j->far, *near = j->near, *t;
+	fixed len = j->len, sp = j->sp, a, up, depth, down;
+	vec2 pin = h->pins[v->pin & 3];
+	int16_t k, k0 = j->k0, k1 = j->k1, i, n = j->n, px, py;
+	int32_t hbb = j->hbb;
+	uint32_t lined, past = j->past;
+	uint8_t line = j->line;
+
+	if (j->done) return 1;
+	/* each row of points from the far end, then the cells between it and the row past it */
+	for (k = j->k; k >= k0; k--) {
 		/* the points of row k, along the aim from the ball */
 		a = (fixed)k * sp;
 		for (i = -n; i <= n; i++) {
@@ -1966,8 +2120,8 @@ static int SEC_RENDER green_draw(Surface *s, const RenderView *v)
 				lv = (int16_t)(LIGHT_FLAT + ((((rise * 256) / (sp >> 8)) >> 4) * 64 >> 8));
 				if (lv < 0) lv = 0;
 				if (lv > PAL_RAMP_N * 16 - 16) lv = PAL_RAMP_N * 16 - 16;
-				tri(&r, f0, f1, n1, (uint8_t)(PAL_TERRAIN + sf * PAL_RAMP_N), lv);
-				tri(&r, f0, n1, n0, (uint8_t)(PAL_TERRAIN + sf * PAL_RAMP_N), lv);
+				tri(r, f0, f1, n1, (uint8_t)(PAL_TERRAIN + sf * PAL_RAMP_N), lv);
+				tri(r, f0, n1, n0, (uint8_t)(PAL_TERRAIN + sf * PAL_RAMP_N), lv);
 				if (sf == SURF_GREEN || sf == SURF_FRINGE) lined |= 1UL << i;
 			}
 			/* each edge once: across the far side if this cell or the one past it
@@ -1976,44 +2130,53 @@ static int SEC_RENDER green_draw(Surface *s, const RenderView *v)
 			for (i = 0; i <= 2 * n; i++) {
 				uint32_t here = lined | (lined << 1);
 				if (i < 2 * n && ((lined | past) & (1UL << i)) && far[i].x != NO_PT && far[i + 1].x != NO_PT)
-					gline(&r, far[i].x, far[i].y, far[i + 1].x, far[i + 1].y, line);
+					gline(r, far[i].x, far[i].y, far[i + 1].x, far[i + 1].y, line);
 				if ((here & (1UL << i)) && far[i].x != NO_PT && near[i].x != NO_PT)
-					gline(&r, far[i].x, far[i].y, near[i].x, near[i].y, line);
+					gline(r, far[i].x, far[i].y, near[i].x, near[i].y, line);
 				if (k == k0 && i < 2 * n && (lined & (1UL << i)))
-					gline(&r, near[i].x, near[i].y, near[i + 1].x, near[i + 1].y, line);
+					gline(r, near[i].x, near[i].y, near[i + 1].x, near[i + 1].y, line);
 			}
 			past = lined;
 		}
 		t = far;
 		far = near;
 		near = t;
+		if (k > k0 && late(clk, until)) {
+			j->k = (int16_t)(k - 1);
+			j->far = far;
+			j->near = near;
+			j->past = past;
+			return 0;
+		}
 	}
 
 	/* the cup, black in a white lip, and the pin in it: a pole with the flag to its right */
 	if (render_point(&c, pin.x, pin.y, ground_z(h, pin.x, pin.y), &px, &py, &depth)) {
-		int16_t u = s->scale, top, tx, j;
+		int16_t u = j->half ? 1 : j->s.scale, top, tx, jj;
 		/* 2.4 yards, or less on a short putt so the flag stays in view; heights show GREEN_ZK times */
 		fixed pole = len / 3 < (fixed)(FIX_ONE * 12 / 5) ? len / 3 : (fixed)(FIX_ONE * 12 / 5);
 		pole /= GREEN_ZK;
-		for (j = -2 * u; j < 2 * u; j++)
+		for (jj = -2 * u; jj < 2 * u; jj++)
 			for (i = -4 * u; i < 4 * u; i++) {
-				int16_t ax = i < 0 ? -i - 1 : i, ay = j < 0 ? -j - 1 : j;
+				int16_t ax = i < 0 ? -i - 1 : i, ay = jj < 0 ? -jj - 1 : jj;
 				/* an ellipse twice as wide as tall: the lip, then the hole a pixel in */
 				int32_t q = MULS16(ax, ax) + 4 * MULS16(ay, ay), rr = 16L * u * u;
-				if (q >= rr || px + i < 0 || px + i >= r.w || py + j < 0 || py + j >= r.vh) continue;
-				put(&r, pixp(&r, px + i, py + j), px + i, py + j,
+				if (q >= rr || px + i < 0 || px + i >= r->w || py + jj < 0 || py + jj >= r->vh) continue;
+				put(r, pixp(r, px + i, py + jj), px + i, py + jj,
 				    MULS16(ax + u, ax + u) + 4 * MULS16(ay + u, ay + u) < rr ? PAL_BLACK : PAL_WHITE);
 			}
 		if (render_point(&c, pin.x, pin.y, ground_z(h, pin.x, pin.y) + pole, &tx, &top, &depth)) {
-			gline(&r, px, py - u, tx, top, s->depth == 8 ? PAL_GREY + 7 : PAL_BLACK);
-			for (j = 0; j < 4 * u; j++)
+			gline(r, px, py - u, tx, top, line == PAL_GREEN ? PAL_GREY + 7 : PAL_BLACK);
+			for (jj = 0; jj < 4 * u; jj++)
 				for (i = 1; i <= 6 * u; i++)
-					if (tx + i >= 0 && tx + i < r.w && top + j >= 0 && top + j < r.vh)
-						put(&r, pixp(&r, tx + i, top + j), tx + i, top + j,
-						    (uint8_t)(j >= 3 * u || i == 6 * u ? PAL_FLAG : PAL_FLAG + 2));
+					if (tx + i >= 0 && tx + i < r->w && top + jj >= 0 && top + jj < r->vh)
+						put(r, pixp(r, tx + i, top + jj), tx + i, top + jj,
+						    (uint8_t)(jj >= 3 * u || i == 6 * u ? PAL_FLAG : PAL_FLAG + 2));
 		}
 	}
-	return 0;
+	if (j->half) double_up(&j->s);
+	j->done = 1;
+	return 1;
 }
 
 static void SEC_RENDER scene_cam(const Surface *s, const RenderView *v, RenderCam *c)
