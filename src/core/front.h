@@ -39,6 +39,8 @@ enum { KEY_NONE, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_SELECT, KEY_OTHER, K
 #define FR_SOUND  32
 /* The computer golfers' shots setting (Front.quick) changed: the platform saves it. */
 #define FR_CPU    64
+/* The shot view setting (Front.shotmap) changed: the platform saves it. */
+#define FR_SHOT   128
 
 /* The screens past the title are the menu board with a list. Games picks
  * the mode, players who plays each slot. */
@@ -74,11 +76,12 @@ typedef struct {
 	uint8_t slot[RULES_PLAYERS];            /* who plays each slot: CPU_* or SLOT_OFF */
 	uint8_t cpu[RULES_PLAYERS];             /* the round's players in order, without the slots off */
 	uint8_t quick;           /* computer golfers' shots as a result on the map */
+	uint8_t shotmap;         /* full shots fly on the map, not the scene */
 	uint8_t pending;         /* what OK on the new round dialog opens: SCR_GAMES or SCR_PRACTICE */
 	uint8_t courses;         /* how many courses are installed */
 	uint8_t course;          /* the one picked on the courses screen */
 	uint8_t sound;           /* SOUND_* */
-	char settings_list[40];  /* "Sound: On|CPU: Quick|Back" */
+	char settings_list[56];  /* "Sound: On|CPU: Quick|Shot view: Map|Back" */
 	char players_list[RULES_PLAYERS * 13 + 16 + 14];   /* "P1  Human|P2  CPU Fair|Tees: Medal|Tee off|Back" */
 	uint8_t tee;             /* the tee set picked on the players screen, 0 the longest */
 	uint8_t tee_count[FRONT_COURSES];       /* each course's tee sets, 0 if not known (a card course) */

@@ -345,6 +345,76 @@ static void text_paths(void)
 	}
 }
 
+/* The fade's swaps: after the platform's steps (14 of the 16 dither values,
+ * then 2 at a time) both surfaces are as they were, and half way the first
+ * shows about half of each in the rows asked for. At every depth, and with rows
+ * of an odd number of words. */
+/* gfx_to16_mask: the steps 0-5, 5-10, 10-16 together fill what gfx_to16 does, and step 0-5 alone only some of it */
+static void to16s(int w, uint8_t le)
+{
+	Surface a;
+	uint16_t rb = (uint16_t)(w * 2 + 4);
+	uint8_t *d1 = calloc(rb, 40), *d2 = calloc(rb, 40);
+	int lo, i, part = 0;
+
+	surface_wh(&a, w, 40, 1, 8);
+	for (i = 0; i < a.rowBytes * a.h; i++) a.bits[i] = (uint8_t)(i * 37 + 11);
+	gfx_to16(&a, d1, rb, 0, 0, w, 40, le);
+	gfx_to16_mask(&a, d2, rb, 0, 40, le, 0, 5);
+	for (i = 0; i < rb * 40; i++) part += d1[i] == d2[i] && d1[i];
+	CHECK(part > 0 && memcmp(d1, d2, (size_t)rb * 40) != 0);
+	for (lo = 5; lo < 16; lo += 5) gfx_to16_mask(&a, d2, rb, 0, 40, le, (uint8_t)lo, (uint8_t)(lo + 5 > 16 ? 16 : lo + 5));
+	CHECK(memcmp(d1, d2, (size_t)rb * 40) == 0);
+	sfree(&a);
+	free(d1);
+	free(d2);
+}
+
+static void swaps(int w, uint8_t depth)
+{
+	Surface a, b, a0, b0;
+	int x, y, lo, same = 0, total = 0;
+	uint32_t i, n;
+
+	surface_wh(&a, w, 40, 1, depth);
+	surface_wh(&b, w, 40, 1, depth);
+	surface_wh(&a0, w, 40, 1, depth);
+	surface_wh(&b0, w, 40, 1, depth);
+	n = (uint32_t)a.rowBytes * a.h;
+	for (i = 0; i < n; i++) {
+		a.bits[i] = (uint8_t)(i * 37 + 11);
+		b.bits[i] = (uint8_t)(i * 91 + 5);
+	}
+	memcpy(a0.bits, a.bits, n);
+	memcpy(b0.bits, b.bits, n);
+	gfx_swap_mask(&a, &b, 2, 38, 2, 16);
+	for (lo = 2; lo < 16; lo += 2) {
+		if (lo == 8) {
+			/* half way: about half the pixels of rows 2 to 37 are a's own, the rest b's */
+			uint8_t m = (uint8_t)((1 << depth) - 1);
+			for (y = 2; y < 38; y++)
+				for (x = 0; x < w; x++) {
+					int bit = (x * depth) & 7, sh = 8 - depth - bit;
+					uint8_t pa = (uint8_t)((a.bits[y * a.rowBytes + x * depth / 8] >> sh) & m);
+					uint8_t pa0 = (uint8_t)((a0.bits[y * a.rowBytes + x * depth / 8] >> sh) & m);
+					uint8_t pb0 = (uint8_t)((b0.bits[y * a.rowBytes + x * depth / 8] >> sh) & m);
+					if (pa0 == pb0) continue;
+					total++;
+					same += pa == pa0;
+					CHECK(pa == pa0 || pa == pb0);
+				}
+			CHECK(same * 3 > total && same * 3 < total * 2);
+		}
+		gfx_swap_mask(&a, &b, 2, 38, (uint8_t)lo, (uint8_t)(lo + 2));
+	}
+	CHECK(memcmp(a.bits, a0.bits, n) == 0);
+	CHECK(memcmp(b.bits, b0.bits, n) == 0);
+	sfree(&a);
+	sfree(&b);
+	sfree(&a0);
+	sfree(&b0);
+}
+
 int main(int argc, char **argv)
 {
 	long len;
@@ -384,6 +454,15 @@ int main(int argc, char **argv)
 	courses(2);
 	bad_bands();
 	text_paths();
+	swaps(160, 1);
+	swaps(160, 2);
+	swaps(160, 4);
+	swaps(160, 8);
+	swaps(176, 1);
+	swaps(176, 8);
+	swaps(48, 2);
+	to16s(160, 0);
+	to16s(162, 1);
 	printf("uitest: %d checks, %d failed\n", checks, fails);
 	return fails != 0;
 }

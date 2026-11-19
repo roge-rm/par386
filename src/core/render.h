@@ -123,6 +123,14 @@ void SEC_RENDER render_clock(RenderClock fn);
  * ball and a line from the ball to the pin. Text is left to the caller.
  * Returns 0, or -1 if the surface isn't 160 or 320 wide. */
 int SEC_RENDER render_map(Surface *s, const RenderView *v, RenderMap *out);
+/* A part of the hole for render_map_box, in yards. */
+typedef struct {
+	fixed x0, y0, x1, y1;
+} MapBox;
+/* render_map framed on box (kept to its middle, as big as fits), or on the
+ * whole hole if box is 0 or the hole fits as big. With a box there's no
+ * ball and no line to the pin. */
+int SEC_RENDER render_map_box(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out);
 /* The green view for putting: the ground around the ball and the pin seen
  * from above and behind the ball, looking along v->aim, as a grid of
  * shaded cells with lines across the green, heights shown 6 times as

@@ -42,6 +42,11 @@ void SEC_UI gfx_text(Surface *s, int16_t x, int16_t y, const char *t, int16_t n,
 /* Copies the pixels of a rectangle from src, a surface of the same size and
  * depth; below 8 bits whole bytes go, so a few pixels either side come too. */
 void SEC_UI gfx_copy(Surface *d, const Surface *src, int16_t x, int16_t y, int16_t w, int16_t h);
+/* Swaps the pixels of rows y0 to y1 (not y1) between a and b, surfaces of
+ * the same size and depth, where a 4x4 ordered dither value (0 to 15) is
+ * from lo up to (not) hi. Steps of this fade one picture into another
+ * with no third buffer: both are whole again after the last. */
+void SEC_UI gfx_swap_mask(Surface *a, Surface *b, int16_t y0, int16_t y1, uint8_t lo, uint8_t hi);
 /* The golf ball cursor, BALL_W x BALL_H logical units. */
 void SEC_UI gfx_ball(Surface *s, int16_t x, int16_t y);
 int16_t SEC_UI gfx_ball_w(void);
@@ -59,5 +64,9 @@ int SEC_UI gfx_pic_band(Surface *s, const uint8_t *d, uint32_t len);
  * place in d, rb bytes a row, through the master palette. For screens left
  * at 16 bits. */
 void SEC_UI gfx_to16(const Surface *s, uint8_t *d, uint16_t rb, int16_t x, int16_t y, int16_t w, int16_t h, uint8_t le);
+/* gfx_to16 for rows y0 to y1 (not y1), only the pixels whose 4x4 ordered
+ * dither value (as gfx_swap_mask) is from lo up to (not) hi: the fade's
+ * steps on 16-bit screens, each converting only what it shows. */
+void SEC_UI gfx_to16_mask(const Surface *s, uint8_t *d, uint16_t rb, int16_t y0, int16_t y1, uint8_t le, uint8_t lo, uint8_t hi);
 
 #endif

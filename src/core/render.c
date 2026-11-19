@@ -1453,13 +1453,18 @@ static void SEC_RENDER dot(const R *r, int16_t x, int16_t y, int16_t n, uint8_t 
 		}
 }
 
-static int SEC_RENDER map_draw(Surface *s, const RenderView *v, RenderMap *out);
+static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out);
 
 int render_map(Surface *s, const RenderView *v, RenderMap *out)
 {
+	return render_map_box(s, v, 0, out);
+}
+
+int render_map_box(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out)
+{
 	Surface h;
-	if (!half_of(s, &h)) return map_draw(s, v, out);
-	if (map_draw(&h, v, out) < 0) return -1;
+	if (!half_of(s, &h)) return map_draw(s, v, box, out);
+	if (map_draw(&h, v, box, out) < 0) return -1;
 	double_up(s);
 	/* where things are on s */
 	out->bx = (int16_t)(out->bx * 2);
@@ -1472,7 +1477,7 @@ int render_map(Surface *s, const RenderView *v, RenderMap *out)
 	return 0;
 }
 
-static int SEC_RENDER map_draw(Surface *s, const RenderView *v, RenderMap *out)
+static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out)
 {
 	R r;
 	const Hole *h = v->hole;
@@ -1499,13 +1504,27 @@ static int SEC_RENDER map_draw(Surface *s, const RenderView *v, RenderMap *out)
 	mh = (int16_t)(((fixed)h->length << 16) / ypp);
 	left = (r.w - mw) / 2;
 	top = (r.vh - mh) / 2;
+	if (box) {
+		/* the box in the middle, if that's bigger than the whole hole */
+		fixed bw = box->x1 - box->x0, bh = box->y1 - box->y0, ybox;
+		a = bw / (r.w - 4 * sc);
+		b = bh / (r.vh - 4 * sc);
+		ybox = a > b ? a : b;
+		if (bw > 0 && bh > 0 && ybox < ypp) {
+			ypp = ybox < 1 ? 1 : ybox;
+			mw = (int16_t)(((fixed)h->width << 16) / ypp);
+			mh = (int16_t)(((fixed)h->length << 16) / ypp);
+			left = (int16_t)((r.w - bw / ypp) / 2 - box->x0 / ypp);
+			top = (int16_t)((r.vh - bh / ypp) / 2 - (((fixed)h->length << 16) - box->y1) / ypp);
+		}
+	}
 
 	/* surfaces at the middle of their ramps, out of bounds dark; off the hole is black (0xFF at every depth) */
 	for (i = 0; i < SURF_COUNT; i++)
 		col[i] = (uint8_t)(PAL_TERRAIN + i * PAL_RAMP_N + PAL_RAMP_N / 2);
 	col[SURF_OOB] = PAL_TERRAIN + SURF_OOB * PAL_RAMP_N + 1;
 	/* the grid column under each screen column, 0xFF off the hole */
-	x0 = ypp >> 1;
+	x0 = (ypp >> 1) + (left < 0 ? (fixed)-left * ypp : 0);
 	for (x = 0; x < r.w; x++) {
 		xcell[x] = 0xFF;
 		if (x >= left && x < left + mw) {
@@ -1580,7 +1599,7 @@ static int SEC_RENDER map_draw(Surface *s, const RenderView *v, RenderMap *out)
 	dot(&r, x - sc, y - sc, 3 * sc, PAL_BLACK);
 	dot(&r, x, y, sc, PAL_WHITE);
 
-	/* the aim line from the ball to the pin, dashed black and white */
+	/* the aim line from the ball to the pin, dashed black and white; not on a framed map */
 	out->bx = MX(v->ball.x);
 	out->by = MY(v->ball.y);
 	out->px = MX(h->pins[v->pin & 3].x);
@@ -1590,7 +1609,7 @@ static int SEC_RENDER map_draw(Surface *s, const RenderView *v, RenderMap *out)
 	out->top = top;
 	out->ypp = ypp;
 	out->length = (fixed)h->length << 16;
-	{
+	if (!box) {
 		int16_t dx = out->px - out->bx, dy = out->py - out->by;
 		int16_t ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
 		int16_t n = ax > ay ? ax : ay, k;
@@ -1609,8 +1628,10 @@ static int SEC_RENDER map_draw(Surface *s, const RenderView *v, RenderMap *out)
 		for (j = 0; j < 2 * sc; j++) dot(&r, x + (int16_t)i, y - 5 * sc + j, 1, PAL_FLAG + 1);
 	}
 	/* the ball: white with a black ring */
-	dot(&r, out->bx - sc, out->by - sc, 3 * sc, PAL_BLACK);
-	dot(&r, out->bx, out->by, sc, PAL_WHITE);
+	if (!box) {
+		dot(&r, out->bx - sc, out->by - sc, 3 * sc, PAL_BLACK);
+		dot(&r, out->bx, out->by, sc, PAL_WHITE);
+	}
 #undef MX
 #undef MY
 

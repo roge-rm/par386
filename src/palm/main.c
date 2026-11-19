@@ -43,10 +43,13 @@ static UInt32 gHeapStart;      /* free dynamic heap at launch */
 #define kSaveName    "Par386 Save"
 #define kSaveType    'Save'
 #define PIC_SCENE    0xFFFF     /* gBgPic when the kept copy holds the scene */
+#define PIC_MAP      0xFFFE     /* or the map of a shot, to fade the next scene in from */
+#define FADE_MS      320        /* the fade between the scene and a shot on the map */
 /* App preferences: the computer golfers' shots setting (one byte, backed
  * up) and the course records (rec_pack). */
 #define kCpuPref     3
 #define kRecPref     4
+#define kShotPref    5
 static Records gRecords;
 static Boolean gPlaying;
 static Play gPlay;
@@ -64,9 +67,13 @@ static MemHandle gGolfH[RENDER_POSES];
 static UInt32 gUnderLen;
 static UInt32 gMinFree;        /* least free heap while the scene was drawn */
 static Boolean gAnim;          /* play wants frames */
+static Boolean gFadeBack;      /* a shot is on the map: the next scene fades in over it */
+static Boolean gFadeHold;      /* the next scene frame fades in from the picture ScreenFadeFrom kept */
 #ifdef DEBUG
 static RenderStats gStats;
 static UInt32 gDrawTicks, gMapTicks;
+/* the shot view: its map, the whole fade and the slowest fade step, in ticks */
+static UInt32 gZoomTicks, gFadeTicks, gFadeStep;
 /* ticks and counts of meter and flight frames, and ticks for the last shot's physics */
 static UInt32 gMtrTicks, gMtrN, gFlyTicks, gFlyN, gSimTicks;
 #endif
@@ -808,6 +815,7 @@ static Boolean SEC_MENU PlayStart(Boolean resume)
 	if ((gScratchDb = DmOpenDatabase(0, id, dmModeReadWrite)) == 0) return false;
 	if (!LoadHole(gRound.hole + 1)) return false;
 	gPlay.quick = gFront.quick;
+	gPlay.mapview = gFront.shotmap;
 	play_start(&gPlay, &gHole, &gGrid, &gRound);
 	gPlaying = true;
 	if (!resume) SaveRound();
@@ -826,8 +834,31 @@ static void LockArt(RenderData *d, UInt32 type, UInt16 id, MemHandle *hs, UInt16
 
 /* Copies the scene to the kept copy (screen.c), so overlays can be taken
  * off and the map put back without drawing it again. */
+/* Rows of gS above the panel, in pixels. */
+static Int16 ViewRows(void)
+{
+	return (Int16)(gS.h - RENDER_STATUS * gS.scale);
+}
+
+/* Fades gS in over the screen from the picture ScreenFadeFrom kept
+ * (ScreenDissolve), timed in debug builds. */
+static void Fade(void)
+{
+#ifdef DEBUG
+	UInt32 t0 = TimGetTicks();
+	gFadeStep = ScreenDissolve(ViewRows(), FADE_MS);
+	gFadeTicks = TimGetTicks() - t0;
+#else
+	ScreenDissolve(ViewRows(), FADE_MS);
+#endif
+}
+
 static void KeepScene(void)
 {
+	/* after a shot on the map, the kept copy holds the map (see PlayAct): the
+	 * first frame of the new scene, golfer and all, fades in over it (PlayFrame) */
+	if (gFadeBack && gBgPic == PIC_MAP && ScreenFadeFrom(ScreenKept(), ViewRows())) gFadeHold = true;
+	gFadeBack = false;
 	gBgPic = ScreenKeep() ? PIC_SCENE : 0;
 }
 
@@ -879,10 +910,16 @@ static void PlayFrame(void)
 #endif
 
 	gAnim = false;
-	if (!gPlaying || !gS.bits) return;
+	if (!gPlaying || !gS.bits) {
+		gFadeHold = false;
+		ScreenFadeDrop();
+		return;
+	}
 	if (gPlay.view == PLAY_MAP) {
-		/* a computer golfer's result on the map: on to whatever comes next */
+		/* a shot on the map, or a computer golfer's result there: on to whatever comes next */
 		f = play_frame(&gPlay, &gS, NULL, NowMs());
+		if (f & PL_DIRTY) ScreenShow(&gPlay.dirty);
+		f &= ~PL_DIRTY;
 		if (f & ~PL_ANIM) PlayAct(f);
 		else gAnim = (f & PL_ANIM) != 0;
 		return;
@@ -890,6 +927,12 @@ static void PlayFrame(void)
 	if (gPlay.view != PLAY_SCENE) return;
 	gPlay.golf = &gGolf;
 	f = play_frame(&gPlay, &gS, gBgPic == PIC_SCENE ? ScreenKept() : NULL, NowMs());
+	if (gFadeHold) {
+		/* the first frame after a shot on the map fades in */
+		gFadeHold = false;
+		if (f & (PL_BACK | PL_CARD | PL_MAP | PL_NEXT | PL_SCENE | PL_RENDER)) ScreenFadeDrop();
+		else Fade();
+	}
 	if (f & (PL_BACK | PL_CARD | PL_MAP | PL_NEXT | PL_SCENE)) {
 		/* the end of a hole, a computer golfer's turn on the map, or the range's next ball */
 		PlayAct(f);
@@ -927,6 +970,8 @@ static void PlayStatus(void)
 	char t[32];
 	UInt32 tps = SysTicksPerSecond();
 	play_status(&gS, &gPlay, NULL);
+	/* none over a shot on the map; the next map shows its times */
+	if (gPlay.onmap) return;
 	StrPrintF(t, "m%lu %luK u%luK", gMapTicks * 1000 / tps, gMinFree >> 10,
 	          gHeapStart > gMinFree ? (gHeapStart - gMinFree) >> 10 : 0);
 	gfx_fill(&gS, 0, 0, (Int16)(StrLen(t) * 8 * gS.scale), 8 * gS.scale, UIC_BLACK);
@@ -936,6 +981,11 @@ static void PlayStatus(void)
 	          gFlyN ? gFlyTicks * 10000 / tps / gFlyN : 0, gSimTicks * 1000 / tps);
 	gfx_fill(&gS, 0, 8 * gS.scale, (Int16)(StrLen(t) * 8 * gS.scale), 8 * gS.scale, UIC_BLACK);
 	gfx_text(&gS, 0, 8 * gS.scale, t, StrLen(t), UIC_WHITE);
+	/* the last shot on the map: its map, the fade, the fade's slowest step and its first swap, in ms */
+	StrPrintF(t, "Z%lu D%lu d%lu s%lu", gZoomTicks * 1000 / tps, gFadeTicks * 1000 / tps, gFadeStep * 1000 / tps,
+	          gSwapTicks * 1000 / tps);
+	gfx_fill(&gS, 0, 16 * gS.scale, (Int16)(StrLen(t) * 8 * gS.scale), 8 * gS.scale, UIC_BLACK);
+	gfx_text(&gS, 0, 16 * gS.scale, t, StrLen(t), UIC_WHITE);
 #else
 	play_status(&gS, &gPlay, NULL);
 #endif
@@ -1032,6 +1082,7 @@ static void PlayAct(int f)
 	/* sounds start before any long draw */
 	Sound();
 	if (!gS.bits) return;
+	if (f & (PL_BACK | PL_NEXT | PL_CARD)) gFadeBack = false;
 	if (f & PL_BACK) {
 		/* the round is kept to continue, unless it's over */
 		gAnim = false;
@@ -1058,16 +1109,31 @@ static void PlayAct(int f)
 		ScreenShowAll();
 		if (gPlay.card != CARD_VIEW) SaveRound();
 	} else if (f & PL_MAP) {
+		/* a shot going over to the map fades in over the scene, if the scene is kept */
+		Boolean fade = gPlay.onmap && !gFadeBack && ScreenKept() && gBgPic == PIC_SCENE &&
+		               ScreenFadeFrom(&gS, ViewRows());
 #ifdef DEBUG
 		UInt32 t0 = TimGetTicks();
 #endif
 		gAnim = false;
 		play_map(&gS, &gPlay);
 #ifdef DEBUG
-		gMapTicks = TimGetTicks() - t0;
+		if (gPlay.onmap) gZoomTicks = TimGetTicks() - t0;
+		else gMapTicks = TimGetTicks() - t0;
 #endif
 		PlayStatus();
-		ScreenShowAll();
+		if (fade) {
+			URect u;
+			u.x = 0;
+			u.y = ViewRows();
+			u.w = gS.w;
+			u.h = gS.h - u.y;
+			ScreenShow(&u);
+			Fade();
+		} else {
+			ScreenShowAll();
+		}
+		gFadeBack = gPlay.onmap;
 		gAnim = (f & PL_ANIM) != 0;
 	} else if (f & PL_PANEL) {
 		URect u;
@@ -1079,9 +1145,16 @@ static void PlayAct(int f)
 		ScreenShow(&u);
 		gAnim = (f & PL_ANIM) != 0;
 	} else if ((f & PL_SCENE) && ScreenKept() && gBgPic == PIC_SCENE) {
+		if (gFadeBack) {
+			/* the range's next ball after a shot on the map: its first frame fades in (PlayFrame) */
+			if (ScreenFadeFrom(&gS, ViewRows())) gFadeHold = true;
+			gFadeBack = false;
+		}
 		ScreenRestoreAll();
 		PlayFrame();
 	} else if (f & (PL_SCENE | PL_RENDER)) {
+		/* the map stays on the screen while the scene draws: keep it to fade from */
+		if (gFadeBack) gBgPic = ScreenKeep() ? PIC_MAP : 0;
 		if (f & PL_TURN) TurnStrip();
 		SceneRender();
 	} else {
@@ -1111,6 +1184,7 @@ static void Act(int r)
 	Sound();
 	if (r & FR_SOUND) AudioSetMode(gFront.sound);
 	if (r & FR_CPU) PrefSetAppPreferences(kCreator, kCpuPref, 1, &gFront.quick, 1, true);
+	if (r & FR_SHOT) PrefSetAppPreferences(kCreator, kShotPref, 1, &gFront.shotmap, 1, true);
 	if (r & (FR_PLAY | FR_CONTINUE)) {
 		if (PlayStart((r & FR_CONTINUE) != 0)) {
 			PlayBegin();
@@ -1198,7 +1272,12 @@ static void Resized(void)
 	gAnim = false;
 	play_resized(&gPlay);
 	if (gPlay.view == PLAY_MAP) {
-		PlayAct(PL_MAP);
+		/* a shot on the map flies on from where it was */
+		if (gPlay.onmap) {
+			gPlay.tmap = NowMs();
+			gPlay.mpause = 1;
+		}
+		PlayAct(gPlay.onmap ? PL_MAP | PL_ANIM : PL_MAP);
 	} else if (gPlay.view == PLAY_CARD) {
 		gfx_fill(&gS, 0, 0, gS.w, gS.h, UIC_BLACK);
 		play_card(&gS, &gPlay);
@@ -1397,6 +1476,10 @@ UInt32 PilotMain(UInt16 cmd, void *cmdPBP, UInt16 launchFlags)
 		UInt16 size = 1;
 		if (PrefGetAppPreferences(kCreator, kCpuPref, &q, &size, true) == noPreferenceFound || size != 1 || q > 1) q = 1;
 		gFront.quick = q;
+		q = 1;
+		size = 1;
+		if (PrefGetAppPreferences(kCreator, kShotPref, &q, &size, true) == noPreferenceFound || size != 1 || q > 1) q = 1;
+		gFront.shotmap = q;
 	}
 	RecordsLoad();
 	FindCourses();

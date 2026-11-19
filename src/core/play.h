@@ -39,6 +39,14 @@ enum { PS_AIM, PS_UP, PS_DOWN, PS_FLY, PS_RESULT, PS_DONE };
 
 #define PLAY_PATCHES 16 /* overlay patches drawn over the scene */
 
+/* With the shot view on the map, a full shot goes from the scene to the map
+ * this long after the hit, unless its flight shows for less than
+ * PLAY_MAP_MIN_MS (chips stay in the scene). Putts always stay. */
+#define PLAY_MAP_AFTER_MS 1000
+#define PLAY_MAP_MIN_MS   1500
+#define PLAY_UNDER 128  /* bytes kept under the ball on the map */
+#define PLAY_MAP_GAP_MS 60  /* a first map frame later than this after the switch holds the flight back by the rest */
+
 /* The swing meter, in logical units along the panel's top row, and its timing. */
 #define MTR_X      4    /* the bar's left */
 #define MTR_W      152  /* its width: full power at the right end */
@@ -95,6 +103,16 @@ typedef struct {
 	uint8_t applied;            /* play_settle has already counted the result being shown */
 	uint32_t tw;                /* when their wait started */
 	uint8_t board;              /* the card view shows the tournament leaderboard */
+	/* the shot on the map */
+	uint8_t mapview;            /* full shots go over to the map in flight; the platform sets it */
+	uint8_t onmap;              /* this shot is on the map (view PLAY_MAP) */
+	uint8_t mpause;             /* the next map frame takes the time since the switch (tmap) off the flight */
+	uint32_t tmap;              /* when the shot went over to the map */
+	int16_t mdrawn;             /* the last path point of the trail drawn on the map */
+	uint16_t mlive;             /* the readout last put on the panel */
+	RenderMap mg;               /* where the map put things */
+	URect under;                /* the pixels under the ball on the map, kept in ubits */
+	uint8_t ubits[PLAY_UNDER];
 } Play;
 
 /* A hole on its own with one player, from the tee. seed sets the wind, as
@@ -126,7 +144,8 @@ int SEC_UI play_tap(Play *p, int16_t x, int16_t y, uint32_t now);
 int SEC_UI play_frame(Play *p, Surface *s, Surface *bg, uint32_t now);
 /* The panel on the map: hole, par and yards, and below them info if it
  * isn't 0 (the hole's name if it is), with the Card button in a round; or
- * a computer golfer's shot. */
+ * a computer golfer's shot; or for a shot on the map the club, the carry
+ * or total so far and the wind, then the result. */
 void SEC_UI play_status(Surface *s, const Play *p, const char *info);
 /* The panel while the scene is drawn for a new turn or hole: the hole, and
  * who plays. */
@@ -134,8 +153,10 @@ void SEC_UI play_turn(Surface *s, const Play *p);
 /* The scorecard or the tournament leaderboard, over whatever is on s,
  * with the panel showing the hole. */
 void SEC_UI play_card(Surface *s, const Play *p);
-/* The hole map with the yardage by the aim line and the last shot's path. */
-void SEC_UI play_map(Surface *s, const Play *p);
+/* The hole map with the yardage by the aim line and the last shot's path;
+ * or, for a shot on the map, the map framed on the shot with its trail so
+ * far and the ball. */
+void SEC_UI play_map(Surface *s, Play *p);
 /* Writes v in decimal at t, returns the length. */
 int16_t SEC_UI play_num(char *t, uint32_t v);
 

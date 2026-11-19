@@ -165,6 +165,7 @@ static void Free(void)
 	gS8 = gBg8 = NULL;
 	gOffBits = NULL;
 	gHaveBg = false;
+	ScreenFadeDrop();
 	/* nothing draws until Make works again */
 	gS.bits = NULL;
 	gS.w = gS.h = gS.lw = gS.lh = 0;
@@ -531,13 +532,14 @@ static Boolean Clip(const URect *d, Int16 *x0, Int16 *y0, Int16 *x1, Int16 *y1)
 	return *x1 > *x0 && *y1 > *y0;
 }
 
-void ScreenShow(const URect *d)
+/* Copies a rectangle of gOff to the display as it is (on 16-bit screens
+ * gfx_to16 has to have filled it first). */
+static void Blit(const URect *d)
 {
 	Int16 x0, y0, x1, y1, sc = gS.scale;
 	RectangleType r;
 
 	if (!gOff || !gS.bits || !Clip(d, &x0, &y0, &x1, &y1)) return;
-	if (g16) gfx_to16(&gS, gOffBits, gOffRb, x0, y0, x1 - x0, y1 - y0, gLE);
 	if (gSony) {
 		RctSetRectangle(&r, x0, y0, x1 - x0, y1 - y0);
 		HRWinCopyRectangle(gSonyRef, gOff, WinGetDisplayWindow(), &r, x0, y0, winPaint);
@@ -545,6 +547,15 @@ void ScreenShow(const URect *d)
 	}
 	RctSetRectangle(&r, x0 / sc, y0 / sc, (x1 - x0) / sc, (y1 - y0) / sc);
 	WinCopyRectangle(gOff, WinGetDisplayWindow(), &r, x0 / sc, y0 / sc, winPaint);
+}
+
+void ScreenShow(const URect *d)
+{
+	Int16 x0, y0, x1, y1;
+
+	if (!gOff || !gS.bits || !Clip(d, &x0, &y0, &x1, &y1)) return;
+	if (g16) gfx_to16(&gS, gOffBits, gOffRb, x0, y0, x1 - x0, y1 - y0, gLE);
+	Blit(d);
 }
 
 void ScreenShowAll(void)
@@ -597,6 +608,87 @@ void ScreenRestore(const URect *d)
 void ScreenRestoreAll(void)
 {
 	if (gHaveBg) gfx_copy(&gS, &gBgS, 0, 0, gS.w, gS.h);
+}
+
+#ifdef DEBUG
+UInt32 gSwapTicks;
+#endif
+
+/* The picture a fade starts from, below 16 bits (ScreenFadeFrom). */
+static Surface gFrom;
+static Boolean gFromOk;
+
+void ScreenFadeDrop(void)
+{
+	if (gFrom.bits) MemPtrFree(gFrom.bits);
+	gFrom.bits = NULL;
+	gFromOk = false;
+}
+
+Boolean ScreenFadeFrom(const Surface *src, Int16 y1)
+{
+	UInt32 n;
+
+	ScreenFadeDrop();
+	if (!gS.bits || !gOff || !src || !src->bits) return false;
+	if (g16) {
+		/* gOff holds what the display shows */
+		gFromOk = true;
+		return true;
+	}
+	if (y1 > gS.h) y1 = gS.h;
+	n = (UInt32)gS.rowBytes * y1;
+	gFrom = gS;
+	gFrom.h = y1;
+	gFrom.bits = MemPtrNew(n);
+	if (!gFrom.bits) return false;
+	MemMove(gFrom.bits, src->bits, n);
+	gFromOk = true;
+	return true;
+}
+
+UInt32 ScreenDissolve(Int16 y1, UInt16 ms)
+{
+	URect u;
+	UInt32 t0, ts, d, worst, per;
+	UInt8 lo = 0, hi, step = 2, k = 0;
+
+	u.x = u.y = 0;
+	u.w = gS.w;
+	u.h = y1;
+	if (!gS.bits || !gOff || !gFromOk || (!g16 && y1 > gFrom.h)) {
+		ScreenFadeDrop();
+		ScreenShow(&u);
+		return 0;
+	}
+	/* 8 steps of 2 of the 16 dither values. On 16-bit screens gOff holds what
+	 * the display shows: each step converts just its pixels of gS into it.
+	 * Else the first step swaps in the old picture for 14 of the 16 values,
+	 * and each step swaps 2 back, which leaves gS as it was. */
+	per = (UInt32)ms * SysTicksPerSecond() / 1000 / 8;
+	t0 = TimGetTicks();
+	worst = 0;
+	while (lo < 16) {
+		Int32 wait = (Int32)(t0 + k * per - TimGetTicks());
+		if (k && wait > 0) SysTaskDelay(wait);
+		hi = (UInt8)(lo + step > 16 ? 16 : lo + step);
+		ts = TimGetTicks();
+		if (g16) gfx_to16_mask(&gS, gOffBits, gOffRb, 0, y1, gLE, lo, hi);
+		else if (!k) gfx_swap_mask(&gS, &gFrom, 0, y1, 2, 16);
+		else gfx_swap_mask(&gS, &gFrom, 0, y1, lo, hi);
+#ifdef DEBUG
+		if (!k) gSwapTicks = TimGetTicks() - ts;
+#endif
+		Blit(&u);
+		d = TimGetTicks() - ts;
+		if (d > worst) worst = d;
+		/* a slow first step: the rest in 3 */
+		if (!k && d > 2 * per) step = 5;
+		lo = hi;
+		k++;
+	}
+	ScreenFadeDrop();
+	return worst;
 }
 
 void ScreenDropKept(void)

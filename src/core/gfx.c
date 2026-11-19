@@ -318,3 +318,71 @@ void gfx_to16(const Surface *s, uint8_t *d, uint16_t rb, int16_t x, int16_t y, i
 		}
 	}
 }
+
+/* 4x4 ordered dither values, row by row. */
+static const uint8_t dith4[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
+
+void gfx_swap_mask(Surface *a, Surface *b, int16_t y0, int16_t y1, uint8_t lo, uint8_t hi)
+{
+	uint8_t ppb = (uint8_t)(8 >> a->lg), d = (uint8_t)(1 << a->lg), r, k, j;
+	uint16_t n = a->rowBytes >> 1, i;
+	union { uint8_t b[4]; uint16_t h[2]; uint32_t w; } m[4];
+	int16_t y;
+
+	if (y0 < 0) y0 = 0;
+	if (y1 > a->h) y1 = a->h;
+	/* each pattern row's mask for 4 bytes, which covers the 4 pixel pattern at every depth */
+	for (r = 0; r < 4; r++)
+		for (k = 0; k < 4; k++) {
+			uint8_t v = 0;
+			for (j = 0; j < ppb; j++) {
+				uint8_t dv = dith4[(r << 2) | ((k * ppb + j) & 3)];
+				v = (uint8_t)(v << d);
+				if (dv >= lo && dv < hi) v |= (uint8_t)((1 << d) - 1);
+			}
+			m[r].b[k] = v;
+		}
+	for (y = y0; y < y1; y++) {
+		uint16_t *p = (uint16_t *)rowp(a, y), *q = (uint16_t *)rowp(b, y), x;
+		const uint16_t *mh = m[y & 3].h;
+		if (!m[y & 3].w) continue;
+		if (!(n & 1)) {
+			/* two words at a time: the 68000 moves 32 bits at even addresses */
+			uint32_t *p4 = (uint32_t *)p, *q4 = (uint32_t *)q, x4, mw = m[y & 3].w;
+			for (i = (uint16_t)(n >> 1); i; i--) {
+				x4 = (*p4 ^ *q4) & mw;
+				*p4++ ^= x4;
+				*q4++ ^= x4;
+			}
+			continue;
+		}
+		for (i = 0; i < n; i++) {
+			x = (uint16_t)((p[i] ^ q[i]) & mh[i & 1]);
+			p[i] ^= x;
+			q[i] ^= x;
+		}
+	}
+}
+
+void gfx_to16_mask(const Surface *s, uint8_t *d, uint16_t rb, int16_t y0, int16_t y1, uint8_t le, uint8_t lo, uint8_t hi)
+{
+	int16_t y, x;
+	uint8_t c;
+
+	if (s->depth != 8) return;
+	if (y0 < 0) y0 = 0;
+	if (y1 > s->h) y1 = s->h;
+	for (y = y0; y < y1; y++) {
+		const uint8_t *t = dith4 + ((y & 3) << 2), *p = rowp(s, y);
+		uint8_t *q = d + MULU16(y, rb);
+		for (c = 0; c < 4; c++) {
+			if (t[c] < lo || t[c] >= hi) continue;
+			for (x = c; x < s->w; x += 4) {
+				uint16_t v = pal_565[p[x]];
+				if (le) v = (uint16_t)((v << 8) | (v >> 8));
+				q[x << 1] = (uint8_t)(v >> 8);
+				q[(x << 1) + 1] = (uint8_t)v;
+			}
+		}
+	}
+}

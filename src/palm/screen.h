@@ -36,6 +36,19 @@ Surface *ScreenKept(void);
 /* Copies a rectangle of the kept copy back to gS, or all of it. */
 void ScreenRestore(const URect *d);
 void ScreenRestoreAll(void);
+/* Keeps the picture a fade starts from, rows 0 to y1 of src, which must be
+ * what the display shows there (on 16-bit screens the offscreen window
+ * already holds it, so src isn't copied). False with no memory for it. */
+Boolean ScreenFadeFrom(const Surface *src, Int16 y1);
+void ScreenFadeDrop(void);
+/* Fades gS in over the display, rows 0 to y1 (pixels), about ms long, from
+ * the picture ScreenFadeFrom kept, in ordered dither steps, then drops that
+ * picture. A step much slower than its share makes the rest fewer. With no
+ * picture kept gS is shown at once. Returns the slowest step in ticks. */
+UInt32 ScreenDissolve(Int16 y1, UInt16 ms);
+#ifdef DEBUG
+extern UInt32 gSwapTicks;    /* the first fade step's swap, without showing it */
+#endif
 /* Drops the kept copy, to free its memory. */
 void ScreenDropKept(void);
 /* The picture resource type for the mode: Pic8 at 8 and 16 bits, else Pic2. */

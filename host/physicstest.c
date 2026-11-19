@@ -12,6 +12,7 @@
 #include <math.h>
 #include "ball.h"
 #include "play.h"
+#include "sound.h"
 
 static int fails, checks;
 
@@ -876,6 +877,145 @@ static void putt_play(Play *p, Surface *s, Surface *bg, uint32_t t, int32_t late
 	}
 }
 
+/* A full drive through play.c with frames every 30 ms, the shot view on the
+ * map or not: when each sound came (st, sid, *ns), how long after the hit
+ * it went over to the map (*tmap, 0 for never) and the time it went on to
+ * the next shot. With name, pictures of the switch, the flight and the result. */
+static uint32_t drive_run(const Hole *h, const SurfaceGrid *g, uint8_t mapview, uint8_t tap, uint32_t *st, uint8_t *sid, int *ns,
+                          uint32_t *tmap, Play *out, const char *name)
+{
+	static Play p;
+	Surface s, bg;
+	uint32_t t;
+	int f, k = 0, logged = 0, shot_res = 0;
+	char nm[64];
+
+	surface2(&s);
+	surface2(&bg);
+	play_init(&p, h, g, 7);
+	p.mapview = mapview;
+	play_frame(&p, &s, &bg, 0);
+	while (snd_take() != SND_NONE) {}
+	snd_log_n = 0;
+	swing(&p, &s, &bg, 1000, MTR_UP_MS, 0);
+	CHECK(p.state == PS_FLY && p.power == FIX_ONE && p.club == CLUB_DR);
+	*ns = 0;
+	*tmap = 0;
+	for (t = 2760; t < 60000; t += 30) {
+		f = play_frame(&p, &s, &bg, t);
+		if (f & PL_MAP) {
+			CHECK(!*tmap && p.view == PLAY_MAP && p.onmap && p.state == PS_FLY);
+			*tmap = t - p.tf;
+			play_map(&s, &p);
+			play_status(&s, &p, NULL);
+			if (name) {
+				snprintf(nm, sizeof nm, "%s-switch", name);
+				save(&s, nm);
+			}
+		}
+		/* nothing to do with a key or tap while it flies on the map */
+		if (p.onmap && p.state == PS_FLY) CHECK(play_key(&p, KEY_SELECT, t) == 0 && play_tap(&p, 80, 60, t) == 0);
+		for (; logged < snd_log_n && *ns < 64; logged++) {
+			st[*ns] = t;
+			sid[(*ns)++] = snd_log[logged];
+		}
+		if (name && p.onmap && p.state == PS_FLY && ++k == 80) {
+			snprintf(nm, sizeof nm, "%s-flight", name);
+			save(&s, nm);
+		}
+		if (p.state == PS_RESULT && !shot_res) {
+			shot_res = 1;
+			if (name) {
+				snprintf(nm, sizeof nm, "%s-result", name);
+				save(&s, nm);
+			}
+			/* a tap or Select hurries the result on, other keys don't, as on the scene */
+			if (mapview) CHECK(play_key(&p, KEY_LEFT, t) == 0 && play_key(&p, KEY_SHAPE, t) == 0 && p.state == PS_RESULT);
+			if (tap == 1) CHECK(play_tap(&p, 80, 60, t) == PL_ANIM);
+			if (tap == 2) CHECK(play_key(&p, KEY_SELECT, t) == PL_ANIM);
+		}
+		if (f & PL_RENDER) break;
+	}
+	CHECK(p.state == PS_AIM && p.view == PLAY_SCENE && !p.onmap && p.stroke == 2);
+	*out = p;
+	free(s.bits);
+	free(bg.bits);
+	return t;
+}
+
+/* The shot view on the map: a drive goes over a second after the hit, with
+ * the same sounds at the same times and the same result as in the scene;
+ * chips and putts stay in the scene. */
+static void shotmap_tests(const Hole *h, const SurfaceGrid *g)
+{
+	static uint32_t sa[64], sb[64];
+	static uint8_t ia[64], ib[64];
+	static Play a, b, p;
+	Surface s, bg;
+	uint32_t ta, tb, ma, mb, t;
+	int na, nb, k, f;
+
+	ta = drive_run(h, g, 0, 0, sa, ia, &na, &ma, &a, NULL);
+	tb = drive_run(h, g, 1, 0, sb, ib, &nb, &mb, &b, "shotmap");
+	CHECK(ma == 0 && mb >= PLAY_MAP_AFTER_MS && mb < PLAY_MAP_AFTER_MS + 30);
+	CHECK(ta == tb && na == nb && na >= 3);
+	for (k = 0; k < na && k < nb; k++) CHECK(sa[k] == sb[k] && ia[k] == ib[k]);
+	CHECK(a.rv.ball.x == b.rv.ball.x && a.rv.ball.y == b.rv.ball.y && a.lie == b.lie);
+	CHECK(strcmp(a.msg1, b.msg1) == 0 && strcmp(a.msg2, b.msg2) == 0);
+	printf("shot view: map %lu ms after the hit, %d sounds at the same times, next shot at %lu ms\n",
+	       (unsigned long)mb, nb, (unsigned long)tb);
+	/* a slow switch (the map and the fade taking 900 ms) holds the flight back: the ball goes on from where it was */
+	{
+		Surface s2, bg2;
+		int16_t at;
+		surface2(&s2);
+		surface2(&bg2);
+		play_init(&p, h, g, 7);
+		p.mapview = 1;
+		play_frame(&p, &s2, &bg2, 0);
+		swing(&p, &s2, &bg2, 1000, MTR_UP_MS, 0);
+		for (t = 2760; t < 10000 && !(play_frame(&p, &s2, &bg2, t) & PL_MAP); t += 30) {}
+		at = p.shown;
+		play_map(&s2, &p);
+		play_frame(&p, &s2, &bg2, t + 900);
+		CHECK(p.onmap && p.shown >= at && p.shown <= at + 2);
+		free(s2.bits);
+		free(bg2.bits);
+	}
+	/* a tap on the result goes on sooner */
+	CHECK(drive_run(h, g, 1, 1, sb, ib, &nb, &mb, &b, NULL) < tb);
+	CHECK(drive_run(h, g, 1, 2, sb, ib, &nb, &mb, &b, NULL) < tb);
+
+	/* a short chip stays in the scene */
+	surface2(&s);
+	surface2(&bg);
+	play_init(&p, h, g, 7);
+	p.mapview = 1;
+	play_frame(&p, &s, &bg, 0);
+	while (p.club != CLUB_SW) play_key(&p, KEY_DOWN, 10);
+	swing(&p, &s, &bg, 1000, MTR_UP_MS / 4, 0);
+	CHECK(p.state == PS_FLY && p.shot.fly_n * 42 < PLAY_MAP_MIN_MS);
+	for (t = 2000; t < 30000; t += 30) {
+		f = play_frame(&p, &s, &bg, t);
+		CHECK(!(f & PL_MAP) && !p.onmap);
+		if (f & PL_RENDER) break;
+	}
+	CHECK(p.state == PS_AIM && p.stroke == 2);
+	/* a long putt stays too */
+	place(&p, &s, &bg, vec2_make(p.rv.hole->pins[0].x - (12L << 16), p.rv.hole->pins[0].y - (25L << 16)), LIE_GREEN, 40000);
+	CHECK(p.club == CLUB_PT);
+	green_view(&p, &s, &bg);
+	play_frame(&p, &s, &bg, 42000);
+	CHECK(play_key(&p, KEY_SELECT, 43000) & PL_ANIM);
+	for (t = 43000; t < 80000; t += 30) {
+		f = play_frame(&p, &s, &bg, t);
+		CHECK(!(f & PL_MAP) && !p.onmap);
+		if ((f & PL_RENDER) || p.state == PS_DONE) break;
+	}
+	free(s.bits);
+	free(bg.bits);
+}
+
 /* Putting on the test hole through play.c: the green view, the meter, holing out and gimmies. */
 static void green_tests(const Hole *h, const SurfaceGrid *g)
 {
@@ -1060,6 +1200,7 @@ int main(int argc, char **argv)
 	test_hole(&h, &g);
 	meter_tests(&h, &g);
 	green_tests(&h, &g);
+	shotmap_tests(&h, &g);
 
 	a = checksum_run(&h, &g);
 	b = checksum_run(&h, &g);

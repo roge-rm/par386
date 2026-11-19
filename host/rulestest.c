@@ -1126,7 +1126,8 @@ static void tournament_tests(void)
 }
 
 /* Plays the round from where it is to the end through play.c, every player
- * a computer golfer, as the platform would: frames every 20 ms, the card's
+ * a computer golfer, as the platform would: quick 1 for quick shots, 0 for
+ * the full flight, 2 for the full flight going over to the map; frames every 20 ms, the card's
  * first button at the end of each hole. With every, the round is left that
  * often (settled, packed, unpacked into a new round) and started again, as
  * leaving the app and coming back. Returns the frames run. */
@@ -1135,13 +1136,14 @@ static long auto_round(Round *r, uint8_t quick, int every)
 	static Play p;
 	Surface s, bg;
 	uint32_t t = 0;
-	long n = 0;
+	long n = 0, maps = 0;
 	int f, resumes = 0;
 
 	surface(&s, 1);
 	surface(&bg, 1);
 	memset(&p, 0, sizeof p);
-	p.quick = quick;
+	p.quick = quick == 1;
+	p.mapview = quick == 2;
 	play_start(&p, &holes[r->hole].h, &holes[r->hole].g, r);
 	while (!r->over && n < 1000000L) {
 		n++;
@@ -1149,6 +1151,11 @@ static long auto_round(Round *r, uint8_t quick, int every)
 		/* the flight overlays draw over whatever is there */
 		f = p.view == PLAY_CARD ? play_key(&p, KEY_SELECT, t) : play_frame(&p, &s, &bg, t);
 		if (f & PL_BACK) break;
+		if (f & PL_MAP) {
+			if (p.onmap) maps++;
+			play_map(&s, &p);
+			play_status(&s, &p, NULL);
+		}
 		if (f & PL_NEXT) {
 			play_start(&p, &holes[r->hole].h, &holes[r->hole].g, r);
 			continue;
@@ -1170,6 +1177,8 @@ static long auto_round(Round *r, uint8_t quick, int every)
 	}
 	CHECK(r->over);
 	CHECK(!every || resumes > 3);
+	/* full shots went over to the map */
+	CHECK(quick != 2 || maps > (every ? 0 : 4));
 	free(s.bits);
 	free(bg.bits);
 	return n;
@@ -1257,6 +1266,16 @@ static void cpu_tests(const Course *c)
 	rules_init(&b, "Par386 Test", 4, c->hole_count, c->par, 11);
 	rules_mode(&b, MODE_STROKE, four, 0);
 	auto_round(&b, 0, 53);
+	same_scores(&a, &b);
+	/* and with the full shots going over to the map, played through and left on the way */
+	rules_init(&b, "Par386 Test", 4, c->hole_count, c->par, 11);
+	rules_mode(&b, MODE_STROKE, four, 0);
+	frames = auto_round(&b, 2, 0);
+	same_scores(&a, &b);
+	printf("cpu: the same with the shot view on the map: %ld frames (%.0f s)\n", frames, frames * 0.02);
+	rules_init(&b, "Par386 Test", 4, c->hole_count, c->par, 11);
+	rules_mode(&b, MODE_STROKE, four, 0);
+	auto_round(&b, 2, 113);
 	same_scores(&a, &b);
 
 	/* save and resume in every mode gives the same round as playing it through */
@@ -1853,13 +1872,13 @@ static void sound_tests(void)
 	CHECK(front_key(&f, KEY_DOWN) & FR_LINES);
 	CHECK(snd_log_n == 1 && snd_log[0] == SND_MENU_MOVE);
 	f.menu.sel = MAIN_SETTINGS;
-	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_SETTINGS && f.menu.count == 3);
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_SETTINGS && f.menu.count == 4);
 	CHECK(snd_log_n == 2 && snd_log[1] == SND_MENU_SELECT);
-	CHECK(strcmp(f.settings_list, "Sound: On|CPU: Quick|Back") == 0);
+	CHECK(strcmp(f.settings_list, "Sound: On|CPU: Quick|Shot view: Map|Back") == 0);
 	draw_front(&s, &f);
 	save(&s, "settings");
 	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_SOUND) && f.sound == SOUND_FX && f.menu.sel == 0);
-	CHECK(strcmp(f.settings_list, "Sound: Effects|CPU: Quick|Back") == 0);
+	CHECK(strcmp(f.settings_list, "Sound: Effects|CPU: Quick|Shot view: Map|Back") == 0);
 	draw_front(&s, &f);
 	save(&s, "settings-fx");
 	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_SOUND) && f.sound == SOUND_OFF);
@@ -1867,8 +1886,15 @@ static void sound_tests(void)
 	/* the computer golfers' shots: quick or the full flight */
 	CHECK(front_key(&f, KEY_DOWN) & FR_LINES);
 	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_CPU) && !f.quick && f.menu.sel == 1);
-	CHECK(strcmp(f.settings_list, "Sound: On|CPU: Full|Back") == 0);
+	CHECK(strcmp(f.settings_list, "Sound: On|CPU: Full|Shot view: Map|Back") == 0);
 	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_CPU) && f.quick);
+	/* full shots on the map or in the scene */
+	CHECK(front_key(&f, KEY_DOWN) & FR_LINES);
+	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_SHOT) && !f.shotmap && f.menu.sel == 2);
+	CHECK(strcmp(f.settings_list, "Sound: On|CPU: Quick|Shot view: 3D|Back") == 0);
+	draw_front(&s, &f);
+	save(&s, "settings-3d");
+	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_SHOT) && f.shotmap);
 	CHECK(front_key(&f, KEY_DOWN) & FR_LINES);
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_MENU && f.menu.sel == MAIN_SETTINGS);
 	front_key(&f, KEY_SELECT);

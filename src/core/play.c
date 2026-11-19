@@ -96,6 +96,11 @@ static void SEC_UI setup(Play *p)
 	p->redraw = R_ALL;
 	p->shown = -2;
 	p->mishit = 0;
+	if (p->onmap) {
+		/* the shot was on the map: the next one starts in the scene */
+		p->onmap = 0;
+		p->view = PLAY_SCENE;
+	}
 	snd_ambient(p->lie == LIE_TEE);
 }
 
@@ -217,10 +222,11 @@ static int SEC_UI turn(const Play *p)
 void play_start(Play *p, const Hole *h, const SurfaceGrid *g, Round *r)
 {
 	int n;
-	uint8_t quick = p->quick;
+	uint8_t quick = p->quick, mapview = p->mapview;
 
 	play_init(p, h, g, r->seed);
 	p->quick = quick;
+	p->mapview = mapview;
 	p->round = r;
 	/* r->turn may still be the player who just hit; the rules pick who is next */
 	n = rules_next(r, pin(p));
@@ -317,6 +323,7 @@ static int SEC_UI after_done(Play *p)
 	Round *r = p->round;
 	int n;
 
+	p->onmap = 0;
 	if (!r) return PL_BACK;
 	n = rules_next(r, pin(p));
 	if (n >= 0) {
@@ -457,10 +464,25 @@ static int SEC_UI hurry(Play *p, uint32_t now)
 	return PL_ANIM;
 }
 
+/* A key or tap while a shot is on the map: the result goes on sooner, the
+ * score goes on; nothing while it flies. */
+static int SEC_UI map_click(Play *p, uint32_t now)
+{
+	if (p->cpu) return hurry(p, now);
+	if (p->state == PS_RESULT) {
+		p->t0 = now - RESULT_MS;
+		return PL_ANIM;
+	}
+	if (p->state == PS_DONE) return after_done(p);
+	return 0;
+}
+
 int play_key(Play *p, uint8_t key, uint32_t now)
 {
 	if (key == KEY_BACK) return PL_BACK;
 	if (p->view == PLAY_CARD) return card_key(p, key);
+	/* as on the scene: the result goes on with Select only */
+	if (p->onmap) return key == KEY_SELECT || p->cpu || p->state == PS_DONE ? map_click(p, now) : 0;
 	if (p->cpu) return hurry(p, now);
 	if (key == KEY_CARD && p->round && !practice(p) && (p->state == PS_AIM || p->view == PLAY_MAP)) return open_card(p, CARD_VIEW);
 	if (p->view == PLAY_MAP) {
@@ -557,6 +579,7 @@ int play_tap(Play *p, int16_t x, int16_t y, uint32_t now)
 		int i = p->board ? board_hit(p->round, p->card, cx, cy) : card_hit(p->round, p->card, p->page, cx, cy);
 		return i < 0 ? 0 : card_button(p, (uint8_t)i);
 	}
+	if (p->onmap) return map_click(p, now);
 	if (p->cpu) return hurry(p, now);
 	if (p->view == PLAY_MAP) {
 		if (p->round && !practice(p) && on_box(x, y, CARD_X, ROW_B, CARD_W)) return open_card(p, CARD_VIEW);
@@ -1249,12 +1272,301 @@ static int SEC_UI map_frame(Play *p, uint32_t now)
 	return PL_PANEL | PL_ANIM;
 }
 
+/* The path point the flight has got to at now: FLY_MS a point in the air,
+ * ROLL_MS on the ground. The first call starts the clock. */
+static int16_t SEC_UI fly_point(Play *p, uint32_t now)
+{
+	int32_t e, k, fly = (int32_t)p->shot.fly_n * FLY_MS;
+	if (p->shown == -2) {
+		p->tf = now;
+		p->shown = -1;
+	}
+	e = (int32_t)(now - p->tf);
+	k = e < fly ? e / FLY_MS : p->shot.fly_n + (e - fly) / ROLL_MS;
+	if (k > p->shot.n - 1) k = p->shot.n - 1;
+	return (int16_t)k;
+}
+
+/* The shot on the map: the map framed on the shot, the trail drawn as the
+ * ball goes, the ball over it (the pixels under it kept in ubits), and the
+ * panel with the carry or total so far, then the result. */
+
+#define MAP_PAD   (12L << 16)   /* yards shown round the shot */
+#define MAP_MIN_W (60L << 16)   /* the map shows at least this much across */
+#define MAP_MIN_H (80L << 16)   /* and along */
+
+static void SEC_UI box_add(MapBox *b, fixed x, fixed y)
+{
+	if (x < b->x0) b->x0 = x;
+	if (x > b->x1) b->x1 = x;
+	if (y < b->y0) b->y0 = y;
+	if (y > b->y1) b->y1 = y;
+}
+
+/* Pads b and grows it round its middle to the least size. */
+static void SEC_UI box_pad(MapBox *b)
+{
+	fixed d;
+	b->x0 -= MAP_PAD; b->x1 += MAP_PAD;
+	b->y0 -= MAP_PAD; b->y1 += MAP_PAD;
+	if ((d = MAP_MIN_W - (b->x1 - b->x0)) > 0) { b->x0 -= d / 2; b->x1 += d / 2; }
+	if ((d = MAP_MIN_H - (b->y1 - b->y0)) > 0) { b->y0 -= d / 2; b->y1 += d / 2; }
+}
+
+/* Yards a pixel that b needs on s. */
+static fixed SEC_UI box_ypp(const MapBox *b, const Surface *s)
+{
+	fixed a = (b->x1 - b->x0) / s->w, c = (b->y1 - b->y0) / (int16_t)((s->lh - RENDER_STATUS) * s->scale);
+	return a > c ? a : c;
+}
+
+/* The part of the hole the map shows for the shot: where it started and
+ * every point of its path, and the pin as well if that doesn't make the
+ * map more than half as small again. */
+static void SEC_UI shot_box(const Play *p, const Surface *s, MapBox *b)
+{
+	MapBox a;
+	vec2 pn = pin(p);
+	int16_t k;
+
+	b->x0 = b->x1 = p->shot.start.x;
+	b->y0 = b->y1 = p->shot.start.y;
+	for (k = 0; k < p->shot.n; k++) box_add(b, (fixed)p->shot.path[k].x * 4096, (fixed)p->shot.path[k].y * 4096);
+	a = *b;
+	box_add(&a, pn.x, pn.y);
+	box_pad(b);
+	box_pad(&a);
+	if (box_ypp(&a, s) <= box_ypp(b, s) + (box_ypp(b, s) >> 1)) *b = a;
+}
+
+/* Path point k on the map, in pixels. */
+static void SEC_UI map_xy(const Play *p, int16_t k, int16_t *x, int16_t *y)
+{
+	const BallPt *b = &p->shot.path[k];
+	*x = (int16_t)(p->mg.left + ((fixed)b->x * 4096) / p->mg.ypp);
+	*y = (int16_t)(p->mg.top + (p->mg.length - (fixed)b->y * 4096) / p->mg.ypp);
+}
+
+/* A fill over the map's view that goes to the screen. */
+static void SEC_UI mput(Play *p, Surface *s, int16_t x, int16_t y, int16_t w, int16_t h, uint8_t c)
+{
+	over(s, x, y, w, h, c);
+	dirty(p, x, y, w, h);
+}
+
+/* The trail from path point a to b: a bright line with a black edge,
+ * yellow in the air and white on the ground in colour, white on greys.
+ * The edges go down first, then the line, so the line stays whole. */
+static void SEC_UI trail(Play *p, Surface *s, int16_t a, int16_t b)
+{
+	int16_t k, u = s->scale;
+	for (k = a + 1; k <= b; k++) {
+		int16_t x0, y0, x1, y1, dx, dy, n, j, pass;
+		uint8_t c = k <= p->shot.fly_n ? UIC_TEXT_HI : UIC_WHITE;
+		map_xy(p, (int16_t)(k - 1), &x0, &y0);
+		map_xy(p, k, &x1, &y1);
+		dx = x1 - x0;
+		dy = y1 - y0;
+		n = dx < 0 ? -dx : dx;
+		if (dy > n || -dy > n) n = dy < 0 ? -dy : dy;
+		if (n > 400) continue;
+		for (pass = 0; pass < 2; pass++)
+			for (j = pass || k == 1 ? 0 : 1; j <= n; j++) {
+				int16_t x = x0 + (n ? (int16_t)((int32_t)dx * j / n) : 0), y = y0 + (n ? (int16_t)((int32_t)dy * j / n) : 0);
+				if (pass) mput(p, s, x, y, u, u, c);
+				else mput(p, s, x - u, y - u, 3 * u, 3 * u, UIC_BLACK);
+			}
+	}
+}
+
+/* Keeps (put 0) or puts back (put 1) the pixels under the ball. */
+static void SEC_UI under_io(Play *p, Surface *s, uint8_t put)
+{
+	URect *r = &p->under;
+	int16_t j, i, b0, n, k = 0;
+	if (r->w <= 0) return;
+	b0 = (int16_t)(((uint16_t)r->x << s->lg) >> 3);
+	n = (int16_t)((((uint16_t)(r->x + r->w - 1) << s->lg) >> 3) - b0 + 1);
+	if (n * r->h > PLAY_UNDER) {
+		r->w = 0;
+		return;
+	}
+	for (j = 0; j < r->h; j++) {
+		uint8_t *q = s->bits + MULU16(r->y + j, s->rowBytes) + b0;
+		for (i = 0; i < n; i++, k++) {
+			if (put) q[i] = p->ubits[k];
+			else p->ubits[k] = q[i];
+		}
+	}
+	if (put) dirty(p, r->x, r->y, r->w, r->h);
+}
+
+/* The trail on to the point shown, the landing mark once it's down, and
+ * the ball there: white with a black edge, bigger than the trail. */
+static void SEC_UI map_ball(Play *p, Surface *s)
+{
+	int16_t k = p->shown, u = s->scale, x, y, x1, y1, vh = (int16_t)((s->lh - RENDER_STATUS) * u);
+	const Shot *sh = &p->shot;
+
+	under_io(p, s, 1);
+	p->under.w = 0;
+	if (p->mg.ypp <= 0) return;
+	if (k > p->mdrawn) {
+		trail(p, s, p->mdrawn < 0 ? 0 : p->mdrawn, k);
+		if (sh->fly_n > 0 && sh->fly_n < sh->n && k >= sh->fly_n) {
+			/* where it came down: a black ring, over the roll's trail */
+			map_xy(p, sh->fly_n, &x, &y);
+			mput(p, s, x - 3 * u, y - 3 * u, 7 * u, u, UIC_BLACK);
+			mput(p, s, x - 3 * u, y + 3 * u, 7 * u, u, UIC_BLACK);
+			mput(p, s, x - 3 * u, y - 2 * u, u, 5 * u, UIC_BLACK);
+			mput(p, s, x + 3 * u, y - 2 * u, u, 5 * u, UIC_BLACK);
+		}
+		p->mdrawn = k;
+	}
+	if (k < 0 || (sh->result == SHOT_HOLED && k == sh->n - 1)) return;
+	map_xy(p, k, &x, &y);
+	x -= 2 * u;
+	y -= 2 * u;
+	x1 = x + 5 * u;
+	y1 = y + 5 * u;
+	if (x < 0) x = 0;
+	if (y < 0) y = 0;
+	if (x1 > s->w) x1 = s->w;
+	if (y1 > vh) y1 = vh;
+	if (x1 <= x || y1 <= y) return;
+	p->under.x = x;
+	p->under.y = y;
+	p->under.w = x1 - x;
+	p->under.h = y1 - y;
+	under_io(p, s, 0);
+	if (p->under.w <= 0) return;
+	map_xy(p, k, &x, &y);
+	mput(p, s, x - 2 * u, y - 2 * u, 5 * u, 5 * u, UIC_BLACK);
+	mput(p, s, x - u, y - u, 3 * u, 3 * u, UIC_WHITE);
+}
+
+/* The panel's live readout: the carry so far in the air, the total on the
+ * ground. Drawn only when it changes. */
+static void SEC_UI map_live(Play *p, Surface *s, uint8_t force)
+{
+	char t[12];
+	int16_t n = 0, k = p->shown < 0 ? 0 : p->shown;
+	const BallPt *b = &p->shot.path[k];
+	uint8_t roll = k >= p->shot.fly_n;
+	fixed d = vec2_len(vec2_make((fixed)b->x * 4096 - p->shot.start.x, (fixed)b->y * 4096 - p->shot.start.y));
+	uint16_t v = (uint16_t)((d + FIX_HALF) >> 16);
+
+	if (v > 999) v = 999;
+	v |= roll ? 0x8000 : 0;
+	if (!force && v == p->mlive) return;
+	p->mlive = v;
+	add(t, &n, roll ? "Total " : "Carry ");
+	play_num(t + n, v & 0x7FFF);
+	readout(s, SHAPE_X, ROW_A, PIN_X + PIN_W - SHAPE_X, t, -1, UIC_TEXT_HI);
+	dirty(p, (int16_t)(SHAPE_X * s->scale), (int16_t)(ROW_A * s->scale), (int16_t)((PIN_X + PIN_W - SHAPE_X) * s->scale),
+	      (int16_t)(ROW_H * s->scale));
+}
+
+/* The panel for a shot on the map: in flight the club, the live readout,
+ * the wind and who's playing; then the result or the score. */
+static void SEC_UI fly_panel(Surface *s, Play *p)
+{
+	char t[24];
+	int16_t n = 0;
+
+	face(s);
+	if (p->state != PS_FLY) {
+		well(s, 2, ROW_A, s->lw - 4, 2 * ROW_H + 1);
+		box_text(s, 2, ROW_A, s->lw - 4, p->msg1, -1, 0, UIC_TEXT_HI);
+		box_text(s, 2, ROW_B, s->lw - 4, p->msg2, -1, 0, UIC_PAPER);
+		return;
+	}
+	readout(s, CLUB_X, ROW_A, CLUB_W, ball_club_name(p->club), -1, UIC_PAPER);
+	map_live(p, s, 1);
+	rose(p, s);
+	if (practice(p)) {
+		add(t, &n, "Ball ");
+		play_num(t + n, (uint32_t)p->round->balls + 1);
+	} else {
+		add(t, &n, p->round ? p->round->pl[p->cur].name : "Player 1");
+		add(t, &n, ", shot ");
+		play_num(t + n, p->stroke);
+	}
+	readout(s, LIE_X, ROW_B, ROSE_X - 1 - LIE_X, t, -1, UIC_PAPER);
+}
+
+/* Draws the map for the shot on it, with the trail so far, the start and the ball. */
+static void SEC_UI fly_map_draw(Play *p, Surface *s)
+{
+	MapBox b;
+	int16_t x, y, u = s->scale, k = p->shown;
+
+	shot_box(p, s, &b);
+	if (render_map_box(s, &p->rv, &b, &p->mg) != 0) return;
+	p->under.w = 0;
+	p->mdrawn = -1;
+	p->dirty.w = 0;
+	if (k >= 0) map_ball(p, s);
+	/* the start: a black square with a white ring */
+	x = (int16_t)(p->mg.left + p->shot.start.x / p->mg.ypp);
+	y = (int16_t)(p->mg.top + (p->mg.length - p->shot.start.y) / p->mg.ypp);
+	over(s, x - 2 * u, y - 2 * u, 5 * u, 5 * u, UIC_BLACK);
+	over(s, x - u, y - u, 3 * u, 3 * u, UIC_WHITE);
+	over(s, x, y, u, u, UIC_BLACK);
+	p->mlive = 0xFFFF;
+}
+
+/* A frame of the shot on the map: the ball on, then the result, then the
+ * next shot or the score, as play_frame does in the scene. */
+static int SEC_UI fly_map(Play *p, Surface *s, uint32_t now)
+{
+	int f;
+
+	p->dirty.w = 0;
+	if (p->mpause) {
+		/* the flight waits while the map draws and fades in: the ball goes on from where it was */
+		int32_t gap = (int32_t)(now - p->tmap) - PLAY_MAP_GAP_MS;
+		if (gap > 0) p->tf += (uint32_t)gap;
+		p->mpause = 0;
+	}
+	if (p->state == PS_FLY) {
+		int16_t i = fly_point(p, now);
+		landed(p, i);
+		if (i != p->shown) {
+			p->shown = i;
+			map_ball(p, s);
+		}
+		if (i >= p->shot.n - 1) {
+			stopped(p);
+			result(p);
+			p->state = PS_RESULT;
+			p->t0 = now;
+			fly_panel(s, p);
+			dirty(p, 0, (int16_t)(STRIP_Y * s->scale), s->w, (int16_t)(RENDER_STATUS * s->scale));
+		} else {
+			map_live(p, s, 0);
+		}
+		return PL_ANIM | (p->dirty.w > 0 ? PL_DIRTY : 0);
+	}
+	if (p->state == PS_RESULT) {
+		if ((int32_t)(now - p->t0) < (p->cpu ? PLAY_CPU_MS : RESULT_MS)) return PL_ANIM;
+		f = next(p);
+		if (f) return f;
+		/* holed: the score on the panel */
+		fly_panel(s, p);
+		dirty(p, 0, (int16_t)(STRIP_Y * s->scale), s->w, (int16_t)(RENDER_STATUS * s->scale));
+		return PL_DIRTY | (p->cpu ? PL_ANIM : 0);
+	}
+	if (p->state == PS_DONE && p->cpu) return waited(p, now, PLAY_CPU_MS) ? after_done(p) : PL_ANIM;
+	return 0;
+}
+
 int play_frame(Play *p, Surface *s, Surface *bg, uint32_t now)
 {
 	int flags = 0;
 	uint8_t k;
 
-	if (p->view == PLAY_MAP) return map_frame(p, now);
+	if (p->view == PLAY_MAP) return p->onmap ? fly_map(p, s, now) : map_frame(p, now);
 	if (p->view != PLAY_SCENE) return 0;
 	camera(p, s);
 	p->dirty.w = 0;
@@ -1304,19 +1616,18 @@ int play_frame(Play *p, Surface *s, Surface *bg, uint32_t now)
 		flags |= PL_ANIM;
 		break;
 	case PS_FLY: {
-		int32_t e, fly = (int32_t)p->shot.fly_n * FLY_MS;
-		int16_t i;
-		if (p->shown == -2) {
-			p->tf = now;
-			p->shown = -1;
-		}
-		e = (int32_t)(now - p->tf);
-		{
-			int32_t k = e < fly ? e / FLY_MS : p->shot.fly_n + (e - fly) / ROLL_MS;
-			if (k > p->shot.n - 1) k = p->shot.n - 1;
-			i = (int16_t)k;
-		}
+		int16_t i = fly_point(p, now);
 		landed(p, i);
+		if (p->mapview && p->club != CLUB_PT && (int32_t)p->shot.fly_n * FLY_MS >= PLAY_MAP_MIN_MS &&
+		    (int32_t)(now - p->tf) >= PLAY_MAP_AFTER_MS && i < p->shot.n - 1) {
+			/* over to the map for the rest of the flight */
+			p->shown = i;
+			p->onmap = 1;
+			p->view = PLAY_MAP;
+			p->tmap = now;
+			p->mpause = 1;
+			return PL_MAP | PL_ANIM;
+		}
 		if (i >= p->shot.n - 1) {
 			i = (int16_t)(p->shot.n - 1);
 			stopped(p);
@@ -1417,6 +1728,11 @@ void play_status(Surface *s, const Play *p, const char *info)
 {
 	int16_t w = s->lw - 4;
 
+	if (p->onmap) {
+		/* const only to the callers: the live readout notes what it showed */
+		fly_panel(s, (Play *)p);
+		return;
+	}
 	if (p->cpu && p->state == PS_RESULT) {
 		/* a computer golfer's shot: who and which shot, and where it went */
 		char t[24];
@@ -1476,12 +1792,16 @@ void play_card(Surface *s, const Play *p)
 	else if (p->round) card_draw(&c, p->round, p->card, p->page, p->csel);
 }
 
-void play_map(Surface *s, const Play *p)
+void play_map(Surface *s, Play *p)
 {
 	RenderMap m;
 	char t[12];
 	int16_t n, x, y, sc = s->scale, k;
 
+	if (p->onmap) {
+		fly_map_draw(p, s);
+		return;
+	}
 	if (render_map(s, &p->rv, &m) != 0) return;
 	/* the last shot's path, dotted */
 	if (p->have_shot) {
