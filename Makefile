@@ -11,12 +11,14 @@
 #   make render-test draws the test hole from 3 places and compares with host/ref/
 #   make course-render draws every hole of Auld Kirk from the tee, the landing area and near the green
 #                    (CR=carrighead for Carrig Head, CR=sakurabay for Sakura Bay,
-#                    CR=banksiaheath for Banksia Heath, CR=crocodilebend for Crocodile Bend)
+#                    CR=banksiaheath for Banksia Heath, CR=crocodilebend for Crocodile Bend,
+#                    CR=cascadesprings for Cascade Springs)
 #   make auldkirk    writes courses/auldkirk/ again from tools/mkauldkirk.py
 #   make carrighead  writes courses/carrighead/ again from tools/mkcarrig.py
 #   make sakurabay   writes courses/sakurabay/ again from tools/mksakura.py
 #   make banksiaheath writes courses/banksiaheath/ again from tools/mkbanksia.py
 #   make crocodilebend writes courses/crocodilebend/ again from tools/mkcroc.py
+#   make cascadesprings writes courses/cascadesprings/ again from tools/mkcascade.py
 #   make render-ref  makes host/ref/ again from the current renderer
 #   make physics-test plays shots on the host and checks carries, wind, lies, water and the meter
 #   make rules-test  turn order, honour, scores, the scorecard and the saved round
@@ -137,6 +139,7 @@ build/courses/Par386-Carrighead.pdb: $(wildcard courses/carrighead/*)
 build/courses/Par386-Sakurabay.pdb: $(wildcard courses/sakurabay/*)
 build/courses/Par386-Banksiaheath.pdb: $(wildcard courses/banksiaheath/*)
 build/courses/Par386-Crocodilebend.pdb: $(wildcard courses/crocodilebend/*)
+build/courses/Par386-Cascadesprings.pdb: $(wildcard courses/cascadesprings/*)
 
 # The Auld Kirk sources are made by a script; run it after editing it.
 auldkirk:
@@ -153,6 +156,9 @@ banksiaheath:
 
 crocodilebend:
 	python3 tools/mkcroc.py courses/crocodilebend
+
+cascadesprings:
+	python3 tools/mkcascade.py courses/cascadesprings
 
 # Compiles the test course, dumps it to text, compiles the dump and checks
 # both load the same. The surface grid picture goes to $(DEBUGDIR).
@@ -216,11 +222,12 @@ build/courserender: host/courserender.c $(HOSTSRC) src/core/*.h | $(BUILD)
 # Every hole of a course (CR, Auld Kirk unless set) from the tee, the landing
 # area and near the green, and its map, at 160 2-bit and 320 8-bit, to
 # $(DEBUGDIR)/m8/ (Carrig Head to m13-carrig/, Sakura Bay to m13-sakura/,
-# Banksia Heath to m13-banksia/, Crocodile Bend to m13-croc/). Round-trips the course
+# Banksia Heath to m13-banksia/, Crocodile Bend to m13-croc/, Cascade Springs to
+# m13-cascade/). Round-trips the course
 # through the dump and checks every hole loads.
 CR       ?= auldkirk
 CRPDB    = Par386-$(shell echo $(CR) | sed 's/./\u&/').pdb
-CROUT    = $(if $(filter auldkirk,$(CR)),m8,$(if $(filter carrighead,$(CR)),m13-carrig,$(if $(filter sakurabay,$(CR)),m13-sakura,$(if $(filter banksiaheath,$(CR)),m13-banksia,$(if $(filter crocodilebend,$(CR)),m13-croc,course-$(CR))))))
+CROUT    = $(if $(filter auldkirk,$(CR)),m8,$(if $(filter carrighead,$(CR)),m13-carrig,$(if $(filter sakurabay,$(CR)),m13-sakura,$(if $(filter banksiaheath,$(CR)),m13-banksia,$(if $(filter crocodilebend,$(CR)),m13-croc,$(if $(filter cascadesprings,$(CR)),m13-cascade,course-$(CR)))))))
 course-render: build/courserender build/coursetest build/courses/$(CRPDB) $(ART)/obj.rcp
 	rm -rf build/course-render build/course-dump/$(CR) && mkdir -p build/course-render
 	python3 tools/coursec.py dump build/courses/$(CRPDB) build/course-dump/$(CR)
@@ -268,4 +275,4 @@ clean:
 
 sounds: $(SND)/snd.rcp
 
-.PHONY: sounds all release clean host-test course-test course-render cpu-round auldkirk carrighead sakurabay banksiaheath crocodilebend ui-test ui-ref render-test render-ref physics-test rules-test courses tables art
+.PHONY: sounds all release clean host-test course-test course-render cpu-round auldkirk carrighead sakurabay banksiaheath crocodilebend cascadesprings ui-test ui-ref render-test render-ref physics-test rules-test courses tables art

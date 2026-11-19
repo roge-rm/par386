@@ -51,10 +51,12 @@ STYLES = {
             items=[(OBJ_TREE, 0, 24, 44, 24), (mkstyle.OBJ_LANDMARK, 0, 194, 34, 20),
                    (OBJ_TREE, 1, 150, 30, 8), (OBJ_TREE, 0, 64, 31, 9), (OBJ_TREE, 0, 120, 28, 5),
                    (mkstyle.OBJ_ANIMAL, 1, 82, 38, 5), (mkstyle.OBJ_ANIMAL, 0, 132, 41, 3)]),
-    6: dict(sky=((40, 90, 180), (180, 204, 228)), far=('peak', (110, 120, 136), 20),
-            grass=(82, 150, 66), rough=(46, 96, 46),
-            items=[(OBJ_PINE, 0, 22, 44, 28), (OBJ_PINE, 1, 190, 46, 30), (OBJ_PINE, 0, 170, 32, 14),
-                   (mkstyle.OBJ_LANDMARK, 0, 56, 29, 10)]),
+    6: dict(sky=((40, 90, 180), (190, 210, 230)), far=('rockies', (110, 120, 136), 22),
+            grass=(86, 154, 66), rough=(46, 92, 44), river=(41, 1.8),
+            items=[(OBJ_PINE, 0, 16, 48, 30), (OBJ_PINE, 1, 196, 50, 32), (OBJ_PINE, 0, 182, 34, 12),
+                   (OBJ_PINE, 1, 36, 32, 10), (OBJ_PINE, 0, 124, 30, 8), (OBJ_PINE, 1, 84, 30, 8),
+                   (OBJ_TREE, 0, 168, 39, 9), (mkstyle.OBJ_LANDMARK, 0, 148, 29, 14),
+                   (mkstyle.OBJ_ANIMAL, 0, 54, 38, 5)]),
 }
 
 
@@ -100,7 +102,7 @@ def paint(s):
         top_y = HORIZON - bh * (0.15 + 0.85 * prof ** 1.3)
     else:
         top_y = HORIZON - bh * (0.4 + 0.6 * prof)
-    band = (y >= top_y[None, :]) & (y < HORIZON)
+    band = (y >= top_y[None, :]) & (y < HORIZON) & (kind != 'rockies')
     lab[band] = FAR
     far = mix(col, haze, 0.35)
     if kind == 'peak':
@@ -191,6 +193,55 @@ def paint(s):
             img[cy + 1:HORIZON, ax] = mix((70, 56, 40), haze, 0.3)
             lab[cy:HORIZON, ax - 2:ax + 3] = FAR
         lab[e_m | k_m | bush] = FAR
+    elif kind == 'rockies':
+        # snow-capped peaks: a horn on the left of centre, a long slab
+        # mountain on the right, a pale far range between, lit from the
+        # left with the faces right of each ridge in shade, wooded foothills
+        # and a dark band of spruce along the bottom
+        xs = np.arange(W)
+        far_t = HORIZON - 9 - 4 * mkobj.vnoise((1, W), 12, 801 + s)[0] - 2 * np.abs(np.sin(xs * 0.31))
+        back = (y >= far_t[None, :]) & (y < HORIZON)
+        img[back] = mix((150, 166, 180), haze, 0.45)
+        peaks = [(70, 30, 30, bh, 1.15), (150, 20, 46, bh * 0.75, 0.9), (10, 16, 20, bh * 0.55, 1.0),
+                 (204, 14, 16, bh * 0.6, 1.0)]
+        prof = np.zeros(W)
+        lit = np.zeros((H, W), dtype=bool)
+        own = np.full(W, -1)
+        for k, (cx, hl, hr, ph, sh) in enumerate(peaks):
+            dd = np.where(xs < cx, (cx - xs) / hl, (xs - cx) / hr)
+            v = ph * np.clip(1 - dd, 0, 1) ** sh
+            own = np.where(v > prof, k, own)
+            prof = np.maximum(prof, v)
+        # the slab mountain's long flat back
+        slab = np.where((xs > 112) & (xs < 172), bh * (0.5 + 0.22 * (xs - 112) / 60
+                                                         + 0.08 * mkobj.vnoise((1, W), 4, 805 + s)[0]), 0)
+        own = np.where(slab > prof, 1, own)
+        prof = np.maximum(prof, slab)
+        prof = prof + (mkobj.vnoise((1, W), 2, 802 + s)[0]) * 1.2 * (prof > 2)
+        mt = HORIZON - 3 - prof
+        body = (y >= mt[None, :]) & (y < HORIZON) & (prof[None, :] > 0.5)
+        for k, (cx, hl, hr, ph, sh) in enumerate(peaks):
+            bx = cx + (y - (HORIZON - 3 - ph)) * 0.35
+            lit |= (own[None, :] == k) & (x < bx)
+        lit = np.where((own == 1)[None, :] & (x < 166), True, lit)
+        rock = np.where(lit[..., None], mix((128, 134, 146), haze, 0.2)[None, None],
+                        mix((70, 78, 96), haze, 0.15)[None, None])
+        img = np.where(body[..., None], rock, img)
+        alt = (HORIZON - 3 - y) / bh
+        gul = mkobj.vnoise((H, W), 3, 803 + s)
+        snowy = body & (alt[..., None][..., 0] > 0.42 + gul * 0.3 - (np.abs(np.sin(xs * 0.5)) ** 6 * 0.15)[None, :])
+        img = np.where((snowy & lit)[..., None], np.asarray((246, 248, 252), float)[None, None], img)
+        img = np.where((snowy & ~lit)[..., None], np.asarray((186, 196, 214), float)[None, None], img)
+        foot_t = HORIZON - 3 - 2.5 * mkobj.vnoise((1, W), 10, 804 + s)[0] - 1.2
+        foot = (y >= foot_t[None, :]) & (y < HORIZON)
+        img[foot] = mix((44, 74, 50), haze, 0.3)
+        sp = np.zeros(W)
+        for cx in np.arange(1, W, 2.5) + r.uniform(-0.6, 0.6, len(np.arange(1, W, 2.5))):
+            th = r.uniform(1.5, 3.5)
+            sp = np.maximum(sp, th * np.clip(1 - np.abs(xs - cx) / 1.8, 0, 1))
+        spruce = (y >= (HORIZON - 1 - sp)[None, :]) & (y < HORIZON)
+        img[spruce] = mix((24, 50, 32), haze, 0.15)
+        lab[back | body | foot | spruce] = FAR
     else:
         img[band] = mix(far, haze, 0.2 * (HORIZON - y) / max(1, bh))[band] if False else far
     # ground: rough everywhere, a fairway narrowing to the horizon with mown

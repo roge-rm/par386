@@ -25,7 +25,7 @@ its lighthouse, the mainland and clouds), 3 the Japanese bay (the sea, a
 snow-capped volcano, wooded ridges with a pagoda and thin cloud), 4 the
 sandbelt (low sandy hills, scrub and gums in the heat haze), 5 the bush
 (a far escarpment, a granite koppie and flat-topped acacias under a warm
-sky).
+sky), 6 the Rockies (snow-capped peaks over wooded foothills and spruce).
 
 Usage: mkobj.py OUT [PREVIEW]
 """
@@ -918,6 +918,128 @@ def croc_art(res, prev):
             preview(idx, prev / f'backdrop-{1050 + k}.png', 2)
 
 
+
+# Cascade Springs (scenery 6): snow-capped peaks of the Rockies over wooded
+# slopes and a spruce forest, from their own random numbers.
+mrng = np.random.default_rng(2386 + 6)
+
+
+def cascade_backdrop(width, height, seed):
+    """The Rockies backdrop, half a turn wide (it repeats twice a turn).
+    Across it in degrees: a long slab mountain rising to a steep face on the
+    right (5 to 70), a gap with a far glacier (70 to 88), a tall horn
+    peak (88 to 122), then a jagged range (122 to 180). Lit from the left:
+    the faces left of each ridge line light, right of it in shade. Snow down
+    to about half way, in tongues down the gullies, thin on the steep faces.
+    In front, wooded foothills and a spruce forest along the bottom rows so
+    the terrain's far edge meets it."""
+    h, w = height * SS, width * SS
+    y, x = np.mgrid[0:h, 0:w] + 0.5
+    u = x[0] / w * 180.0
+    ur = np.radians(u) * 2          # a whole turn across the strip, for waves that wrap
+    ground = h - SS * 2.0             # the forest meets the terrain here
+    land_h = h * 0.86
+
+    # peaks: (centre, half width left, half width right, height, sharpness)
+    peaks = [(16, 14, 26, 0.70, 0.9), (46, 22, 22, 0.80, 1.0), (79, 9, 9, 0.42, 1.1),
+             (104, 16, 18, 1.00, 1.15), (134, 12, 12, 0.66, 1.0), (152, 10, 12, 0.74, 1.05),
+             (170, 10, 14, 0.58, 1.0), (196, 14, 26, 0.70, 0.9)]
+    prof = np.zeros_like(u)
+    owner = np.zeros(u.shape, dtype=int)
+    for i, (c, hl, hr, ph, sh) in enumerate(peaks):
+        d = np.where(u < c, (c - u) / hl, (u - c) / hr)
+        v = ph * np.clip(1 - d, 0, 1) ** sh
+        owner = np.where(v > prof, i, owner)
+        prof = np.maximum(prof, v)
+    # the wrapped copy of the first peak at 196 shares its owner
+    owner = np.where(owner == len(peaks) - 1, 0, owner)
+    # the slab mountain: a long gentle back rising to the left, a steep
+    # broken face on the right
+    slab = np.clip((u - 6) / 54, 0, 1) * np.clip((66 - u) / 6, 0, 1) ** 0.7
+    slab = (0.48 + 0.30 * np.clip((u - 6) / 54, 0, 1)) * (slab > 0) * np.clip((u - 6) / 4, 0, 1)
+    slab = np.where(u < 66, slab * np.clip((66 - u) / 6, 0, 1) ** 0.6, 0)
+    slab_on = slab > prof
+    prof = np.maximum(prof, slab)
+    # serrate the ridges: fine jagged noise, more on the high parts
+    jag = (pnoise(1, w, 1, seed + 1, SS * 3)[0] - 0.5) * 0.05 + (pnoise(1, w, 1, seed + 2, SS * 10)[0] - 0.5) * 0.08
+    prof = np.where(prof > 0.05, prof + jag * np.clip(prof * 2, 0, 1), prof)
+    top = ground - prof * land_h
+    mtn = (y >= top[None, :])
+    alt = (ground - y) / land_h                     # 0 at the bottom, 1 at the tallest summit
+    # ridge lines down from each summit: left of them lit, right in shade
+    wig = (pnoise(h, 1, SS * 4, seed + 3, 1)[:, 0] - 0.5)[:, None]
+    lit = np.zeros((h, w), dtype=bool)
+    for i, (c, hl, hr, ph, sh) in enumerate(peaks):
+        cx = c / 180 * w
+        py = ground - ph * land_h
+        bx = cx + (y - py) * (0.30 + 0.20 * np.sin(i * 1.7)) + wig * SS * 5
+        lit |= (owner[None, :] == (0 if i == len(peaks) - 1 else i)) & (x < bx)
+    # the slab's long back faces the sun, its broken face doesn't
+    lit = np.where(slab_on[None, :], (u < 60)[None, :], lit)
+    # snow: down to about half way, lower down the gullies, with rock ribs
+    # showing through and thin on the steep faces
+    slope = np.abs(np.gradient(prof)) * w / 180 * 40
+    gul = pnoise(h, w, SS * 12, seed + 4, SS * 3.5)
+    patch = pnoise(h, w, SS * 3, seed + 8, SS * 4)
+    snow_alt = (0.42 + (patch - 0.5) * 0.14 - np.clip(gul - 0.6, 0, 1) * 0.6
+                + np.clip(slope - 0.5, 0, 1)[None, :] * 0.08)
+    snow = mtn & (alt > snow_alt) & (alt > 0.28) & ~((gul < 0.2) & (alt < 0.85))
+    # a crest of bare rock along the snowy ridges, so the peaks stand off a
+    # pale sky on 4 greys
+    crest = snow & (y < top[None, :] + SS * 2)
+    # a far range behind, pale in the haze, its tops white
+    bp = (0.42 + 0.10 * np.sin(ur * 3 + 1.1) + 0.06 * np.sin(ur * 8 + 0.3)
+          + (pnoise(1, w, 1, seed + 9, SS * 6)[0] - 0.5) * 0.12)
+    bp = bp - np.abs(np.sin(ur * 11 + 0.7)) * 0.07
+    btop = ground - bp * land_h
+    back = (y >= btop[None, :]) & ~mtn
+    bsnow = back & (y < (btop + SS * (2 + 3 * pnoise(1, w, 1, seed + 10, SS * 3)[0]))[None, :])
+    # wooded foothills in front, a darker ridge of conifers
+    fh = (0.17 + 0.05 * np.sin(ur * 7 + 0.5) + 0.03 * np.sin(ur * 19 + 1.3)
+          + (pnoise(1, w, 1, seed + 5, SS * 2)[0] - 0.5) * 0.03)
+    ftop = ground - fh * land_h
+    foot = y >= ftop[None, :]
+    # the spruce forest along the bottom: a row of spiky tops
+    sp = np.zeros(w)
+    sun = np.zeros(w, dtype=bool)
+    for c in np.arange(0, w, SS * 3.2):
+        cx = c + mrng.uniform(-SS * 0.6, SS * 0.6)
+        th = SS * mrng.uniform(3.0, 6.5)
+        v = th * np.clip(1 - np.abs(x[0] - cx) / (th * 0.28), 0, 1)
+        sun = np.where(v > sp, x[0] < cx, sun)
+        sp = np.maximum(sp, v)
+    forest = y >= (ground - SS * 2.2 - sp)[None, :]
+    # shades
+    ms = np.clip(0.55 + (pnoise(h, w, SS * 3, seed + 6, SS * 5) - 0.5) * 0.3 + alt * 0.1, 0, 1)
+    rock_s = np.where(lit, ms * 0.40 + 0.42, ms * 0.30 + 0.02)
+    snow_s = np.where(lit, 0.96, 0.66 + (patch - 0.5) * 0.1)
+    fs = np.clip(0.40 + (pnoise(h, w, SS * 4, seed + 7, SS * 6) - 0.5) * 0.4 - (y - ftop[None, :]) / h * 1.5, 0, 1)
+    tr = np.where(sun[None, :] & (y < ground - SS * 2.0), 0.30, 0.08)
+    idx = np.zeros((height, width), dtype=np.uint8)
+    for mask, name, sh_, dith in ((back, 'haze', np.full((h, w), 0.35), 0.0),
+                                  (bsnow, 'grey', np.full((h, w), 0.86), 0.0),
+                                  (mtn, 'far', rock_s, 0.0),
+                                  (snow, 'grey', snow_s, 0.0),
+                                  (crest, 'far', np.where(lit, 0.45, 0.2), 0.0),
+                                  (foot, 'pine', fs * 0.7 + 0.15, 0.0),
+                                  (forest, 'pine', tr, 0.0)):
+        cov = shrink(mask.astype(float), SS)
+        shd = shrink(np.where(mask, sh_, 0), SS) / np.maximum(cov, 1e-6)
+        on = cov >= 0.5
+        kk = ramp_index(name, np.clip(shd, 0, 1), (mrng.random(idx.shape) - 0.5) * dith)
+        idx[on] = kk[on]
+    return idx
+
+
+def cascade_art(res, prev):
+    """Scenery 6, Cascade Springs: Bkd8 1060 and 1061."""
+    big = cascade_backdrop(968, 80, 61)
+    for k, idx in enumerate((big.reshape(40, 2, 484, 2)[:, 0, :, 0], big)):
+        res.append(('Bkd8', 1060 + k, bkd8(idx)))
+        if prev:
+            preview(idx, prev / f'backdrop-{1060 + k}.png', 2)
+
+
 def main():
     out = Path(sys.argv[1])
     prev = Path(sys.argv[2]) if len(sys.argv) > 2 else None
@@ -953,6 +1075,7 @@ def main():
     sakura_art(res, prev)
     banksia_art(res, prev)
     croc_art(res, prev)
+    cascade_art(res, prev)
     import mkstyle
     mkstyle.make(res, prev)
     rcp = ['/* Made by tools/mkobj.py. */']
