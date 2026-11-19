@@ -87,8 +87,9 @@ HOLES = [
 
 TEES = ["Medal", "Club", "Forward"]
 # Each hole's map turned against the course in degrees, which moves the
-# backdrop: going out the hills are ahead, coming back the town and the kirk.
-# The backdrop repeats twice a turn, so 60 here is the far side of the bay.
+# backdrop: going out the hills are ahead, coming back the town and the kirk
+# (mkobj.py links_backdrop puts the kirk ahead when a hole faces 150
+# degrees, as with a turn of 60).
 TURNS = [0, 8, -10, 5, 0, 12, 20, 35, 25, 50, 70, 60, 55, 62, 58, 66, 60, 60]
 PINS_ALONG = [(-0.45, -0.3), (0.4, -0.35), (0.35, 0.45), (-0.4, 0.4)]
 

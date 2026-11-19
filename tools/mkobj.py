@@ -12,7 +12,11 @@ Spr8: big-endian u16 width, height, anchor x, anchor y (the base, on the
 ground), point x, point y (the golfer's ball, else the anchor), then width *
 height palette indices row by row, 0 clear.
 Bkd8: u16 width, height, then each row packed with PackBits on its own. 0 is
-clear. The strip repeats twice in a full turn.
+clear. A whole turn is 968 px on 160 wide screens and 1936 on 320; a
+narrower strip repeats (the plain tree line is half a turn). Across a
+whole turn strip, degree d shows straight ahead when the view faces
+29.75 - d degrees on the course (angles as in doc/course-format.md, with
+each hole's turn added), so a landmark at d is seen looking that way.
 
 Trees and the rest are drawn as lit shapes with grain and no outline, lit
 from the left and behind the camera like the golfer and the terrain. The
@@ -280,6 +284,17 @@ def backdrop(width, height, seed):
     return idx
 
 
+def half(big):
+    """The 160 wide screens' strip from the 320 one: every other pixel and row."""
+    return big[::2, ::2]
+
+
+def dbump(d, c, half_w, p=1.0):
+    """1 at degree c falling to 0 half_w degrees either side, wrapping round the turn."""
+    a = np.abs((d - c + 180.0) % 360.0 - 180.0)
+    return np.clip(1 - a / half_w, 0, 1) ** p
+
+
 def bkd8(idx):
     h, w = idx.shape
     out = bytearray(struct.pack('>HH', w, h))
@@ -427,13 +442,15 @@ def grass(H, seed):
 
 
 def links_backdrop(width, height, seed):
-    """The links backdrop: the sea along the horizon, distant hills across
-    part of the turn, and a town with a kirk spire on the far shore. Repeats
-    twice in a full turn. The bottom rows are sea, so the terrain's far edge
-    meets it."""
+    """The links backdrop, a whole turn: the sea along the horizon all
+    round, distant hills behind a town with a kirk spire on the far shore
+    (the kirk at 240 degrees), lower hills and a far headland the other way
+    and dunes here and there. The bottom rows are sea, so the terrain's far
+    edge meets it."""
     h, w = height * SS, width * SS
     y, x = np.mgrid[0:h, 0:w] + 0.5
-    u = x[0] / w * 2 * math.pi
+    d = x[0] / w * 360.0
+    u = np.radians(d)
     r = np.random.default_rng(seed)
 
     def wave(freqs):
@@ -442,10 +459,11 @@ def links_backdrop(width, height, seed):
             out += amp * np.sin(u * f + r.random() * 2 * math.pi)
         return out
     sea_top = h * 0.80
-    # hills over about half the strip, fading to nothing at their ends
-    env = np.clip(np.sin(u - 0.6) * 1.6, 0, 1) ** 0.8
-    hills = sea_top - env * h * (0.40 + wave([(3, 0.08), (7, 0.05), (19, 0.025)]))
-    near = sea_top - np.clip(np.sin(u * 1.0 + 2.2) * 1.3, 0, 1) * h * (0.18 + wave([(5, 0.04), (23, 0.02)]))
+    # far hills: a long range behind the town, a lower one and a headland across the water
+    env = np.maximum(np.maximum(dbump(d, 262, 82, 0.8), dbump(d, 105, 45, 0.9) * 0.7), dbump(d, 40, 14, 0.7) * 0.55)
+    hills = sea_top - env * h * (0.40 + wave([(5, 0.08), (11, 0.05), (37, 0.025)]))
+    near_env = np.maximum(np.maximum(dbump(d, 205, 26), dbump(d, 340, 30)), dbump(d, 140, 18) * 0.8)
+    near = sea_top - np.clip(near_env * 1.3, 0, 1) * h * (0.18 + wave([(9, 0.04), (45, 0.02)]))
     fine = lrng.random((h, w)) - 0.5
     hill = (y >= hills[None, :]) & (y < sea_top)
     hs = np.clip(0.85 - (y - hills[None, :]) / h * 0.5 + (vnoise((h, w), SS * 3, seed) - 0.5) * 0.25 + fine * 0.1, 0, 1)
@@ -454,10 +472,9 @@ def links_backdrop(width, height, seed):
     # the town: a row of houses with a kirk tower and spire, on the near shore
     town = np.zeros((h, w), dtype=bool)
     ts = np.zeros((h, w))
-    tx0 = w * 0.30
     k = 0
-    xx = tx0
-    while xx < w * 0.36:
+    xx = w * 234 / 360
+    while xx < w * 245 / 360:
         bw = SS * r.uniform(2.5, 5)
         bh = h * r.uniform(0.06, 0.13)
         m = (x >= xx) & (x < xx + bw) & (y >= sea_top - bh) & (y < sea_top)
@@ -465,7 +482,7 @@ def links_backdrop(width, height, seed):
         ts = np.where(m, 0.35 + 0.4 * (k % 2) + fine * 0.1, ts)
         xx += bw + SS * r.uniform(0, 1.5)
         k += 1
-    kx = w * 0.335
+    kx = w * 240.3 / 360
     tower = (np.abs(x - kx) < SS * 1.6) & (y >= sea_top - h * 0.30) & (y < sea_top)
     spire = (np.abs(x - kx) < SS * 1.6 * np.clip((y - (sea_top - h * 0.48)) / (h * 0.18), 0, 1)) & \
             (y >= sea_top - h * 0.48) & (y < sea_top - h * 0.30)
@@ -495,8 +512,8 @@ def links_art(res, prev):
             if prev:
                 preview(idx, prev / f'spr-{rid}.png', 4)
     # Scenery 1, the links: Bkd8 1010 and 1011.
-    big = links_backdrop(968, 40, 11)
-    for k, idx in enumerate((big.reshape(20, 2, 484, 2)[:, 0, :, 0], big)):
+    big = links_backdrop(1936, 40, 11)
+    for k, idx in enumerate((half(big), big)):
         res.append(('Bkd8', 1010 + k, bkd8(idx)))
         if prev:
             preview(idx, prev / f'backdrop-{1010 + k}.png', 2)
@@ -526,38 +543,49 @@ def pnoise(h, w, cell, seed, cellx=None):
 
 
 def carrig_backdrop(width, height, seed):
-    """The clifftop backdrop, half a turn wide (it repeats twice a turn).
-    Across it in degrees: open Atlantic with a far sea stack (0 to 55), a
-    far headland with sheer cliffs and the lighthouse on its tip (55 to
-    100), the mainland's green hills with white cottages (105 to 175), then
-    the sea again. Sea along the bottom rows so the terrain's far edge
-    meets it, and a band of Atlantic cumulus in the rows above."""
+    """The clifftop backdrop, a whole turn. Across it in degrees: the
+    mainland's green hills with white cottages and blue mountains behind
+    (0 to 155), the open Atlantic with a far sea stack (155 to 235), a far
+    headland with sheer cliffs and the lighthouse on its tip (235 to 280,
+    the lighthouse at 277.6, seen looking 112 degrees, out along the course),
+    then more hills and cottages (285 to 360). Sea along the bottom rows so
+    the terrain's far edge meets it, and a band of Atlantic cumulus in the
+    rows above, thickest over the open sea."""
     h, w = height * SS, width * SS
     y, x = np.mgrid[0:h, 0:w] + 0.5
-    u = x[0] / w * 180.0
-    ur = np.radians(u) * 2          # a whole turn across the strip, for waves that wrap
+    u = x[0] / w * 360.0
+    ur = np.radians(u) * 2          # waves that wrap round the turn
     fine = crng.random((h, w)) - 0.5
     land_h = h * 40 / 72              # the bottom 40 rows hold the land and sea
     sea_top = h - land_h * 0.2
 
-    def bump(c, half, p=1.0):
-        return np.clip(1 - np.abs(u - c) / half, 0, 1) ** p
+    def bump(c, half_w, p=1.0):
+        return dbump(u, c, half_w, p)
 
     # the far headland: rises from the sea, a long rolling top, sheer at the tip
-    head = np.clip((u - 55) / 12, 0, 1) ** 0.7 * np.where(u < 100.5, 1.0, 0.0)
+    head = np.clip((u - 235) / 12, 0, 1) ** 0.7 * np.where(u < 280.5, 1.0, 0.0)
     head *= 0.34 + 0.05 * np.sin(ur * 7 + 1) + 0.025 * np.sin(ur * 23)
-    head *= np.clip((100.5 - u) / 4, 0.6, 1)       # the point dips before the sheer end
-    # the mainland: rolling hills, highest in the middle
-    hills = (bump(140, 36, 0.8) * (0.36 + 0.06 * np.sin(ur * 5 + 2) + 0.03 * np.sin(ur * 19))
-             + bump(112, 12, 1.5) * 0.12)
-    stack = bump(30, 1.6, 0.4) * 0.16
+    head *= np.clip((280.5 - u) / 4, 0.6, 1)       # the point dips before the sheer end
+    # the mainland: rolling hills either side of the open sea
+    hills = (bump(320, 36, 0.8) * (0.36 + 0.06 * np.sin(ur * 5 + 2) + 0.03 * np.sin(ur * 19))
+             + bump(292, 12, 1.5) * 0.12)
+    hills = np.maximum(hills, bump(68, 88, 0.6) * (0.30 + 0.05 * np.sin(ur * 4 + 0.7) + 0.04 * np.sin(np.radians(u) * 9 + 2)
+                                                  + 0.02 * np.sin(ur * 21)))
+    stack = bump(210, 1.6, 0.4) * 0.16
     prof = np.maximum(np.maximum(head, hills), stack)
     top = sea_top - prof * land_h
     land = (y >= top[None, :]) & (y < sea_top)
+    # blue mountains inland, behind the hills
+    mp = bump(78, 36, 1.1) * (0.66 + 0.04 * np.sin(ur * 9)) + bump(122, 15, 1.0) * 0.46 + bump(40, 12, 1.2) * 0.42
+    mtop = sea_top - mp * land_h
+    mtn = (y >= mtop[None, :]) & (y < sea_top) & (mp > prof)[None, :] & ~land
+    ms = np.clip(0.80 - (y - mtop[None, :]) / land_h * 0.3 + np.where(u < 78, 0.06, -0.06)[None, :]
+                 + (pnoise(h, w, SS * 3, seed + 7, SS * 8) - 0.5) * 0.15, 0, 1)
     # cliffs: the lower part of the headland and the stack are bare rock faces
-    cliff_line = sea_top - np.where(u < 101, head, stack) * land_h * 0.6
-    rocky = land & (((u > 62) & (u < 100.6)) | (np.abs(u - 30) < 2))[None, :] & (y >= cliff_line[None, :])
-    tip = (u > 98.6)[None, :] & land
+    cliff_line = sea_top - np.where(u > 200, np.where(u < 281, head, 0), 0) * land_h * 0.6
+    cliff_line = np.where(np.abs(u - 210) < 2, sea_top - stack * land_h * 0.6, cliff_line)
+    rocky = land & (((u > 242) & (u < 280.6)) | (np.abs(u - 210) < 2))[None, :] & (y >= cliff_line[None, :])
+    tip = ((u > 278.6) & (u < 281))[None, :] & land
     rocky |= tip & (y >= (top + (sea_top - top) * 0.12)[None, :])
     # grass on top, lit from the left, darker further down
     gs = np.clip(0.8 - (y - top[None, :]) / land_h * 1.4 + (pnoise(h, w, SS * 4, seed) - 0.5) * 0.25, 0, 1)
@@ -565,12 +593,12 @@ def carrig_backdrop(width, height, seed):
     rs -= ((y // (SS * 2)) % 3 == 0) * 0.1
     # white cottages on the mainland
     cot = np.zeros((h, w), dtype=bool)
-    for c in (118, 127, 131, 146, 158, 163):
-        cx = c / 180 * w
+    for c in (15, 28, 44, 58, 96, 112, 137, 298, 307, 311, 326, 338, 343):
+        cx = c / 360 * w
         yy = sea_top - np.interp(cx, x[0], prof) * land_h + SS * 3
         cot |= (np.abs(x - cx) < SS * 1.2) & (y >= yy) & (y < yy + SS * 1.6)
     # the lighthouse on the tip of the headland
-    lx = 97.6 / 180 * w
+    lx = 277.6 / 360 * w
     lbase = sea_top - np.interp(lx, x[0], prof) * land_h + SS
     lt = lbase - SS * 11
     tower = (np.abs(x - lx) < SS * (1.1 + 0.5 * (y - lt) / (lbase - lt))) & (y >= lt) & (y < lbase)
@@ -585,20 +613,22 @@ def carrig_backdrop(width, height, seed):
     # more over the open sea, the sky kept clear over the lighthouse
     base = h * (0.50 + 0.06 * np.sin(ur * 3 + 0.5))[None, :]
     heap = pnoise(h, w, SS * 9, seed + 5, SS * 30) * 0.7 + pnoise(h, w, SS * 4, seed + 6, SS * 9) * 0.3
-    over_sea = np.clip(np.cos(ur - np.radians(70)) * 0.5 + 0.5, 0, 1)[None, :]
+    over_sea = np.clip(np.cos(np.radians(u - 215)) * 0.5 + 0.5, 0, 1)[None, :]
     rise = (base - y) / h                          # how far above the base
     want = 0.50 - over_sea * 0.12 + np.clip(rise - 0.12, 0, 1) * 1.2 + np.clip(-rise, 0, 1) * 9
-    want += bump(97.6, 9)[None, :] * 0.6
-    cloud = (heap > want) & ~land & (y < sea_top - SS * 2)
+    want += bump(277.6, 9)[None, :] * 0.6
+    cloud = (heap > want) & ~land & ~mtn & (y < sea_top - SS * 2)
     cs = 0.62 + np.clip(rise, 0, 0.4) * 0.9 - np.clip(heap - want, 0, 1) * 0.5
     cs = np.round(np.clip(cs, 0, 1) * 5) / 5
     idx = np.zeros((height, width), dtype=np.uint8)
     for mask, name, sh, dith in ((cloud, 'grey', 0.74 + cs * 0.26, 0.2),
+                                 (mtn, 'far', ms, 0.6),
                                  (land, 'far', gs * 0.55 + 0.25, 0.9),
                                  (rocky, 'rock', rs * 0.8 + 0.1, 0.9),
                                  (cot, 'wall', np.full((h, w), 0.95), 0.3),
                                  (sea, 'water', ss, 0.9), (foot, 'grey', np.full((h, w), 0.9), 0.5),
-                                 (tower, 'grey', np.full((h, w), 0.97), 0.1), (lband, 'red', np.full((h, w), 0.6), 0.1),
+                                 # the tower's right side in shade, so it shows at 2 bits too
+                                 (tower, 'grey', np.where(x < lx - SS * 0.5, 0.97, 0.3), 0.1), (lband, 'red', np.full((h, w), 0.4), 0.1),
                                  (lamp, 'gold', np.full((h, w), 0.9), 0.1)):
         cov = shrink(mask.astype(float), SS)
         shd = shrink(np.where(mask, sh, 0), SS) / np.maximum(cov, 1e-6)
@@ -610,8 +640,8 @@ def carrig_backdrop(width, height, seed):
 
 def carrig_art(res, prev):
     """Scenery 2, Carrig Head: Bkd8 1020 and 1021."""
-    big = carrig_backdrop(968, 72, 21)
-    for k, idx in enumerate((big.reshape(36, 2, 484, 2)[:, 0, :, 0], big)):
+    big = carrig_backdrop(1936, 72, 21)
+    for k, idx in enumerate((half(big), big)):
         res.append(('Bkd8', 1020 + k, bkd8(idx)))
         if prev:
             preview(idx, prev / f'backdrop-{1020 + k}.png', 2)
@@ -623,21 +653,23 @@ srng = np.random.default_rng(2386 + 3)
 
 
 def sakura_backdrop(width, height, seed):
-    """The bay backdrop, half a turn wide (it repeats twice a turn). Across
-    it in degrees: open sea with a far island (0 to 25), the volcano rising
-    over low wooded foothills, its peak at 60 with snow down its gullies
-    (25 to 100), then wooded ridges round the bay with a pagoda on one
-    (100 to 175). Sea along the bottom rows so the terrain's far edge meets
-    it, a band of thin cloud across the volcano's flank."""
+    """The bay backdrop, a whole turn. Across it in degrees: wooded ridges
+    (0 to 85), open sea with far islands and a low far coast (85 to 205),
+    the volcano rising over low wooded foothills, its peak at 240 with snow
+    down its gullies (205 to 280, seen looking 150 degrees, the way most
+    tees face), then wooded ridges round the bay with a pagoda on one (280
+    to 360). Sea along the bottom rows so the terrain's far edge meets it,
+    a band of thin cloud across the volcano's flank. Below, u is the degree
+    less 180, so the volcano is at u = 60."""
     h, w = height * SS, width * SS
     y, x = np.mgrid[0:h, 0:w] + 0.5
-    u = x[0] / w * 180.0
-    ur = np.radians(u) * 2          # a whole turn across the strip, for waves that wrap
+    u = x[0] / w * 360.0 - 180.0
+    ur = np.radians(u) * 2          # waves that wrap round the turn
     fine = srng.random((h, w)) - 0.5
     sea_top = h - h * 0.11
 
     def bump(c, half, p=1.0):
-        return np.clip(1 - np.abs(u - c) / half, 0, 1) ** p
+        return dbump(u, c, half, p)
 
     # the volcano: concave sides, a flat top with a small notch for the crater
     du = np.abs(u - 60)
@@ -660,6 +692,10 @@ def sakura_backdrop(width, height, seed):
             + bump(18, 5, 0.8) * 0.07)
     ridge = bump(140, 42, 0.6) * (0.30 + 0.06 * np.sin(ur * 6 + 2) + 0.03 * np.sin(ur * 17 + 1))
     ridge = np.maximum(ridge, bump(108, 10, 1.2) * 0.16)
+    # the other way round the bay: more wooded ridges, then far islands and a low coast over the sea
+    ridge = np.maximum(ridge, bump(-142, 48, 0.6) * (0.26 + 0.05 * np.sin(ur * 5 + 0.3) + 0.03 * np.sin(np.radians(u) * 13 + 1)))
+    foot = np.maximum(foot, bump(-70, 26, 0.5) * (0.045 + 0.01 * np.sin(ur * 11)))
+    foot = np.maximum(foot, np.maximum(bump(-58, 5, 0.8) * 0.075, bump(-36, 3.5, 0.8) * 0.05))
     tops = np.abs(np.sin(u * 3.1)) * 0.015 + np.abs(np.sin(u * 7.3 + 1)) * 0.01   # crowns of trees
     hill_p = np.maximum(foot, ridge) + np.where(np.maximum(foot, ridge) > 0.01, tops, 0)
     htop = sea_top - hill_p * h
@@ -668,7 +704,7 @@ def sakura_backdrop(width, height, seed):
     hs = np.clip(0.55 - (y - htop[None, :]) / h * 1.0 + (pnoise(h, w, SS * 3, seed + 2, SS * 3) - 0.5) * 0.35, 0, 1)
     hs = np.where(near_ridge, hs * 0.75, hs)
     # a pagoda on the ridge: stacked roofs, wider at the bottom
-    px = 150 / 180 * w
+    px = 330 / 360 * w
     pbase = sea_top - np.interp(px, x[0], hill_p * h) + SS
     pag = np.zeros((h, w), dtype=bool)
     for k in range(4):
@@ -706,8 +742,8 @@ def sakura_backdrop(width, height, seed):
 
 def sakura_art(res, prev):
     """Scenery 3, Sakura Bay: Bkd8 1030 and 1031."""
-    big = sakura_backdrop(968, 72, 31)
-    for k, idx in enumerate((big.reshape(36, 2, 484, 2)[:, 0, :, 0], big)):
+    big = sakura_backdrop(1936, 72, 31)
+    for k, idx in enumerate((half(big), big)):
         res.append(('Bkd8', 1030 + k, bkd8(idx)))
         if prev:
             preview(idx, prev / f'backdrop-{1030 + k}.png', 2)
@@ -719,7 +755,7 @@ brng = np.random.default_rng(2386 + 4)
 
 
 def banksia_backdrop(width, height, seed):
-    """The sandbelt backdrop, half a turn wide (it repeats twice a turn):
+    """The sandbelt backdrop, a whole turn:
     far low ranges, faint in the haze, with low sandy hills in front
     patched with scrub, then a line of distant gums and heath along the
     bottom rows so the terrain's far edge meets it. Heat haze over it all:
@@ -727,18 +763,21 @@ def banksia_backdrop(width, height, seed):
     lift the bottoms of the gums off the ground like a mirage."""
     h, w = height * SS, width * SS
     y, x = np.mgrid[0:h, 0:w] + 0.5
-    u = x[0] / w * 180.0
-    ur = np.radians(u) * 2          # a whole turn across the strip, for waves that wrap
+    u = x[0] / w * 360.0
+    ur = np.radians(u) * 2          # waves that wrap round the turn
+    u1 = np.radians(u)              # and ones that only repeat once a turn
     fine = brng.random((h, w)) - 0.5
     ground = h - SS * 2.5             # the bottom rows: the heath meets the terrain here
 
     # the far ranges: long and low, highest in two places
-    far_p = (0.40 + 0.07 * np.sin(ur * 2 + 0.6) + 0.05 * np.sin(ur * 5 + 2.1) + 0.02 * np.sin(ur * 13 + 0.3))
-    far_p *= 0.75 + 0.25 * np.cos(ur - 1.2)
+    far_p = (0.40 + 0.05 * np.sin(ur * 2 + 0.6) + 0.06 * np.sin(u1 * 3 + 1.4) + 0.04 * np.sin(ur * 5 + 2.1)
+             + 0.03 * np.sin(u1 * 7 + 0.2) + 0.02 * np.sin(ur * 13 + 0.3))
+    far_p *= 0.70 + 0.30 * np.cos(u1 - 1.2)
     far_top = ground - far_p * h * 0.95
     far = y >= far_top[None, :]
     # sandy hills: rounded dunes, bare sand on the crests, scrub lower down
-    sh_p = (0.22 + 0.06 * np.sin(ur * 3 + 1.0) + 0.04 * np.sin(ur * 7 + 0.4) + 0.025 * np.abs(np.sin(ur * 11 + 2)))
+    sh_p = (0.22 + 0.05 * np.sin(ur * 3 + 1.0) + 0.04 * np.sin(u1 * 5 + 2.6) + 0.035 * np.sin(ur * 7 + 0.4)
+            + 0.02 * np.sin(u1 * 17 + 1.1) + 0.025 * np.abs(np.sin(ur * 11 + 2)))
     sand_top = ground - sh_p * h * 0.85
     hill = y >= sand_top[None, :]
     depth = (y - sand_top[None, :]) / h
@@ -750,9 +789,9 @@ def banksia_backdrop(width, height, seed):
     crowns = np.zeros((h, w), dtype=bool)
     trunk = np.zeros((h, w), dtype=bool)
     crown_y = np.full(w, float(ground))
-    for c in np.arange(4, 180, 1) [brng.random(176) < 0.10]:
+    for c in np.arange(0, 360, 1)[brng.random(360) < 0.10]:
         for k in range(int(brng.integers(1, 5))):
-            cx = (c + brng.normal(0, 1.2)) / 180 * w
+            cx = ((c + brng.normal(0, 1.2)) % 360) / 360 * w
             r = SS * brng.uniform(2.4, 3.8)
             cy = ground - SS * brng.uniform(2.5, 5.0) - r
             for b in range(3):
@@ -800,8 +839,8 @@ def banksia_backdrop(width, height, seed):
 
 def banksia_art(res, prev):
     """Scenery 4, Banksia Heath: Bkd8 1040 and 1041."""
-    big = banksia_backdrop(968, 48, 41)
-    for k, idx in enumerate((big.reshape(24, 2, 484, 2)[:, 0, :, 0], big)):
+    big = banksia_backdrop(1936, 48, 41)
+    for k, idx in enumerate((half(big), big)):
         res.append(('Bkd8', 1040 + k, bkd8(idx)))
         if prev:
             preview(idx, prev / f'backdrop-{1040 + k}.png', 2)
@@ -814,29 +853,37 @@ krng = np.random.default_rng(2386 + 5)
 
 
 def croc_backdrop(width, height, seed):
-    """The bush backdrop, half a turn wide (it repeats twice a turn). Across
-    it in degrees: a long flat-topped escarpment far off with a cliff band
-    under its rim and a gorge cut in it (12 to 100), low hills (100 to 125),
-    a granite koppie of piled boulders (128 to 152), then low hills again.
+    """The bush backdrop, a whole turn. Across it in degrees: a long
+    flat-topped escarpment far off with a cliff band under its rim and a
+    gorge cut in it (12 to 100), low hills (100 to 125), a granite koppie of
+    piled boulders (128 to 152), low hills, a lone flat-topped butte (223
+    to 241), and a lower stretch of escarpment (285 to 340).
     Bush along the bottom rows so the terrain's far edge meets it, with
     flat-topped acacias standing out of it, and a warm glow low in the sky."""
     h, w = height * SS, width * SS
     y, x = np.mgrid[0:h, 0:w] + 0.5
-    u = x[0] / w * 180.0
-    ur = np.radians(u) * 2          # a whole turn across the strip, for waves that wrap
+    u = x[0] / w * 360.0
+    ur = np.radians(u) * 2          # waves that wrap round the turn
+    u1 = np.radians(u)              # and ones that only repeat once a turn
     fine = krng.random((h, w)) - 0.5
     ground = h - SS * 3.0             # the bush meets the terrain here
     land_h = h * 0.62
 
     def bump(c, half, p=1.0):
-        return np.clip(1 - np.abs(u - c) / half, 0, 1) ** p
+        return dbump(u, c, half, p)
 
     # the escarpment: steep ends, a flat rim with a gorge, a talus slope below
     esc = np.clip((u - 12) / 7, 0, 1) ** 0.8 * np.clip((100 - u) / 6, 0, 1) ** 0.8
     esc *= 0.62 + 0.015 * np.sin(ur * 9 + 1) + 0.01 * np.sin(ur * 27)
     esc -= bump(58, 2.4, 0.6) * 0.16
+    # the butte and the lower stretch of escarpment the other way
+    butte = np.clip((u - 223) / 3, 0, 1) * np.clip((241 - u) / 3, 0, 1) * (0.30 + 0.01 * np.sin(ur * 31))
+    esc2 = (np.clip((u - 285) / 8, 0, 1) ** 0.8 * np.clip((340 - u) / 9, 0, 1) ** 0.8
+            * (0.40 + 0.012 * np.sin(ur * 11 + 2) + 0.008 * np.sin(ur * 29)))
+    esc = np.maximum(esc, np.maximum(butte, esc2))
     # low hills and the koppie
-    hills = (0.13 + 0.03 * np.sin(ur * 5 + 0.7) + 0.015 * np.sin(ur * 13 + 2)) * (1 - bump(56, 60, 0.5) * 0.6)
+    hills = ((0.13 + 0.025 * np.sin(ur * 5 + 0.7) + 0.025 * np.sin(u1 * 3 + 1.9) + 0.015 * np.sin(ur * 13 + 2))
+             * (1 - bump(56, 60, 0.5) * 0.6))
     kop = bump(140, 13, 0.5) * 0.44
     prof = np.maximum(np.maximum(esc, hills), kop)
     top = ground - prof * land_h
@@ -851,9 +898,9 @@ def croc_backdrop(width, height, seed):
     kop_m = land & (kop >= np.maximum(esc, hills))[None, :] & (kop > 0.02)[None, :]
     ks = np.zeros((h, w))
     cracks = np.zeros((h, w), dtype=bool)
-    kx = 140 / 180 * w
+    kx = 140 / 360 * w
     for b in range(34):
-        bx = kx + krng.normal(0, w * 8 / 180)
+        bx = kx + krng.normal(0, w * 8 / 360)
         r = SS * krng.uniform(2.0, 4.2)
         by = ground - np.interp(bx, x[0], kop * land_h) + r * krng.uniform(0.3, 2.5)
         dd = np.hypot((x - bx) / r, (y - by) / (r * 0.8))
@@ -870,9 +917,9 @@ def croc_backdrop(width, height, seed):
     # flat-topped acacias: a thin trunk forking under a wide flat crown
     crowns = np.zeros((h, w), dtype=bool)
     trunk = np.zeros((h, w), dtype=bool)
-    for c in np.arange(2, 180, 1.0)[krng.random(178) < 0.16]:
+    for c in np.arange(0, 360, 1.0)[krng.random(360) < 0.16]:
         for k in range(int(krng.integers(1, 3))):
-            cx = (c + krng.normal(0, 1.0)) / 180 * w
+            cx = ((c + krng.normal(0, 1.0)) % 360) / 360 * w
             big = krng.uniform(0.7, 1.4) * (1.5 if krng.random() < 0.2 else 1.0)
             cw, ch = SS * 3.2 * big, SS * 0.9 * big
             cy = ground - SS * krng.uniform(3.5, 6.0) * big
@@ -911,8 +958,8 @@ def croc_backdrop(width, height, seed):
 
 def croc_art(res, prev):
     """Scenery 5, Crocodile Bend: Bkd8 1050 and 1051."""
-    big = croc_backdrop(968, 64, 51)
-    for k, idx in enumerate((big.reshape(32, 2, 484, 2)[:, 0, :, 0], big)):
+    big = croc_backdrop(1936, 64, 51)
+    for k, idx in enumerate((half(big), big)):
         res.append(('Bkd8', 1050 + k, bkd8(idx)))
         if prev:
             preview(idx, prev / f'backdrop-{1050 + k}.png', 2)
@@ -925,25 +972,30 @@ mrng = np.random.default_rng(2386 + 6)
 
 
 def cascade_backdrop(width, height, seed):
-    """The Rockies backdrop, half a turn wide (it repeats twice a turn).
-    Across it in degrees: a long slab mountain rising to a steep face on the
-    right (5 to 70), a gap with a far glacier (70 to 88), a tall horn
-    peak (88 to 122), then a jagged range (122 to 180). Lit from the left:
+    """The Rockies backdrop, a whole turn. Across it in degrees: a long slab
+    mountain rising to a steep face on the right (5 to 70), a gap with a far
+    glacier (70 to 88), a tall horn peak (88 to 122, the summit at 104, seen
+    looking 286 degrees, as from the tee on 3, Glacier View), then a jagged
+    range (122 to 182) and lower peaks with a twin summit the rest of the
+    way round (182 to 360). Lit from the left:
     the faces left of each ridge line light, right of it in shade. Snow down
     to about half way, in tongues down the gullies, thin on the steep faces.
     In front, wooded foothills and a spruce forest along the bottom rows so
     the terrain's far edge meets it."""
     h, w = height * SS, width * SS
     y, x = np.mgrid[0:h, 0:w] + 0.5
-    u = x[0] / w * 180.0
-    ur = np.radians(u) * 2          # a whole turn across the strip, for waves that wrap
+    u = x[0] / w * 360.0
+    ur = np.radians(u) * 2          # waves that wrap round the turn
+    u1 = np.radians(u)              # and ones that only repeat once a turn
     ground = h - SS * 2.0             # the forest meets the terrain here
     land_h = h * 0.86
 
     # peaks: (centre, half width left, half width right, height, sharpness)
     peaks = [(16, 14, 26, 0.70, 0.9), (46, 22, 22, 0.80, 1.0), (79, 9, 9, 0.42, 1.1),
              (104, 16, 18, 1.00, 1.15), (134, 12, 12, 0.66, 1.0), (152, 10, 12, 0.74, 1.05),
-             (170, 10, 14, 0.58, 1.0), (196, 14, 26, 0.70, 0.9)]
+             (170, 10, 14, 0.58, 1.0), (196, 12, 16, 0.62, 1.0), (221, 14, 13, 0.72, 1.05),
+             (244, 9, 11, 0.50, 1.1), (262, 13, 9, 0.80, 1.0), (276, 8, 16, 0.76, 1.0),
+             (306, 14, 12, 0.62, 1.05), (334, 12, 14, 0.68, 1.0), (376, 14, 26, 0.70, 0.9)]
     prof = np.zeros_like(u)
     owner = np.zeros(u.shape, dtype=int)
     for i, (c, hl, hr, ph, sh) in enumerate(peaks):
@@ -951,7 +1003,7 @@ def cascade_backdrop(width, height, seed):
         v = ph * np.clip(1 - d, 0, 1) ** sh
         owner = np.where(v > prof, i, owner)
         prof = np.maximum(prof, v)
-    # the wrapped copy of the first peak at 196 shares its owner
+    # the wrapped copy of the first peak at 376 shares its owner
     owner = np.where(owner == len(peaks) - 1, 0, owner)
     # the slab mountain: a long gentle back rising to the left, a steep
     # broken face on the right
@@ -970,7 +1022,7 @@ def cascade_backdrop(width, height, seed):
     wig = (pnoise(h, 1, SS * 4, seed + 3, 1)[:, 0] - 0.5)[:, None]
     lit = np.zeros((h, w), dtype=bool)
     for i, (c, hl, hr, ph, sh) in enumerate(peaks):
-        cx = c / 180 * w
+        cx = c / 360 * w
         py = ground - ph * land_h
         bx = cx + (y - py) * (0.30 + 0.20 * np.sin(i * 1.7)) + wig * SS * 5
         lit |= (owner[None, :] == (0 if i == len(peaks) - 1 else i)) & (x < bx)
@@ -978,7 +1030,7 @@ def cascade_backdrop(width, height, seed):
     lit = np.where(slab_on[None, :], (u < 60)[None, :], lit)
     # snow: down to about half way, lower down the gullies, with rock ribs
     # showing through and thin on the steep faces
-    slope = np.abs(np.gradient(prof)) * w / 180 * 40
+    slope = np.abs(np.gradient(prof)) * w / 360 * 40
     gul = pnoise(h, w, SS * 12, seed + 4, SS * 3.5)
     patch = pnoise(h, w, SS * 3, seed + 8, SS * 4)
     snow_alt = (0.42 + (patch - 0.5) * 0.14 - np.clip(gul - 0.6, 0, 1) * 0.6
@@ -988,14 +1040,14 @@ def cascade_backdrop(width, height, seed):
     # pale sky on 4 greys
     crest = snow & (y < top[None, :] + SS * 2)
     # a far range behind, pale in the haze, its tops white
-    bp = (0.42 + 0.10 * np.sin(ur * 3 + 1.1) + 0.06 * np.sin(ur * 8 + 0.3)
+    bp = (0.42 + 0.07 * np.sin(ur * 3 + 1.1) + 0.06 * np.sin(u1 * 5 + 2.2) + 0.05 * np.sin(ur * 8 + 0.3)
           + (pnoise(1, w, 1, seed + 9, SS * 6)[0] - 0.5) * 0.12)
     bp = bp - np.abs(np.sin(ur * 11 + 0.7)) * 0.07
     btop = ground - bp * land_h
     back = (y >= btop[None, :]) & ~mtn
     bsnow = back & (y < (btop + SS * (2 + 3 * pnoise(1, w, 1, seed + 10, SS * 3)[0]))[None, :])
     # wooded foothills in front, a darker ridge of conifers
-    fh = (0.17 + 0.05 * np.sin(ur * 7 + 0.5) + 0.03 * np.sin(ur * 19 + 1.3)
+    fh = (0.17 + 0.04 * np.sin(ur * 7 + 0.5) + 0.03 * np.sin(u1 * 9 + 2.4) + 0.03 * np.sin(ur * 19 + 1.3)
           + (pnoise(1, w, 1, seed + 5, SS * 2)[0] - 0.5) * 0.03)
     ftop = ground - fh * land_h
     foot = y >= ftop[None, :]
@@ -1033,8 +1085,8 @@ def cascade_backdrop(width, height, seed):
 
 def cascade_art(res, prev):
     """Scenery 6, Cascade Springs: Bkd8 1060 and 1061."""
-    big = cascade_backdrop(968, 80, 61)
-    for k, idx in enumerate((big.reshape(40, 2, 484, 2)[:, 0, :, 0], big)):
+    big = cascade_backdrop(1936, 80, 61)
+    for k, idx in enumerate((half(big), big)):
         res.append(('Bkd8', 1060 + k, bkd8(idx)))
         if prev:
             preview(idx, prev / f'backdrop-{1060 + k}.png', 2)
@@ -1061,12 +1113,11 @@ def main():
             res.append(('Spr8', 2000 + 10 * p + k, spr8(idx, fx, fy, bx, by)))
             if prev:
                 preview(idx, prev / f'golfer-{p}-{n}.png', 4)
-    # Wide enough for half a turn: 160 px is the view's 59.5 degrees (render.c).
-    for k, (w, h) in enumerate(((484, 20), (968, 40))):
-        idx = backdrop(w, h, 7) if k == 1 else None
-        if k == 0:
-            big = backdrop(968, 40, 7)
-            idx = big.reshape(20, 2, 484, 2)[:, 0, :, 0]
+    # The plain tree line is half a turn, repeated: it has no landmark.
+    # 160 px is the view's 59.5 degrees (render.c), a little under 968 /
+    # 360 a degree, so the strip moves a touch faster than the ground.
+    big = backdrop(968, 40, 7)
+    for k, idx in enumerate((half(big), big)):
         res.append(('Bkd8', 1000 + k, bkd8(idx)))
         if prev:
             preview(idx, prev / f'backdrop-{1000 + k}.png', 2)

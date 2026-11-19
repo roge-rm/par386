@@ -170,8 +170,11 @@ def pattern(c, st, lvl):
                 if lvl < 0.2 and t < 8:
                     v = B
             elif kind == 'lines':
-                # water: black lines, the rows between dark or light grey
-                if y in (0, 2):
+                # water: black lines, the rows between dark or light grey;
+                # the lightest level, far off, a pale sheen between dark banks
+                if lvl > 0.9:
+                    v = (D, L, W, L)[y]
+                elif y in (0, 2):
                     v = B
                 elif y == 1:
                     v = D if lvl < 0.7 else L

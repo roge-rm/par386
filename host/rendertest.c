@@ -465,6 +465,45 @@ int main(int argc, char **argv)
 		free(bare);
 	}
 
+	/* A crowd of 120 small bushes nearer than a big tree 300 yards out: the
+	 * object list keeps the ones biggest on screen, so the tree is drawn
+	 * though bushes are left out. */
+	{
+		static uint8_t crowd[121 * 7];
+		Hole hc = h;
+		Surface s, s2;
+		RenderStats sc;
+		int k, q;
+		for (k = 0; k < 121; k++) {
+			uint8_t *p = crowd + 7 * k;
+			int x = k < 120 ? 62 * 4 + (k % 12) * 20 - 110 : 62 * 4;
+			int y = k < 120 ? (40 + (k / 12) * 8) * 4 : 320 * 4;
+			p[0] = k < 120 ? OBJ_BUSH : OBJ_TREE;
+			p[1] = 0;
+			p[2] = k < 120 ? 64 : 255;
+			p[3] = (uint8_t)(x >> 8); p[4] = (uint8_t)x;
+			p[5] = (uint8_t)(y >> 8); p[6] = (uint8_t)y;
+		}
+		hc.objects = crowd;
+		v.hole = &hc;
+		v.ball = h.tees[0].pos;
+		v.aim = toward(v.ball, vec2_make(Y(62), Y(320)));
+		for (scale = 1; scale <= 2; scale++) {
+			surface(&s, scale);
+			surface(&s2, scale);
+			hc.object_count = 121;
+			CHECK(draw(&s, &v, &art[scale - 1], &sc) == 0);
+			q = sc.dropped > 0;
+			printf("crowd %d: %u objects, %u dropped\n", s.w, sc.objects, sc.dropped);
+			hc.object_count = 120;
+			CHECK(draw(&s2, &v, &art[scale - 1], NULL) == 0);
+			CHECK(q && memcmp(s.bits, s2.bits, (size_t)s.rowBytes * s.h) != 0);
+			sfree(&s);
+			sfree(&s2);
+		}
+		v.hole = &h;
+	}
+
 	/* Bad art: short sprites and a backdrop cut off part way. */
 	{
 		RenderArt bad = art[0];

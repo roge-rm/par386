@@ -32,9 +32,11 @@
 #define Z_NEAR     (2L << 16)
 #define Z_FAR      (800L << 16)
 #define OBJ_NEAR   (4L << 16)         /* objects nearer than this are skipped */
-#define MAX_OBJ    48
+#define MAX_OBJ    64
 #define POOL_COLS  8                  /* clip columns kept per screen column */
-#define BKD_MAX    1024               /* widest backdrop row */
+#define BKD_MAX    1024               /* widest backdrop row on 160 wide screens, twice that on 320 */
+#define BKD_TURN   968                /* backdrop pixels a whole turn on 160 wide screens, twice that on 320 */
+#define ANIMAL_MIN 4                  /* animals are drawn at least this tall, times the scale */
 #define LIGHT_FLAT 62                 /* ramp position of flat ground, 16 per level */
 
 /* Object heights in 1/16 yards at scale 64, by type. */
@@ -74,6 +76,10 @@ typedef struct {
 	int16_t ak, bk;             /* slope light per gradient step across and along */
 	int16_t *ybuf;
 	uint8_t *prev;              /* surface of the last sample in each column */
+	uint8_t *wet;               /* 1 in a column that has drawn far water: it isn't raised or probed again */
+	int16_t *wbox;              /* each water shape's box in yards: x0, y0, x1, y1 */
+	uint8_t nwbox;
+	int16_t hl, wmin, tq;       /* this step's haze lift, far water rows and probe share (2.14), kept here to free registers */
 	RObj *obj;
 	int16_t *pool;
 	uint8_t *row;
@@ -224,13 +230,27 @@ static void SEC_RENDER snap(R *r, RObj *o)
 	r->pool_used += n;
 }
 
-/* Puts an object in the list, nearest first, keeping the MAX_OBJ nearest. */
+/* 1 if object a matters less than b: shorter on screen, or as tall and
+ * further. The pin never does. */
+static int SEC_RENDER lesser(const RObj *a, const RObj *b)
+{
+	if (!b->px) return 1;
+	if (!a->px) return 0;
+	return a->dh < b->dh || (a->dh == b->dh && a->depth > b->depth);
+}
+
+/* Puts an object in the list, nearest first. When it's full the object
+ * that is smallest on screen is left out, so nothing near or large goes. */
 static void SEC_RENDER add_obj(R *r, const RObj *o)
 {
 	uint8_t k;
 	if (r->nobj == MAX_OBJ) {
+		uint8_t i, s = 0;
 		r->st->dropped++;
-		if (o->depth >= r->obj[MAX_OBJ - 1].depth) return;
+		for (i = 1; i < MAX_OBJ; i++)
+			if (lesser(&r->obj[i], &r->obj[s])) s = i;
+		if (!lesser(&r->obj[s], o)) return;
+		for (i = s; i < MAX_OBJ - 1; i++) r->obj[i] = r->obj[i + 1];
 		r->nobj--;
 	}
 	k = r->nobj++;
@@ -299,6 +319,8 @@ static void SEC_RENDER gather(R *r, const RenderView *v, const RenderArt *a)
 		/* height in pixels: 1/16 yards times focal over depth in 1/16 yards */
 		hp = (int32_t)((MULU16(obj_h16[ho.type], ho.scale) >> 6) * r->f) / (o.depth >> 12);
 		r->st->divides++;
+		/* animals are small: kept to a size that shows as far as they'd be a pixel */
+		if (ho.type == OBJ_ANIMAL && hp >= 1 && hp < ANIMAL_MIN * r->scale) hp = ANIMAL_MIN * r->scale;
 		if (hp < 2 || hp > 4 * r->vh) continue;
 		if (px2 && (!px || hp > sh + (sh >> 2))) {
 			px = px2;
@@ -449,7 +471,7 @@ static void SEC_RENDER sample(const R *r, fixed px, fixed py, int16_t m, uint8_t
 	l >>= 4; \
 	if (l < 0) l = 0; \
 	if (l > PAL_RAMP_N - 1) l = PAL_RAMP_N - 1; \
-	c = (hz > ((tb * 7 + 3) & 15)) ? (uint8_t)(PAL_HAZE + l) : (uint8_t)(base + l); \
+	c = (hb > ((tb * 7 + 3) & 15)) ? (uint8_t)(PAL_HAZE + l) : (uint8_t)(base + l); \
 } while (0)
 
 /* The terrain, front to back. At each depth step the heights and slope light
@@ -459,12 +481,188 @@ static void SEC_RENDER sample(const R *r, fixed px, fixed py, int16_t m, uint8_t
 #define SEG_SHIFT 2
 #define HALF_Z    32       /* yards */
 #define LONG_Z    64
+/* Haze: ground past HAZE_LIFT yards is drawn lighter in its own ramp, up to
+ * 2 levels; past HAZE_MIX it goes over to the haze ramp, all of it by
+ * HAZE_MIX + 160. At 2 bits it goes over a row at a time (haze_row), so
+ * it reads as bands rather than speckles. */
+#define HAZE_LIFT 180
+#define HAZE_MIX  400
+/* Water past WATER_FAR yards is at least WATER_MIN rows tall (times the
+ * scale), light with a dark line along each bank, and from PROBE_Z the
+ * surface half a step nearer is looked at too, so a creek between two
+ * steps isn't missed. */
+#define WATER_FAR 48
+#define WATER_MIN 3
+#define PROBE_Z   64
+#define WBOX_MAX  8           /* water shapes with their own box; more share the last */
+
+/* The 2-bit pattern rows in the order they go over to haze. */
+static const uint8_t haze_row[4] = { 2, 10, 6, 14 };
+
+/* Whether the band from the probe row to this step's row can reach a
+ * water shape's box: the row starts at (px, py) and moves (dpx, dpy) a
+ * column, the probe row is tq (2.14) of the way from the camera. */
+static int SEC_RENDER near_water(const R *r, fixed px, fixed py, fixed dpx, fixed dpy, int16_t tq)
+{
+	fixed ex = px + dpx * r->w, ey = py + dpy * r->w;
+	int16_t x[4], y[4], x0, y0, x1, y1, k;
+	const int16_t *b = r->wbox;
+
+	x[0] = (int16_t)(px >> 16);
+	y[0] = (int16_t)(py >> 16);
+	x[1] = (int16_t)(ex >> 16);
+	y[1] = (int16_t)(ey >> 16);
+	x[2] = (int16_t)((r->camx + mulq(px - r->camx, tq)) >> 16);
+	y[2] = (int16_t)((r->camy + mulq(py - r->camy, tq)) >> 16);
+	x[3] = (int16_t)((r->camx + mulq(ex - r->camx, tq)) >> 16);
+	y[3] = (int16_t)((r->camy + mulq(ey - r->camy, tq)) >> 16);
+	x0 = x1 = x[0];
+	y0 = y1 = y[0];
+	for (k = 1; k < 4; k++) {
+		if (x[k] < x0) x0 = x[k];
+		if (x[k] > x1) x1 = x[k];
+		if (y[k] < y0) y0 = y[k];
+		if (y[k] > y1) y1 = y[k];
+	}
+	/* a cell's slack each way */
+	for (k = 0; k < r->nwbox; k++, b += 4)
+		if (x1 >= b[0] - 2 && x0 <= b[2] + 2 && y1 >= b[1] - 2 && y0 <= b[3] + 2) return 1;
+	return 0;
+}
+
+/* Boxes round the hole's water shapes, in yards, into r->wbox. */
+static void SEC_RENDER water_boxes(R *r, const Hole *h)
+{
+	const uint8_t *p = h->shapes;
+	uint8_t i, j, n;
+	r->nwbox = 0;
+	if (h->base_surface == SURF_WATER) {
+		r->wbox[0] = r->wbox[1] = 0;
+		r->wbox[2] = (int16_t)h->width;
+		r->wbox[3] = (int16_t)h->length;
+		r->nwbox = 1;
+	}
+	if (!p) return;
+	for (i = 0; i < h->shape_count; i++, p += 2 + (uint16_t)n * 4) {
+		int16_t *b;
+		n = p[1];
+		if (p[0] != SURF_WATER) continue;
+		b = r->wbox + 4 * (r->nwbox < WBOX_MAX ? r->nwbox : WBOX_MAX - 1);
+		if (r->nwbox < WBOX_MAX) {
+			b[0] = b[1] = 32767;
+			b[2] = b[3] = -32767;
+			r->nwbox++;
+		}
+		for (j = 0; j < n; j++) {
+			const uint8_t *v = p + 2 + j * 4;
+			int16_t x = (int16_t)(be16(v) >> 2), y = (int16_t)(be16(v + 2) >> 2);
+			if (x < b[0]) b[0] = x;
+			if (y < b[1]) b[1] = y;
+			if (x + 1 > b[2]) b[2] = (int16_t)(x + 1);
+			if (y + 1 > b[3]) b[3] = (int16_t)(y + 1);
+		}
+	}
+}
+
+/* The surface at (sx, sy), 16.16 yards; off the hole it's out of bounds,
+ * or water where a water edge carries on. */
+static uint8_t SEC_RENDER surf_at(const SurfaceGrid *g, fixed sx, fixed sy)
+{
+	int16_t cx = (int16_t)(sx >> (16 + SURF_CELL_SHIFT)), cy = (int16_t)(sy >> (16 + SURF_CELL_SHIFT));
+	uint8_t c, off = 0, surf;
+	if (sx < 0) { cx = 0; off = 1; }
+	else if ((uint16_t)cx >= g->w) { cx = (int16_t)(g->w - 1); off = 1; }
+	if (sy < 0) { cy = 0; off = 1; }
+	else if ((uint16_t)cy >= g->h) { cy = (int16_t)(g->h - 1); off = 1; }
+	c = g->cells[MULU16(cy, g->stride) + ((uint16_t)cx >> 1)];
+	surf = (cx & 1) ? (c & 15) : (c >> 4);
+	if (surf >= SURF_COUNT || (off && surf != SURF_WATER)) surf = SURF_OOB;
+	return surf;
+}
+
+/* Bits for a sample of water past WATER_FAR: found only by the probe, and
+ * with a dark line along its bank. */
+#define WF_CAP  1
+#define WF_EDGE 2
+#define WF_FAR  4    /* any water past WATER_FAR */
+
+/* Whether the probe point, r->tq of the way from the camera to (px, py), is water. */
+static int SEC_RENDER probe_water(const R *r, fixed px, fixed py)
+{
+	return surf_at(r->g, r->camx + mulq(px - r->camx, r->tq), r->camy + mulq(py - r->camy, r->tq)) == SURF_WATER;
+}
+
+/* A bank of far water: a dark line along the bottom row of the span ys..ye
+ * in column xx, and xx + 1 if pair. */
+static void SEC_RENDER bank_line(R *r, int16_t xx, int16_t ys, int16_t ye, uint8_t pair)
+{
+	uint8_t c = r->lg == 3 ? (uint8_t)(PAL_TERRAIN + SURF_WATER * PAL_RAMP_N) : (uint8_t)PAL_BLACK, *p;
+	int16_t yy;
+	for (yy = (int16_t)(ye - r->scale); yy < ye; yy++) {
+		if (yy < ys) continue;
+		p = r->bits + MULU16(yy, r->rb) + ((uint16_t)xx >> (3 - r->lg));
+		put(r, p, xx, yy, c);
+		if (pair) put(r, p, xx + 1, yy, c);
+	}
+}
+
+/* A span past WATER_FAR in column xx, and xx + 1 if pair, from y to ye:
+ * far water (WF_FAR) is kept r->wmin rows tall from its near bank, taking
+ * them from the ground beyond, and water found only by the probe is that
+ * tall rather than the whole step; WF_EDGE puts a dark line along the
+ * bottom. Drawn as the terrain loop would with no noise. */
+static void SEC_RENDER far_span(R *r, int16_t xx, int16_t y, int16_t ye, uint8_t pair,
+                                int16_t lv, uint8_t base, int16_t hb, uint8_t hm, uint8_t wf)
+{
+	uint16_t rb = r->rb;
+	int16_t yy;
+	uint8_t *p;
+
+	if (wf & WF_FAR) {
+		if (!r->wet[xx] && ((wf & WF_CAP) || ye - y < r->wmin)) {
+			y = (int16_t)(ye - r->wmin);
+			if (y < 0) y = 0;
+		}
+		r->wet[xx] = 1;
+		if (pair) r->wet[xx + 1] = 1;
+	}
+	COUNT(r->st->spans++);
+	COUNT(r->st->pixels += (ye - y) * (pair ? 2 : 1));
+	r->ybuf[xx] = y;
+	if (pair) r->ybuf[xx + 1] = y;
+	p = r->bits + MULU16(y, rb) + ((uint16_t)xx >> (3 - r->lg));
+	if (r->lg == 1) {
+		uint8_t mk = (uint8_t)((pair ? 0xF0 : 0xC0) >> ((xx & 3) << 1)), nm = (uint8_t)~mk;
+		const uint8_t *pb, *ph;
+		int16_t l = (lv + 8) >> 4;
+		if (l < 0) l = 0;
+		if (l > PAL_RAMP_N - 1) l = PAL_RAMP_N - 1;
+		pb = pal_pat2 + ((uint16_t)(base + l) << 2);
+		ph = pal_pat2 + ((uint16_t)(PAL_HAZE + l) << 2);
+		for (yy = y; yy < ye; yy++, p += rb) {
+			uint8_t q = (uint8_t)(yy & 3);
+			*p = (uint8_t)((*p & nm) | (((hm >> q) & 1 ? ph : pb)[q] & mk));
+		}
+	} else {
+		uint8_t dith = r->lg == 3;
+		for (yy = y; yy < ye; yy++, p += rb) {
+			uint8_t tb = bayer[((yy & 3) << 2) | (xx & 3)], c;
+			int16_t l = (lv + (dith ? tb : 8)) >> 4;
+			if (l < 0) l = 0;
+			if (l > PAL_RAMP_N - 1) l = PAL_RAMP_N - 1;
+			c = (hb > ((tb * 7 + 3) & 15)) ? (uint8_t)(PAL_HAZE + l) : (uint8_t)(base + l);
+			if (dith) *p = c;
+			else put(r, p, xx, yy, c);
+		}
+	}
+	if (wf & WF_EDGE) bank_line(r, xx, y, ye, pair);
+}
 
 static void SEC_RENDER terrain(R *r)
 {
 	const Hole *h = r->h;
 	const SurfaceGrid *g = r->g;
-	fixed z = near_start(r);
+	fixed z = near_start(r), zl = z;
 	uint8_t on = 0, dith = r->lg == 3, ks = (uint8_t)(SEG_SHIFT + (r->scale > 1));
 	int16_t sand_drop, water_drop, stripe = dith ? 12 : 18, seg;
 	uint16_t step = 0, rb = r->rb, gw = g->w, gh = g->h, gs = g->stride;
@@ -493,7 +691,8 @@ static void SEC_RENDER terrain(R *r)
 
 	while (z < Z_FAR) {
 		fixed zr, dpx, dpy, px, py, spx, spy, dpxs, dpys, dpxc, dpyc, fz;
-		int16_t m, x, xe, hz, ns, ymax, ya, la, yn, ln, sand_px, water_px, cw;
+		int16_t m, x, xe, hb, ns, ymax, ya, la, yn, ln, sand_px, water_px, cw, tq;
+		uint8_t hm;
 		uint8_t sh, kss;
 
 		while (on < r->nobj && r->obj[on].depth <= z) snap(r, &r->obj[on++]);
@@ -516,7 +715,19 @@ static void SEC_RENDER terrain(R *r)
 		spy = py;
 		dpxc = dpx * cw;
 		dpyc = dpy * cw;
-		hz = fz < 140 ? 0 : fz > 620 ? 12 : (int16_t)((fz - 140) / 40);
+		r->hl = fz < HAZE_LIFT ? 0 : fz >= HAZE_LIFT + 256 ? 32 : (int16_t)((fz - HAZE_LIFT) >> 3);
+		hb = fz < HAZE_MIX ? 0 : fz >= HAZE_MIX + 160 ? 16 : (int16_t)((fz - HAZE_MIX) / 10);
+		/* at 2 bits, which pattern rows are haze at this depth, a bit each */
+		hm = (uint8_t)((hb > haze_row[0]) | (hb > haze_row[1]) << 1 | (hb > haze_row[2]) << 2 | (hb > haze_row[3]) << 3);
+		r->wmin = fz < WATER_FAR ? 0 : (int16_t)(WATER_MIN * r->scale);
+		/* half way back to the last step, as a share of this depth, 2.14 */
+		tq = 0;
+		if (fz >= PROBE_Z && z > zl) {
+			tq = (int16_t)(((z + zl) >> 1) / (z >> 14));
+			r->st->divides++;
+			if (!near_water(r, px, py, dpx, dpy, tq)) tq = 0;
+		}
+		r->tq = tq;
 		ns = fz < 10 ? 0 : fz < 24 ? 1 : fz < 48 ? 2 : 8;
 		{
 			int32_t d = MULS16(sand_drop >> 2, m) >> sh, e = MULS16(water_drop >> 2, m) >> sh;
@@ -528,16 +739,18 @@ static void SEC_RENDER terrain(R *r)
 		r->st->samples += (r->w >> kss) + 1;
 
 		sample(r, spx, spy, m, sh, &ya, &la);
+		la += r->hl;
 		for (x = 0; x < r->w; ya = yn, la = ln) {
 			int16_t yd, ld;
 			spx += dpxs;
 			spy += dpys;
 			sample(r, spx, spy, m, sh, &yn, &ln);
+			ln += r->hl;
 			yd = (int16_t)(((yn - ya) >> kss) * cw);
 			ld = (int16_t)(((ln - la) >> kss) * cw);
 			for (xe = x + seg; x < xe; x += cw, px += dpxc, py += dpyc, ya += yd, la += ld) {
 				int16_t yb = ybuf[x], y = ya >> 4, k;
-				uint8_t surf, prev;
+				uint8_t surf, prev, wf;
 
 				if (cw > 1 && ybuf[x + 1] > yb) yb = ybuf[x + 1];
 				if (yb > ymax) ymax = yb;
@@ -570,6 +783,12 @@ static void SEC_RENDER terrain(R *r)
 						if (surf >= SURF_COUNT) surf = SURF_OOB;
 					}
 				}
+				/* water found only by the probe is drawn wmin rows tall, not the whole step */
+				wf = 0;
+				if (tq && surf != SURF_WATER && !r->wet[x] && probe_water(r, px, py)) {
+					surf = SURF_WATER;
+					wf = WF_CAP;
+				}
 				prev = prevs[x];
 				prevs[x] = surf;
 				if (surf == SURF_BUNKER) {
@@ -597,15 +816,21 @@ static void SEC_RENDER terrain(R *r)
 						break;
 					case SURF_BUNKER:
 						lv += 16;
-						if (prev != SURF_BUNKER) lv = 4;      /* the near lip's shadow */
+						if (prev != SURF_BUNKER) lv = 4 + r->hl;    /* the near lip's shadow */
 						break;
 					case SURF_WATER:
-						/* darker near, lighter far where it shows the sky */
-						lv = 24 + (fz > 96 ? 96 : (int16_t)fz) * 2 / 3;
-						if (prev != SURF_WATER) lv = 0;       /* the near bank */
+						/* darker near, lighter far where it shows the sky, the
+						 * lightest level (a pale sheen at 2 bits) from 132 yards */
+						lv = 24 + (fz > 132 ? 132 : (int16_t)fz) * 2 / 3 + r->hl;
+						if (r->wmin) wf |= WF_FAR;
+						if (prev != SURF_WATER) {
+							if (r->wmin) wf |= WF_EDGE;       /* far: a dark line along the near bank */
+							else lv = 0;                      /* near: the bank's shadow */
+						}
 						break;
 					default:
 						if (prev == SURF_BUNKER) lv += 24;   /* the far lip faces the camera */
+						if (prev == SURF_WATER && r->wmin) wf |= WF_EDGE;    /* and the far bank of water */
 						break;
 					}
 					if (cw > 1) prevs[x + 1] = surf;
@@ -615,6 +840,15 @@ static void SEC_RENDER terrain(R *r)
 						int16_t xx = x + k, ye = ybuf[xx];
 						uint8_t *p, pair = 0;
 						if (y >= ye) continue;
+						if (wf) {
+							/* far water or its bank, drawn on its own to keep this loop short */
+							if (!k && cw > 1 && r->lg == 1 && ybuf[xx + 1] == ye) {
+								pair = 1;
+								k++;
+							}
+							far_span(r, xx, y, ye, pair, lv, base, hb, hm, wf);
+							continue;
+						}
 						COUNT(r->st->spans++);
 						COUNT(r->st->pixels += ye - y);
 						ybuf[xx] = y;
@@ -646,26 +880,26 @@ static void SEC_RENDER terrain(R *r)
 									if (l > PAL_RAMP_N - 1) l = PAL_RAMP_N - 1;
 									*p = (uint8_t)((*p & nm) | (pat[(l << 2) | (yy & 3)] & mk));
 								}
-							} else if (!hz) {
+							} else if (hm == 0 || hm == 15) {
 								const uint8_t *pat;
 								int16_t l = (lv + 8) >> 4;
 								if (l < 0) l = 0;
 								if (l > PAL_RAMP_N - 1) l = PAL_RAMP_N - 1;
-								pat = pal_pat2 + ((uint16_t)(base + l) << 2);
+								pat = pal_pat2 + ((uint16_t)((hm ? PAL_HAZE : base) + l) << 2);
 								for (yy = y; yy < ye; yy++, p += rb)
 									*p = (uint8_t)((*p & nm) | (pat[yy & 3] & mk));
 							} else {
-								uint8_t pat[4], q;
+								/* haze a whole pattern row at a time */
+								const uint8_t *pb, *ph;
 								int16_t l = (lv + 8) >> 4;
 								if (l < 0) l = 0;
 								if (l > PAL_RAMP_N - 1) l = PAL_RAMP_N - 1;
-								for (q = 0; q < 4; q++) {
-									uint8_t tb = bayer[(q << 2) | (xx & 3)];
-									uint8_t c = (uint8_t)(hz > ((tb * 7 + 3) & 15) ? PAL_HAZE + l : base + l);
-									pat[q] = (uint8_t)(pal_pat2[((uint16_t)c << 2) | q] & mk);
+								pb = pal_pat2 + ((uint16_t)(base + l) << 2);
+								ph = pal_pat2 + ((uint16_t)(PAL_HAZE + l) << 2);
+								for (yy = y; yy < ye; yy++, p += rb) {
+									uint8_t q = (uint8_t)(yy & 3);
+									*p = (uint8_t)((*p & nm) | (((hm >> q) & 1 ? ph : pb)[q] & mk));
 								}
-								for (yy = y; yy < ye; yy++, p += rb)
-									*p = (uint8_t)((*p & nm) | pat[yy & 3]);
 							}
 						} else {
 							for (yy = y; yy < ye; yy++, p += rb) {
@@ -674,6 +908,7 @@ static void SEC_RENDER terrain(R *r)
 								put(r, p, xx, yy, c);
 							}
 						}
+						/* a bank of far water: a dark line along the span's bottom row */
 					}
 				}
 			}
@@ -682,6 +917,7 @@ static void SEC_RENDER terrain(R *r)
 		/* Stop once nothing further can show: everything is filled up to where the highest ground could reach. */
 		if (ymax <= 0) break;
 		step++;
+		zl = z;
 		/* z / 16 near (z / 24 on 320 screens), 3 to 6 rows a step from the
 		 * bottom of the view to 14 yards, then z / 21 from 32 yards and z / 11
 		 * from 160, where a step is under a row. */
@@ -692,28 +928,39 @@ static void SEC_RENDER terrain(R *r)
 }
 #undef SHADE
 
-/* One PackBits row of n bytes from d at *pos into out. Returns -1 if cut short. */
-static int SEC_RENDER unpack_row(const uint8_t *d, uint32_t len, uint32_t *pos, uint8_t *out, uint16_t n)
+/* Puts the part of a PackBits run over k..e that's in lo..hi into out:
+ * the literal bytes from src, or the byte *src repeated (rep). */
+static void SEC_RENDER put_run(uint8_t *out, const uint8_t *src, uint8_t rep, uint16_t k, uint16_t e,
+                               uint16_t lo, uint16_t hi)
+{
+	uint16_t a = k > lo ? k : lo, b = e < hi ? e : hi;
+	if (rep) while (a < b) out[a++] = *src;
+	else for (; a < b; a++) out[a] = src[a - k];
+}
+
+/* One PackBits row of n bytes from d at *pos, putting in out only the
+ * bytes from lo to hi (hi may be past n, carrying on from 0). Returns -1
+ * if cut short. */
+static int SEC_RENDER unpack_row(const uint8_t *d, uint32_t len, uint32_t *pos, uint8_t *out,
+                                 uint16_t n, uint16_t lo, uint16_t hi)
 {
 	uint32_t i = *pos;
-	uint16_t k = 0;
+	uint16_t k = 0, wrap = hi > n ? (uint16_t)(hi - n) : 0;
 
+	if (hi > n) hi = n;
 	while (k < n) {
 		int8_t c;
-		uint16_t cnt;
+		uint16_t cnt, e;
 		if (i >= len) return -1;
 		c = (int8_t)d[i++];
 		if (c == -128) continue;
-		if (c >= 0) {
-			cnt = (uint16_t)(c + 1);
-			if (i + cnt > len || k + cnt > n) return -1;
-			while (cnt--) out[k++] = d[i++];
-		} else {
-			cnt = (uint16_t)(1 - c);
-			if (i >= len || k + cnt > n) return -1;
-			while (cnt--) out[k++] = d[i];
-			i++;
-		}
+		cnt = (uint16_t)(c >= 0 ? c + 1 : 1 - c);
+		e = (uint16_t)(k + cnt);
+		if (e > n || (c >= 0 ? i + cnt > len : i >= len)) return -1;
+		if (e > lo && k < hi) put_run(out, d + i, c < 0, k, e, lo, hi);
+		if (k < wrap) put_run(out, d + i, c < 0, k, e, 0, wrap);
+		i += c >= 0 ? cnt : 1;
+		k = e;
 	}
 	*pos = i;
 	return 0;
@@ -731,9 +978,10 @@ static void SEC_RENDER sky(R *r, const RenderData *bk, angle aim)
 	if (bk->p && bk->len >= 4) {
 		bw = (int16_t)be16(bk->p);
 		bh = (int16_t)be16(bk->p + 2);
-		if (bw <= 0 || bw > BKD_MAX || bh <= 0 || bh > r->vh) bw = bh = 0;
-		/* the strip repeats twice a turn and turning left moves it right */
-		off = (int16_t)(((uint32_t)(uint16_t)(0u - aim) * (uint32_t)(2 * bw)) >> 16);
+		if (bw <= 0 || bw > BKD_MAX * r->scale || bh <= 0 || bh > r->vh) bw = bh = 0;
+		/* a whole turn is BKD_TURN pixels, a narrower strip repeats, and
+		 * turning left moves it right */
+		off = (int16_t)(((uint32_t)(uint16_t)(0u - aim) * (uint32_t)(BKD_TURN * r->scale)) >> 16);
 		while (off >= bw && bw) off -= bw;
 		btop = r->yh + 2 * r->scale - bh;
 	}
@@ -742,7 +990,7 @@ static void SEC_RENDER sky(R *r, const RenderData *bk, angle aim)
 		int16_t sv = y < r->yh ? (int16_t)((int32_t)y * (16 * (PAL_SKY_N - 1)) / r->yh) : 16 * (PAL_SKY_N - 1);
 		int16_t sx;
 		if (bw && y >= btop && y < btop + bh) {
-			if (unpack_row(bk->p, bk->len, &pos, r->row, (uint16_t)bw) == 0) row = r->row;
+			if (unpack_row(bk->p, bk->len, &pos, r->row, (uint16_t)bw, (uint16_t)(bw > r->w ? off : 0), (uint16_t)(bw > r->w ? off + r->w : bw)) == 0) row = r->row;
 			else bw = 0;
 		}
 		p = pixp(r, 0, y);
@@ -983,8 +1231,9 @@ uint32_t render_under_size(const Surface *s)
 
 uint32_t render_work_size(const Surface *s)
 {
-	uint32_t w = (uint32_t)(s->half && s->scale == 2 ? s->w >> 1 : s->w);
-	return w * 2 + w + sizeof(RObj) * MAX_OBJ + w * POOL_COLS * 2 + BKD_MAX + 16;
+	int half = s->half && s->scale == 2;
+	uint32_t w = (uint32_t)(half ? s->w >> 1 : s->w);
+	return w * 2 + w * 2 + WBOX_MAX * 8 + sizeof(RObj) * MAX_OBJ + w * POOL_COLS * 2 + BKD_MAX * (half ? 1 : s->scale) + 16;
 }
 
 /* Half size drawing (Surface.half): a surface over the top left quarter of
@@ -1126,12 +1375,18 @@ static int SEC_RENDER scene_draw(Surface *s, const RenderView *v, const RenderAr
 	wp += sizeof(RObj) * MAX_OBJ;
 	r.prev = wp;
 	wp += r.w;
+	r.wet = wp;
+	wp += r.w;
+	r.wbox = (int16_t *)wp;
+	wp += WBOX_MAX * 8;
 	r.row = wp;
 	r.pool_used = 0;
 	r.nobj = 0;
+	water_boxes(&r, v->hole);
 	for (x = 0; x < r.w; x++) {
 		r.ybuf[x] = r.vh;
 		r.prev[x] = SURF_COUNT;
+		r.wet[x] = 0;
 	}
 
 	/* camera */
