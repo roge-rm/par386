@@ -86,6 +86,8 @@ const char *SEC_BALL ball_lie_name(uint8_t lie);
 const char *SEC_BALL ball_club_name(uint8_t club);
 /* Full-power carry in yards on flat ground with no wind from the lie. 0 for the putter. */
 uint16_t SEC_BALL ball_carry(uint8_t club, uint8_t lie);
+/* ball_carry with a shape picked, as near as the flight gives it. */
+uint16_t SEC_BALL ball_shape_carry(uint8_t club, uint8_t lie, uint8_t shape);
 /* The longest club whose carry from the lie doesn't go past yards; the
  * driver only from the tee, never the putter. */
 uint8_t SEC_BALL ball_pick(uint16_t yards, uint8_t lie);

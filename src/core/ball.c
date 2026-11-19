@@ -160,6 +160,35 @@ uint16_t ball_carry(uint8_t club, uint8_t lie)
 	return (uint16_t)((uint32_t)clubs[club].carry * lies[lie].carry / 100);
 }
 
+/* Carry change in yards from a shape, by club (not the putter), draw to
+ * open, measured by physics-test on a flat fairway with no wind. Only for
+ * the panel and the aim marker; the flight doesn't use it. */
+static const int8_t shape_carry[CLUB_COUNT - 1][SHAPE_COUNT - 1] = {
+	{ -2, 1, 5, -15, 0, 0 },
+	{ 0, -2, -2, -8, 0, 0 },
+	{ 1, -3, -3, -4, 0, 0 },
+	{ 2, -4, -3, -4, -76, 0 },
+	{ 1, -4, -3, -4, -64, 0 },
+	{ 2, -3, -2, -4, -49, 0 },
+	{ 2, -3, -2, -4, -35, 0 },
+	{ 2, -3, -2, -6, -28, 0 },
+	{ 1, -3, -3, -6, -27, 0 },
+	{ 1, -3, -2, -5, -25, -6 },
+	{ 0, -4, -4, -5, -24, -8 },
+	{ 1, -2, -3, -4, -21, -7 },
+	{ 1, -2, -4, -4, -18, -7 },
+	{ 2, -1, -3, -2, -15, -7 },
+};
+
+uint16_t ball_shape_carry(uint8_t club, uint8_t lie, uint8_t shape)
+{
+	int16_t c;
+	if (club >= CLUB_PT || lie >= LIE_COUNT) return 0;
+	c = (int16_t)clubs[club].carry;
+	if (shape && ball_shape_ok(club, shape)) c += shape_carry[club][shape - 1];
+	return (uint16_t)((uint32_t)c * lies[lie].carry / 100);
+}
+
 uint8_t ball_pick(uint16_t yards, uint8_t lie)
 {
 	uint8_t c = lie == LIE_TEE ? CLUB_DR : CLUB_3W;

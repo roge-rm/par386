@@ -351,6 +351,33 @@ static void shape_tests(void)
 	}
 }
 
+/* The carry the panel shows for each club and shape against the flight's. */
+static void shape_carry_tests(void)
+{
+	int c, i;
+	printf("shape carry: club, then flight-table for each shape\n");
+	for (c = 0; c < CLUB_PT; c++) {
+		Res n = shape_shot((uint8_t)c, SHAPE_NORMAL, 0, 0);
+		printf("%-4s", ball_club_name((uint8_t)c));
+		for (i = 1; i < SHAPE_COUNT; i++) {
+			Res r;
+			int got, want;
+			if (!ball_shape_ok((uint8_t)c, (uint8_t)i)) { printf("     -"); continue; }
+			r = shape_shot((uint8_t)c, (uint8_t)i, 0, 0);
+			got = (int)(r.carry + 0.5);
+			want = ball_shape_carry((uint8_t)c, LIE_FAIRWAY, (uint8_t)i);
+			printf(" %+3d/%+3d", (int)(r.carry - n.carry + (r.carry > n.carry ? 0.5 : -0.5)), got - want);
+			CHECK(abs(got - want) <= 2);
+		}
+		printf("\n");
+		CHECK(ball_shape_carry((uint8_t)c, LIE_ROUGH, SHAPE_NORMAL) == ball_carry((uint8_t)c, LIE_ROUGH));
+	}
+	CHECK(ball_shape_carry(CLUB_PT, LIE_GREEN, SHAPE_NORMAL) == 0);
+	CHECK(ball_shape_carry(CLUB_7I, LIE_FAIRWAY, SHAPE_PUNCH) < ball_carry(CLUB_7I, LIE_FAIRWAY) - 20);
+	/* a shape the club can't play counts as normal */
+	CHECK(ball_shape_carry(CLUB_DR, LIE_TEE, SHAPE_PUNCH) == ball_carry(CLUB_DR, LIE_TEE));
+}
+
 static void lie_tests(void)
 {
 	static const uint8_t l[] = { LIE_FAIRWAY, LIE_FIRST_CUT, LIE_ROUGH, LIE_DEEP_ROUGH, LIE_BUNKER, LIE_PLUGGED, LIE_FRINGE, LIE_PATH };
@@ -715,13 +742,13 @@ static void meter_tests(const Hole *h, const SurfaceGrid *g)
 	CHECK(play_frame(&p, &s, &bg, 80) & PL_RENDER);
 	CHECK(p.rv.aim == p.aim);
 	play_frame(&p, &s, &bg, 90);
-	/* shapes: the key goes round the driver's, a tap on the strip's button does the same, the putter has none */
+	/* shapes: the key goes round the driver's, a tap on the panel's button does the same, the putter has none */
 	CHECK(p.shape == SHAPE_NORMAL);
 	play_key(&p, KEY_SHAPE, 91);
 	CHECK(p.shape == SHAPE_DRAW);
 	play_frame(&p, &s, &bg, 92);
 	save(&s, "strip-draw");
-	play_tap(&p, 60, 146, 93);
+	play_tap(&p, 75, 141, 93);
 	CHECK(p.shape == SHAPE_FADE && p.state == PS_AIM);
 	play_key(&p, KEY_SHAPE, 94);
 	play_key(&p, KEY_SHAPE, 95);
@@ -1007,6 +1034,7 @@ int main(int argc, char **argv)
 	wind_tests();
 	snap_tests();
 	shape_tests();
+	shape_carry_tests();
 	lie_tests();
 	water_oob_tests();
 	slope_tests();

@@ -42,10 +42,10 @@ Pen, on any device:
 | Tap | What it does |
 |---|---|
 | The view | Aim there |
-| The bottom strip | Swing: start, power, snap |
-| Shape on the strip | Next shot shape |
-| Map on the strip | Map; tap the map to come back |
-| Card on the map | Scorecard |
+| The panel at the bottom | Swing: start, power, snap |
+| Shape on the panel | Next shot shape |
+| Map on the panel | Map; tap the map to come back |
+| Card on the map's panel | Scorecard |
 
 With a keyboard, C or S opens the scorecard, backspace goes back to the clubhouse and other letters open the map.
 

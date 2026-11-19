@@ -9,9 +9,9 @@
 #include "gfx.h"
 #include "hole.h"
 
-/* Logical rows left at the bottom for the status bar: the view is the top
- * 160 - RENDER_STATUS rows (times the surface's scale). */
-#define RENDER_STATUS     16
+/* Logical rows left at the bottom for the panel (play.c): the view is the
+ * top lh - RENDER_STATUS rows (times the surface's scale). */
+#define RENDER_STATUS     26
 #define RENDER_TYPES      13    /* object types 0..12 (hole.h) */
 #define RENDER_VARIANTS   2     /* sprite variants per type, picked by the object's variant byte */
 #define RENDER_SIZES      2     /* sprite sizes per type, small then big */

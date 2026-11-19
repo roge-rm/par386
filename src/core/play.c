@@ -13,25 +13,27 @@
 #define RESULT_MS 1500
 #define AIM_STEP  182   /* a degree */
 #define AIM_EDGE  56    /* the marker this far off the centre draws the scene again */
-#define MAP_X     (s->lw - 24)   /* the Map button on the strip's second line */
-#define CARD_X    (s->lw - 32)   /* and the Card button on the map's */
-#define SHAPE_X   (7 * UI_CHAR)  /* the shape button on the strip's first line, 5 characters */
-#define SHAPE_W   (5 * UI_CHAR)
+#define ROW_A     (STRIP_Y + 2)     /* the panel's two rows of boxes */
+#define ROW_B     (STRIP_Y + 14)
+#define ROW_H     11
+#define BOX_W(n)  ((n) * UI_CHAR + 3)       /* a box for n characters */
+#define CLUB_X    2
+#define CLUB_W    BOX_W(6)
+#define SHAPE_X   54                /* the shape button */
+#define SHAPE_W   BOX_W(5)
+#define PIN_X     98
+#define PIN_W     BOX_W(4)
+#define ROSE_W    24                /* the wind rose, both rows high, at the right */
+#define ROSE_X    (s->lw - 2 - ROSE_W)
+#define LIE_X     2
+#define LIE_W     BOX_W(8)
+#define WHO_X     70
+#define MAP_W     BOX_W(3)          /* the Map button, left of the rose */
+#define MAP_X     (ROSE_X - 1 - MAP_W)
+#define CARD_W    BOX_W(4)          /* the Card button on the map's panel */
+#define CARD_X    (s->lw - 2 - CARD_W)
 #define S16       (MTR_SNAP * 16)
 #define W16       (MTR_W * 16)
-
-/* Wind arrows, 7 x 7, by the way it blows on screen: up (with the shot),
- * up-left, left and on round. */
-static const uint8_t arrows[8][7] = {
-	{ 0x10, 0x38, 0x54, 0x10, 0x10, 0x10, 0x10 },
-	{ 0xF0, 0xC0, 0xA0, 0x90, 0x08, 0x04, 0x02 },
-	{ 0x00, 0x20, 0x40, 0xFE, 0x40, 0x20, 0x00 },
-	{ 0x02, 0x04, 0x08, 0x90, 0xA0, 0xC0, 0xF0 },
-	{ 0x10, 0x10, 0x10, 0x10, 0x54, 0x38, 0x10 },
-	{ 0x80, 0x40, 0x20, 0x12, 0x0A, 0x06, 0x1E },
-	{ 0x00, 0x08, 0x04, 0xFE, 0x04, 0x08, 0x00 },
-	{ 0x1E, 0x06, 0x0A, 0x12, 0x20, 0x40, 0x80 },
-};
 
 static vec2 SEC_UI pin(const Play *p)
 {
@@ -48,11 +50,11 @@ static uint16_t SEC_UI pin_feet(const Play *p)
 	return (uint16_t)((vec2_len(vec2_sub(pin(p), p->rv.ball)) * 3 + FIX_HALF) >> 16);
 }
 
-/* Yards to the aim marker: the club's carry, or for the putter the pin. */
+/* Yards to the aim marker: the club's carry with the shape, or for the putter the pin. */
 static uint16_t SEC_UI mark_yards(const Play *p)
 {
 	uint16_t d;
-	if (p->club != CLUB_PT) return ball_carry(p->club, p->lie);
+	if (p->club != CLUB_PT) return ball_shape_carry(p->club, p->lie, p->shape);
 	d = pin_yards(p);
 	return d > BALL_PUTT_MAX ? BALL_PUTT_MAX : d < 1 ? 1 : d;
 }
@@ -361,7 +363,7 @@ int play_key(Play *p, uint8_t key, uint32_t now)
 		return PL_MAP;
 	case KEY_SHAPE:
 		p->shape = ball_shape_next(p->club, p->shape);
-		p->redraw |= R_STRIP;
+		p->redraw |= R_STRIP | R_OVER;
 		break;
 	case KEY_LEFT:
 		p->aim = (angle)(p->aim + AIM_STEP);
@@ -426,6 +428,12 @@ static void SEC_UI aim_at(Play *p, int16_t tx)
 	p->redraw |= R_OVER;
 }
 
+/* Whether (x, y) is on a box at bx, by, w wide, with a little slack for fingers. */
+static int SEC_UI on_box(int16_t x, int16_t y, int16_t bx, int16_t by, int16_t w)
+{
+	return x >= bx - 2 && x < bx + w + 2 && y >= by - 2 && y < by + ROW_H + 2;
+}
+
 int play_tap(Play *p, int16_t x, int16_t y, uint32_t now)
 {
 	const Surface *s = &p->geo;
@@ -435,17 +443,17 @@ int play_tap(Play *p, int16_t x, int16_t y, uint32_t now)
 		return i < 0 ? 0 : card_button(p, (uint8_t)i);
 	}
 	if (p->view == PLAY_MAP) {
-		if (p->round && y >= STRIP_Y + UI_CHAR && x >= CARD_X) return open_card(p, CARD_VIEW);
+		if (p->round && on_box(x, y, CARD_X, ROW_B, CARD_W)) return open_card(p, CARD_VIEW);
 		return play_key(p, KEY_SELECT, now);
 	}
 	if (p->state == PS_DONE) return after_done(p);
 	if (p->state == PS_UP || p->state == PS_DOWN || p->state == PS_RESULT) return click(p, now);
 	if (y >= STRIP_Y) {
-		if (x >= MAP_X && y >= STRIP_Y + UI_CHAR) return play_key(p, KEY_OTHER, now);
-		if (p->state == PS_AIM && p->club != CLUB_PT && y < STRIP_Y + UI_CHAR &&
-		    x >= SHAPE_X - 2 && x < SHAPE_X + SHAPE_W + 2) return play_key(p, KEY_SHAPE, now);
-		if (p->state == PS_AIM) return click(p, now);
-		return 0;
+		/* the buttons, and the rest of the panel swings */
+		if (p->state != PS_AIM) return 0;
+		if (on_box(x, y, MAP_X, ROW_B, MAP_W)) return play_key(p, KEY_OTHER, now);
+		if (p->club != CLUB_PT && on_box(x, y, SHAPE_X, ROW_A, SHAPE_W)) return play_key(p, KEY_SHAPE, now);
+		return click(p, now);
 	}
 	if (p->state == PS_AIM && p->cam_ok) aim_at(p, (int16_t)(x * s->scale));
 	return 0;
@@ -566,94 +574,177 @@ static void SEC_UI add(char *t, int16_t *n, const char *s)
 	t[*n] = 0;
 }
 
-static void SEC_UI pad(char *t, int16_t *n, int16_t to)
+/* The panel: a raised face with two rows of boxes, ROW_H units each.
+ * Readouts are sunken wells with light text, buttons raised brass, as in
+ * the dialogs. On greys the face is white and the wells black. */
+static void SEC_UI face(Surface *s)
 {
-	while (*n < to) t[(*n)++] = ' ';
-	t[*n] = 0;
+	ui_fill(s, 0, STRIP_Y, s->lw, 1, UIC_BLACK);
+	ui_fill(s, 1, STRIP_Y + 2, s->lw - 2, RENDER_STATUS - 3, UIC_PAPER);
+	ui_bevel(s, 0, STRIP_Y + 1, s->lw, RENDER_STATUS - 1, UIC_WHITE, UIC_PAPER_DK);
 }
 
-static void SEC_UI line(Surface *s, int16_t row, const char *t)
+static void SEC_UI well(Surface *s, int16_t x, int16_t y, int16_t w, int16_t h)
 {
-	int16_t n;
-	for (n = 0; t[n] && n < 20; n++) {}
-	ui_text(s, 0, STRIP_Y + row * UI_CHAR, t, n, UIC_WHITE, -1);
+	ui_fill(s, x + 1, y + 1, w - 2, h - 2, UIC_TITLE);
+	ui_bevel(s, x, y, w, h, UIC_INK, UIC_WHITE);
 }
 
-/* The strip's second line: the lie and the shot, or with more than one
- * player, whose turn it is and the lie. */
-static void SEC_UI lie_line(const Play *p, Surface *s)
+/* Text in a box w wide at row y, left, centred or right (align -1, 0, 1),
+ * cut to what fits. n below 0 takes the whole string. */
+static void SEC_UI box_text(Surface *s, int16_t x, int16_t y, int16_t w, const char *t, int16_t n, int8_t align, uint8_t c)
 {
-	char t[24];
-	int16_t n = 0;
+	int16_t room = (w - 3) / UI_CHAR;
+	if (n < 0) for (n = 0; t[n]; n++) {}
+	if (n > room) n = room;
+	if (align > 0) x += w - 1 - n * UI_CHAR;
+	else if (align == 0) x += (w + 1 - n * UI_CHAR) / 2;
+	else x += 2;
+	ui_text(s, x, y + 2, t, n, c, -1);
+}
 
-	if (p->round && p->round->players > 1) {
-		add(t, &n, p->round->pl[p->cur].name);
-		pad(t, &n, RULES_NAME_MAX + 1);
-		add(t, &n, ball_lie_name(p->lie));
-	} else {
-		add(t, &n, ball_lie_name(p->lie));
-		pad(t, &n, 9);
-		add(t, &n, "Shot ");
-		n += play_num(t + n, p->stroke);
+static void SEC_UI readout(Surface *s, int16_t x, int16_t y, int16_t w, const char *t, int8_t align, uint8_t c)
+{
+	well(s, x, y, w, ROW_H);
+	box_text(s, x, y, w, t, -1, align, c);
+}
+
+static void SEC_UI button(Surface *s, int16_t x, int16_t y, int16_t w, const char *t)
+{
+	ui_fill(s, x, y, w, ROW_H, UIC_BRASS);
+	ui_bevel(s, x, y, w, ROW_H, UIC_BRASS_LT, UIC_BRASS_DK);
+	box_text(s, x, y, w, t, -1, 0, UIC_INK);
+}
+
+/* Wind arrows, 9 x 9, bit 8 the left column: up (with the shot) and
+ * up-left; the other six are these turned by quarter turns. */
+static const uint16_t arrows[2][9] = {
+	{ 0x010, 0x038, 0x054, 0x092, 0x010, 0x010, 0x010, 0x010, 0x010 },
+	{ 0x000, 0x0F0, 0x0C0, 0x0A0, 0x090, 0x008, 0x004, 0x002, 0x000 },
+};
+
+/* Whether arrow d (0 up, then on round to the left in eighths) has row r, column c. */
+static int SEC_UI arrow_bit(uint8_t d, int16_t r, int16_t c)
+{
+	uint8_t k;
+	for (k = d >> 1; k; k--) {
+		int16_t t = r;
+		r = c;
+		c = 8 - t;
 	}
-	line(s, 1, t);
+	return (arrows[d & 1][r] >> (8 - c)) & 1;
+}
+
+/* The wind rose: a ring with the shot's way marked at the top, an arrow
+ * the way the wind blows and its speed in mph below. Empty on the green. */
+static void SEC_UI rose(const Play *p, Surface *s)
+{
+	int16_t x = ROSE_X, y = ROW_A, u = s->scale, r2 = 12 * u, i, j, n;
+	int16_t cx = (int16_t)(2 * (x + 12) * u + u), cy = (int16_t)(2 * (y + 7) * u + u);
+	int32_t lo = (int32_t)(r2 - u) * (r2 - u), hi = (int32_t)(r2 + u) * (r2 + u);
+	char t[4];
+
+	well(s, x, y, ROSE_W, 2 * ROW_H + 1);
+	for (j = (cy - r2 - u) >> 1; j <= (cy + r2 + u) >> 1; j++) {
+		int32_t e = 2 * j + 1 - cy;
+		for (i = (cx - r2 - u) >> 1; i <= (cx + r2 + u) >> 1; i++) {
+			int32_t d = 2 * i + 1 - cx;
+			d = d * d + e * e;
+			if (d >= lo && d < hi) gfx_fill(s, i, j, 1, 1, UIC_PAPER_DK);
+		}
+	}
+	/* the shot's way */
+	ui_fill(s, x + 12, y + 1, 1, 1, UIC_PAPER);
+	if (p->club == CLUB_PT) return;
+	if (p->wind_mph) {
+		uint8_t d = (uint8_t)((((uint16_t)(p->wind_dir - p->aim) + 4096) >> 13) & 7);
+		for (j = 0; j < 9; j++)
+			for (i = 0; i < 9; i++)
+				if (arrow_bit(d, j, i)) ui_fill(s, x + 8 + i, y + 3 + j, 1, 1, UIC_TEXT_HI);
+	}
+	n = play_num(t, p->wind_mph);
+	box_text(s, x, y + 12, ROSE_W, t, n, 0, UIC_PAPER);
+}
+
+/* The shot or the player, in room characters: "2nd" (or "Shot 2" if
+ * there's room) alone, or the player's name, "P2" if it's too long. */
+static void SEC_UI who(const Play *p, char *t, int16_t room)
+{
+	int16_t n = 0;
+	if (p->round && p->round->players > 1) {
+		const char *nm = p->round->pl[p->cur].name;
+		for (n = 0; nm[n]; n++) {}
+		if (n <= room) {
+			n = 0;
+			add(t, &n, nm);
+		} else {
+			t[0] = 'P';
+			t[1] = (char)('1' + p->cur);
+			t[2] = 0;
+		}
+		return;
+	}
+	if (room >= 7) add(t, &n, "Shot ");
+	n += play_num(t + n, p->stroke);
+	if (room < 7) {
+		uint8_t v = p->stroke;
+		add(t, &n, v % 100 / 10 == 1 || v % 10 > 3 || v % 10 == 0 ? "th" : v % 10 == 1 ? "st" : v % 10 == 2 ? "nd" : "rd");
+	}
 }
 
 static void SEC_UI draw_strip(Play *p, Surface *s)
 {
 	char t[24];
 	int16_t n = 0;
+	uint8_t swing = p->state == PS_UP || p->state == PS_DOWN;
 
-	ui_fill(s, 0, STRIP_Y, s->lw, RENDER_STATUS, UIC_BLACK);
+	face(s);
 	if (p->state == PS_RESULT || p->state == PS_DONE) {
-		line(s, 0, p->msg1);
-		line(s, 1, p->msg2);
-	} else if (p->club == CLUB_PT) {
-		/* the putter and the cup in feet, no wind on the green */
-		add(t, &n, "Putter  Cup ");
-		n += play_num(t + n, pin_feet(p));
-		add(t, &n, " ft");
-		line(s, 0, t);
-		lie_line(p, s);
+		/* the result in one box, two lines */
+		well(s, 2, ROW_A, s->lw - 4, 2 * ROW_H + 1);
+		box_text(s, 2, ROW_A, s->lw - 4, p->msg1, -1, 0, UIC_TEXT_HI);
+		box_text(s, 2, ROW_B, s->lw - 4, p->msg2, -1, 0, UIC_PAPER);
 	} else {
-		/* club and carry, the shape, yards to the pin, the wind */
-		add(t, &n, ball_club_name(p->club));
-		add(t, &n, " ");
-		n += play_num(t + n, ball_carry(p->club, p->lie));
-		pad(t, &n, SHAPE_X / UI_CHAR);
-		if (p->shape) add(t, &n, ball_shape_name(p->shape));
-		pad(t, &n, 13);
-		{
-			uint16_t y = pin_yards(p);
-			if (y < 100) add(t, &n, " ");
-			if (y < 10) add(t, &n, " ");
-			n += play_num(t + n, y);
+		if (!swing) {
+			if (p->club == CLUB_PT) {
+				/* the putter and the cup in feet */
+				readout(s, CLUB_X, ROW_A, CLUB_W, "Putter", -1, UIC_PAPER);
+				add(t, &n, "Cup ");
+				n += play_num(t + n, pin_feet(p));
+				add(t, &n, " ft");
+				readout(s, SHAPE_X, ROW_A, PIN_X + PIN_W - SHAPE_X, t, 1, UIC_TEXT_HI);
+			} else {
+				/* club and carry, the shape, yards to the pin */
+				add(t, &n, ball_club_name(p->club));
+				add(t, &n, " ");
+				n += play_num(t + n, mark_yards(p));
+				readout(s, CLUB_X, ROW_A, CLUB_W, t, -1, UIC_PAPER);
+				if (p->state == PS_AIM) button(s, SHAPE_X, ROW_A, SHAPE_W, ball_shape_name(p->shape));
+				else readout(s, SHAPE_X, ROW_A, SHAPE_W, p->shape ? ball_shape_name(p->shape) : "", 0, UIC_PAPER);
+				n = play_num(t, pin_yards(p));
+				add(t, &n, "y");
+				readout(s, PIN_X, ROW_A, PIN_W, t, 1, UIC_TEXT_HI);
+			}
+			rose(p, s);
 		}
-		add(t, &n, "y");
-		pad(t, &n, 18);
-		if (p->wind_mph < 10) add(t, &n, " ");
-		n += play_num(t + n, p->wind_mph);
-		line(s, 0, t);
-		if (p->wind_mph) {
-			const uint8_t *a = arrows[((uint16_t)(p->wind_dir - p->aim) + 4096) >> 13 & 7];
-			int16_t i, j;
-			for (j = 0; j < 7; j++)
-				for (i = 0; i < 7; i++)
-					if (a[j] & (0x80 >> i)) ui_fill(s, 17 * UI_CHAR + i, STRIP_Y + j, 1, 1, UIC_WHITE);
-		}
+		/* the lie and the shot or the player */
+		readout(s, LIE_X, ROW_B, LIE_W, ball_lie_name(p->lie), -1, UIC_PAPER);
+		n = MAP_X - 1 - WHO_X;
+		if (n > BOX_W(8)) n = BOX_W(8);
+		who(p, t, (n - 3) / UI_CHAR);
+		readout(s, WHO_X, ROW_B, n, t, 0, UIC_PAPER);
 		if (p->state == PS_AIM) {
-			/* the shape button: what's picked, or "Shape" for a normal shot */
-			const char *nm = ball_shape_name(p->shape);
-			int16_t k;
-			for (k = 0; nm[k]; k++) {}
-			ui_fill(s, SHAPE_X - 2, STRIP_Y, SHAPE_W + 4, UI_CHAR, UIC_WHITE);
-			ui_text(s, SHAPE_X, STRIP_Y, nm, k, UIC_BLACK, -1);
+			button(s, MAP_X, ROW_B, MAP_W, "Map");
+		} else if (swing) {
+			/* the meter has the top row: the club goes under the rose's place */
+			n = 0;
+			add(t, &n, p->club == CLUB_PT ? "Putter" : ball_club_name(p->club));
+			if (p->club != CLUB_PT) {
+				add(t, &n, " ");
+				n += play_num(t + n, mark_yards(p));
+			}
+			readout(s, MAP_X, ROW_B, s->lw - 2 - MAP_X, t, 0, UIC_PAPER);
 		}
-		lie_line(p, s);
-	}
-	if (p->state == PS_AIM) {
-		ui_fill(s, MAP_X - 2, STRIP_Y + UI_CHAR, s->lw - MAP_X + 2, UI_CHAR, UIC_WHITE);
-		ui_text(s, MAP_X, STRIP_Y + UI_CHAR, "Map", 3, UIC_BLACK, -1);
 	}
 	dirty(p, 0, (int16_t)(STRIP_Y * s->scale), s->w, (int16_t)(RENDER_STATUS * s->scale));
 }
@@ -666,33 +757,59 @@ static void SEC_UI mfill(Surface *s, int16_t x0, int16_t x1, int16_t x, int16_t 
 	if (w > 0) ui_fill(s, x, y, w, h, c);
 }
 
-/* The meter on the strip's first line, columns x0 to x1 only: the bar, the
- * power so far, quarter marks, the snap line and the marker (black between
- * white sides, so it shows on the bar and the power). */
+/* The meter in a well on the panel's top row, columns x0 to x1 only: the
+ * track, the power so far in brass, quarter marks, the snap line and the
+ * marker (black between white sides, so it shows on the track and the
+ * power). The well's edge only on a full draw (x0 0); a frame's redraw
+ * keeps to the rows inside and draws each pixel about once, to stay cheap
+ * on the IIIx. */
 static void SEC_UI draw_meter(Play *p, Surface *s, int16_t x0, int16_t x1)
 {
-	int16_t y = STRIP_Y, top = p->state == PS_UP ? p->mpos : p->turn, k, m = MTR_X + (p->mpos >> 4);
+	int16_t y = ROW_A, top = p->state == PS_UP ? p->mpos : p->turn, k, m = MTR_X + (p->mpos >> 4);
+	int16_t wx = MTR_X - 2, ww = MTR_W + 4, sx = MTR_X + MTR_SNAP, i0 = x0, i1 = x1;
 
-	mfill(s, x0, x1, 0, y, s->lw, UI_CHAR, UIC_BLACK);
-	mfill(s, x0, x1, MTR_X - 1, y + 1, MTR_W + 2, 6, UIC_WHITE);
-	mfill(s, x0, x1, MTR_X, y + 2, MTR_W, 4, UIC_BLACK);
-	if (top > S16) mfill(s, x0, x1, MTR_X + MTR_SNAP, y + 2, (top - S16) >> 4, 4, UIC_BALL_LT);
-	for (k = 1; k < 4; k++) mfill(s, x0, x1, MTR_X + MTR_SNAP + (MTR_W - MTR_SNAP) * k / 4, y + 6, 1, 2, UIC_WHITE);
-	mfill(s, x0, x1, MTR_X + MTR_SNAP, y, 1, UI_CHAR, UIC_WHITE);
+	if (x0 <= 0) {
+		mfill(s, x0, x1, wx, y, ww, 1, UIC_INK);
+		mfill(s, x0, x1, wx, y, 1, ROW_H, UIC_INK);
+		mfill(s, x0, x1, wx + 1, y + ROW_H - 1, ww - 1, 1, UIC_WHITE);
+		mfill(s, x0, x1, wx + ww - 1, y + 1, 1, ROW_H - 1, UIC_WHITE);
+	}
+	if (i0 < wx + 1) i0 = wx + 1;
+	if (i1 > wx + ww - 1) i1 = wx + ww - 1;
+	/* the well's colour above and below the track, and left of it */
+	mfill(s, i0, i1, wx + 1, y + 1, ww - 2, 1, UIC_TITLE);
+	mfill(s, i0, i1, wx + 1, y + 9, ww - 2, 1, UIC_TITLE);
+	mfill(s, i0, i1, wx + 1, y + 2, 1, 7, UIC_TITLE);
+	/* the track's edge, then inside it black, the power, black */
+	mfill(s, i0, i1, MTR_X - 1, y + 2, MTR_W + 2, 1, UIC_PAPER_DK);
+	mfill(s, i0, i1, MTR_X - 1, y + 8, MTR_W + 2, 1, UIC_PAPER_DK);
+	mfill(s, i0, i1, MTR_X - 1, y + 3, 1, 5, UIC_PAPER_DK);
+	mfill(s, i0, i1, MTR_X + MTR_W, y + 3, 1, 5, UIC_PAPER_DK);
+	k = top > S16 ? (top - S16) >> 4 : 0;
+	mfill(s, i0, i1, MTR_X, y + 3, MTR_SNAP, 5, UIC_BLACK);
+	if (k) {
+		mfill(s, i0, i1, sx, y + 3, k, 1, UIC_BRASS_LT);
+		mfill(s, i0, i1, sx, y + 4, k, 3, UIC_BRASS);
+		mfill(s, i0, i1, sx, y + 7, k, 1, UIC_BRASS_DK);
+	}
+	mfill(s, i0, i1, sx + k, y + 3, MTR_W - MTR_SNAP - k, 5, UIC_BLACK);
+	for (k = 1; k < 4; k++) mfill(s, i0, i1, sx + (MTR_W - MTR_SNAP) * k / 4, y + 8, 1, 2, UIC_PAPER);
+	mfill(s, i0, i1, sx, y + 1, 1, ROW_H - 2, UIC_TEXT_HI);
 	if (p->club == CLUB_PT) {
 		/* the putt that rolls to the cup on a flat green */
 		fixed d = vec2_len(vec2_sub(pin(p), p->rv.ball));
-		k = (int16_t)(MTR_X + MTR_SNAP + (int32_t)(MTR_W - MTR_SNAP) * (d >> 8) / (p->range >> 8));
+		k = (int16_t)(sx + (int32_t)(MTR_W - MTR_SNAP) * (d >> 8) / (p->range >> 8));
 		if (k > MTR_X + MTR_W - 1) k = MTR_X + MTR_W - 1;
-		mfill(s, x0, x1, k - 1, y, 3, 1, UIC_WHITE);
-		mfill(s, x0, x1, k, y, 1, UI_CHAR, UIC_WHITE);
+		mfill(s, i0, i1, k - 1, y + 1, 3, 1, UIC_WHITE);
+		mfill(s, i0, i1, k, y + 1, 1, ROW_H - 2, UIC_WHITE);
 	}
 	if (p->mpos >= 0) {
-		mfill(s, x0, x1, m - 2, y, 3, UI_CHAR, UIC_WHITE);
-		mfill(s, x0, x1, m - 1, y + 1, 1, UI_CHAR - 2, UIC_BLACK);
+		mfill(s, i0, i1, m - 2, y + 1, 3, ROW_H - 2, UIC_WHITE);
+		mfill(s, i0, i1, m - 1, y + 2, 1, ROW_H - 4, UIC_BLACK);
 	}
 	p->mshown = m;
-	dirty(p, (int16_t)(x0 * s->scale), (int16_t)(y * s->scale), (int16_t)((x1 - x0) * s->scale), (int16_t)(UI_CHAR * s->scale));
+	if (x0 <= 0) dirty(p, (int16_t)(x0 * s->scale), (int16_t)(y * s->scale), (int16_t)((x1 - x0) * s->scale), (int16_t)(ROW_H * s->scale));
+	else dirty(p, (int16_t)(i0 * s->scale), (int16_t)((y + 1) * s->scale), (int16_t)((i1 - i0) * s->scale), (int16_t)((ROW_H - 2) * s->scale));
 }
 
 /* The hole's done in strokes: the score on the strip, holed or given. */
@@ -707,7 +824,8 @@ static void SEC_UI done(Play *p, uint8_t strokes, uint8_t gimme)
 		add(a, &n, p->round->pl[p->cur].name);
 		add(a, &n, ": ");
 	} else {
-		add(a, &n, gimme ? "Gimme, " : "In the cup, ");
+		/* the panel's line holds 19 characters */
+		add(a, &n, gimme ? "Gimme, " : strokes >= 10 ? "Holed, " : "In the cup, ");
 	}
 	/* msg1 holds 20 characters: the count shown stops at 99 */
 	n += play_num(a + n, strokes > 99 ? 99 : strokes);
@@ -1010,60 +1128,58 @@ int16_t play_num(char *t, uint32_t v)
 	return k;
 }
 
-void play_status(Surface *s, const Play *p, const char *info)
+/* The panel's top row on the map and while a scene draws: hole, par and yards. */
+static void SEC_UI hole_row(Surface *s, const Hole *h)
 {
-	const Hole *h = p->rv.hole;
-	char t[24];
+	char t[12];
 	int16_t n = 0;
 
-	ui_fill(s, 0, STRIP_Y, s->lw, RENDER_STATUS, UIC_BLACK);
+	face(s);
 	add(t, &n, "Hole ");
-	n += play_num(t + n, h->number);
-	add(t, &n, " Par ");
-	n += play_num(t + n, h->par);
-	add(t, &n, " ");
-	n += play_num(t + n, h->tees[0].yards);
+	play_num(t + n, h->number);
+	readout(s, 2, ROW_A, BOX_W(7), t, -1, UIC_PAPER);
+	n = 0;
+	add(t, &n, "Par ");
+	play_num(t + n, h->par);
+	readout(s, 3 + BOX_W(7), ROW_A, BOX_W(5), t, -1, UIC_PAPER);
+	n = play_num(t, h->tees[0].yards);
 	add(t, &n, " yd");
-	line(s, 0, t);
-	if (!info) info = h->name;
+	readout(s, 4 + BOX_W(7) + BOX_W(5), ROW_A, BOX_W(6), t, 1, UIC_TEXT_HI);
+}
+
+void play_status(Surface *s, const Play *p, const char *info)
+{
+	int16_t w = s->lw - 4;
+
+	hole_row(s, p->rv.hole);
+	if (!info) info = p->rv.hole->name;
 	if (p->round) {
-		/* the Card button at the right */
-		for (n = 0; info[n] && n < CARD_X / UI_CHAR - 1; n++) {}
-		ui_text(s, 0, STRIP_Y + UI_CHAR, info, n, UIC_WHITE, -1);
-		ui_fill(s, CARD_X - 2, STRIP_Y + UI_CHAR, s->lw - CARD_X + 2, UI_CHAR, UIC_WHITE);
-		ui_text(s, CARD_X, STRIP_Y + UI_CHAR, "Card", 4, UIC_BLACK, -1);
-	} else {
-		line(s, 1, info);
+		w = CARD_X - 3;
+		button(s, CARD_X, ROW_B, CARD_W, "Card");
 	}
+	readout(s, 2, ROW_B, w, info, -1, UIC_PAPER);
 }
 
 void play_turn(Surface *s, const Play *p)
 {
-	const Hole *h = p->rv.hole;
 	char t[24];
 	int16_t n = 0;
 
-	ui_fill(s, 0, STRIP_Y, s->lw, RENDER_STATUS, UIC_BLACK);
-	add(t, &n, "Hole ");
-	n += play_num(t + n, h->number);
-	add(t, &n, " Par ");
-	n += play_num(t + n, h->par);
-	add(t, &n, " ");
-	n += play_num(t + n, h->tees[0].yards);
-	add(t, &n, " yd");
-	line(s, 0, t);
-	n = 0;
-	if (p->round) add(t, &n, p->round->pl[p->cur].name);
-	else add(t, &n, "Player 1");
+	hole_row(s, p->rv.hole);
+	add(t, &n, p->round ? p->round->pl[p->cur].name : "Player 1");
 	add(t, &n, ", shot ");
-	n += play_num(t + n, p->stroke);
-	line(s, 1, t);
+	play_num(t + n, p->stroke);
+	readout(s, 2, ROW_B, s->lw - 4, t, -1, UIC_PAPER);
 }
 
 void play_card(Surface *s, const Play *p)
 {
 	Surface c = *s;
-	/* the card in a 160 unit square in the middle */
+	/* the panel with the hole under it, and the card in a 160 unit square in the middle */
+	if (p->rv.hole) {
+		hole_row(s, p->rv.hole);
+		readout(s, 2, ROW_B, s->lw - 4, p->rv.hole->name, -1, UIC_PAPER);
+	}
 	gfx_centre(&c, 1);
 	if (p->round) card_draw(&c, p->round, p->card, p->page, p->csel);
 }

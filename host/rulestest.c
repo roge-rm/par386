@@ -387,7 +387,7 @@ static int shot(Play *p, Surface *s, Surface *bg, uint32_t *t)
 	play_frame(p, s, bg, *t);
 	CHECK(p->state == PS_AIM);
 	CHECK(play_key(p, KEY_SELECT, *t) & PL_ANIM);
-	tap_at(rt, 60, 150);
+	tap_at(rt, 20, 150);
 	if (p->club == CLUB_PT) {
 		fixed d = vec2_len(vec2_sub(p->rv.hole->pins[0], p->rv.ball));
 		uint32_t ms = ten((double)d / p->range * MTR_UP_MS);
@@ -637,8 +637,8 @@ static void round_tests(const char *pdb)
 		/* the scorecard from the map mid-hole, and back */
 		if (shots == 3) {
 			UiDialog d;
-			/* the same on the IIIx: Map on the strip, Card on the map's, OK */
-			tap_at(rt, 148, 155);
+			/* the same on the IIIx: Map on the panel, Card on the map's, OK */
+			tap_at(rt, 119, 153);
 			snap(rt + 1500, "a-map");
 			tap_at(rt + 2000, 140, 156);
 			snap(rt + 3500, "a-card");

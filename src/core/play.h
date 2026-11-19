@@ -1,12 +1,12 @@
 /* Playing a hole: the view (the scene from behind the ball, the green view
  * for putting or the hole map), aiming and picking a club, the 3-click swing
  * meter and the 2-click putting meter, the ball's flight or roll drawn over
- * the view, the result, holing out and the status strip. The
+ * the view, the result, holing out and the panel below the view. The
  * platform loads the hole, keeps the surface grid, draws the scene when
  * asked and keeps a copy of it, and passes in the time. No platform headers.
  *
  * Times are in ms from any start. Overlays (the aim marker, the ball, the
- * meter and the strip) are drawn into the surface over the scene and taken
+ * meter and the panel) are drawn into the surface over the scene and taken
  * off again by copying back from the kept copy. */
 #ifndef PLAY_H
 #define PLAY_H
@@ -35,7 +35,7 @@ enum { PS_AIM, PS_UP, PS_DOWN, PS_FLY, PS_RESULT, PS_DONE };
 
 #define PLAY_PATCHES 16 /* overlay patches drawn over the scene */
 
-/* The swing meter, in logical units along the status strip, and its timing. */
+/* The swing meter, in logical units along the panel's top row, and its timing. */
 #define MTR_X      4    /* the bar's left */
 #define MTR_W      152  /* its width: full power at the right end */
 #define MTR_SNAP   16   /* the snap line, from the bar's left */
@@ -43,7 +43,7 @@ enum { PS_AIM, PS_UP, PS_DOWN, PS_FLY, PS_RESULT, PS_DONE };
 #define MTR_DOWN_MS 750 /* full power back to the snap line */
 #define MTR_SNAP_MS 80  /* this far off the snap line past a 10 ms window is a full miss */
 
-/* A ball left this many feet from the cup on the green, as the strip
+/* A ball left this many feet from the cup on the green, as the panel
  * shows it (to the nearest foot), is given: the next putt counts and the
  * hole ends. */
 #define PLAY_GIMME_FT 2
@@ -111,14 +111,13 @@ int SEC_UI play_tap(Play *p, int16_t x, int16_t y, uint32_t now);
  * there's none). The golfer's pose follows the swing in s and bg. Call
  * after PL_RENDER or PL_SCENE, and while PL_ANIM is set. */
 int SEC_UI play_frame(Play *p, Surface *s, Surface *bg, uint32_t now);
-/* The status strip on the map: hole, par and yards, and a second line of
- * text if info isn't 0 (the hole's name if it is), with the Card button in
- * a round. */
+/* The panel on the map: hole, par and yards, and below them info if it
+ * isn't 0 (the hole's name if it is), with the Card button in a round. */
 void SEC_UI play_status(Surface *s, const Play *p, const char *info);
-/* The strip while the scene is drawn for a new turn or hole: the hole, and
+/* The panel while the scene is drawn for a new turn or hole: the hole, and
  * who plays. */
 void SEC_UI play_turn(Surface *s, const Play *p);
-/* The scorecard, over whatever is on s. */
+/* The scorecard, over whatever is on s, with the panel showing the hole. */
 void SEC_UI play_card(Surface *s, const Play *p);
 /* The hole map with the yardage by the aim line and the last shot's path. */
 void SEC_UI play_map(Surface *s, const Play *p);
