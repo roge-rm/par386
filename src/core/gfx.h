@@ -18,12 +18,18 @@ typedef struct {
 	uint8_t depth;
 	uint8_t lg;             /* log2 of depth, set by gfx_init */
 	uint8_t scale;          /* pixels per logical unit: 1 on 160 wide screens, 2 on 320 */
+	int16_t lw, lh;         /* size in logical units, set by gfx_init */
+	int16_t ox, oy;         /* where ui.c and pictures put logical 0,0, in pixels; 0 from gfx_init */
 	uint8_t pa[UIC_COUNT];  /* pixel value of each UI colour on even checker squares */
 	uint8_t pb[UIC_COUNT];  /* and on odd ones */
 } Surface;
 
-/* Sets up s for its depth and scale; bits, rowBytes, w and h are set by the caller. */
+/* Sets up s for its depth and scale; bits, rowBytes, w and h are set by the caller.
+ * Screens bigger than 160 x 160 units show the menus and dialogs in a 160
+ * unit square at ox, oy (gfx_centre). */
 void SEC_UI gfx_init(Surface *s);
+/* Puts logical 0,0 so a 160 unit square sits in the middle (on gfx_centre(s, 1)) or at the top left. */
+void SEC_UI gfx_centre(Surface *s, int on);
 /* RGB of a UI colour as 0xRRGGBB, for host pictures. */
 uint32_t SEC_UI gfx_ui_rgb(uint8_t c);
 
@@ -41,7 +47,15 @@ int16_t SEC_UI gfx_ball_h(void);
 
 /* Picture bands, made by tools/mkart.py: big-endian u16 first row, u16 rows,
  * u16 bytes a row, u8 depth, u8 0, then the rows packed with PackBits.
- * Returns 0, or -1 if the band doesn't fit the surface or is cut short. */
+ * Put at ox, oy. 2-bit bands also go on 1, 4 and 8-bit surfaces, and 8-bit
+ * 320 wide ones on 160 wide 8-bit surfaces at half size. Returns 0, or -1
+ * if the band doesn't fit the surface or is cut short. */
 int SEC_UI gfx_pic_band(Surface *s, const uint8_t *d, uint32_t len);
+
+/* Copies a rectangle of an 8-bit surface to 16-bit colour pixels (5 red,
+ * 6 green, 5 blue, high byte first, or low byte first if le) at the same
+ * place in d, rb bytes a row, through the master palette. For screens left
+ * at 16 bits. */
+void SEC_UI gfx_to16(const Surface *s, uint8_t *d, uint16_t rb, int16_t x, int16_t y, int16_t w, int16_t h, uint8_t le);
 
 #endif

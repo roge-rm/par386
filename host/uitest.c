@@ -33,15 +33,34 @@ static uint8_t *load(const char *name, long *len)
 	return d;
 }
 
-static void surface(Surface *s, uint8_t scale)
+#define GUARD 64
+
+static void surface_wh(Surface *s, int w, int h, uint8_t scale, uint8_t depth)
 {
+	uint8_t *b;
 	memset(s, 0, sizeof *s);
 	s->scale = scale;
-	s->depth = scale > 1 ? 8 : 2;
-	s->w = s->h = 160 * scale;
+	s->depth = depth;
+	s->w = (int16_t)w;
+	s->h = (int16_t)h;
 	s->rowBytes = (uint16_t)((s->w * s->depth + 15) / 16 * 2);
-	s->bits = calloc(s->rowBytes, s->h);
+	b = malloc((size_t)s->rowBytes * s->h + 2 * GUARD);
+	memset(b, 0xA5, (size_t)s->rowBytes * s->h + 2 * GUARD);
+	memset(b + GUARD, 0, (size_t)s->rowBytes * s->h);
+	s->bits = b + GUARD;
 	gfx_init(s);
+}
+
+static void surface(Surface *s, uint8_t scale) { surface_wh(s, 160 * scale, 160 * scale, scale, scale > 1 ? 8 : 2); }
+
+/* Checks the guard bytes either side and frees the surface. */
+static void sfree(Surface *s)
+{
+	uint8_t *b = s->bits - GUARD, *e = s->bits + (size_t)s->rowBytes * s->h;
+	int i, bad = 0;
+	for (i = 0; i < GUARD; i++) bad += (b[i] != 0xA5) + (e[i] != 0xA5);
+	CHECK(bad == 0);
+	free(b);
 }
 
 /* The platform's part of a redraw: the picture's bands, then the front. */
@@ -55,7 +74,8 @@ static void draw(Surface *s, const Front *f)
 	for (k = 0; ; k++) {
 		long len;
 		uint8_t *d;
-		snprintf(name, sizeof name, "Pic%d-%d.bin", s->depth, id + k);
+		/* the 2-bit pictures below 8 bits, the 8-bit ones above, as main.c */
+		snprintf(name, sizeof name, "Pic%d-%d.bin", s->depth >= 8 ? 8 : 2, id + k);
 		if (!(d = load(name, &len))) break;
 		CHECK(gfx_pic_band(s, d, (uint32_t)len) == 0);
 		free(d);
@@ -71,7 +91,8 @@ static void save(const Surface *s, const char *name)
 	FILE *f;
 	int16_t x, y;
 
-	snprintf(path, sizeof path, "%s/%s-%d.ppm", outdir, name, s->w);
+	if (s->w == s->h) snprintf(path, sizeof path, "%s/%s-%d.ppm", outdir, name, s->w);
+	else snprintf(path, sizeof path, "%s/%s-%dx%d.ppm", outdir, name, s->w, s->h);
 	f = fopen(path, "wb");
 	if (!f) { CHECK(!"open ppm"); return; }
 	fprintf(f, "P6\n%d %d\n255\n", s->w, s->h);
@@ -81,7 +102,8 @@ static void save(const Surface *s, const char *name)
 			if (s->depth == 8) {
 				fwrite(pal + row[x] * 3, 1, 3, f);
 			} else {
-				uint8_t v = (row[x >> 2] >> (6 - 2 * (x & 3))) & 3, g = (uint8_t)(255 - v * 85);
+				int d = s->depth, per = 8 / d, top = (1 << d) - 1;
+				uint8_t v = (uint8_t)((row[x / per] >> (8 - d - d * (x % per))) & top), g = (uint8_t)(255 - v * 255 / top);
 				fputc(g, f); fputc(g, f); fputc(g, f);
 			}
 		}
@@ -104,7 +126,34 @@ static void screens(uint8_t scale)
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.dialog);
 	draw(&s, &f);
 	save(&s, "dialog");
-	free(s.bits);
+	sfree(&s);
+}
+
+/* The title, menu and a dialog on another screen: in a 160 unit square in
+ * the middle, with the picture made for the nearest depth. Saved as
+ * NAME-title and so on. */
+static void screens_at(int w, int h, uint8_t scale, uint8_t depth, const char *name)
+{
+	Surface s;
+	Front f;
+	char t[64];
+
+	surface_wh(&s, w, h, scale, depth);
+	gfx_centre(&s, 1);
+	front_init(&f);
+	draw(&s, &f);
+	snprintf(t, sizeof t, "%s-title", name);
+	save(&s, t);
+	CHECK(front_key(&f, KEY_OTHER) == FR_REDRAW && f.screen == SCR_MENU);
+	draw(&s, &f);
+	snprintf(t, sizeof t, "%s-menu", name);
+	save(&s, t);
+	CHECK((front_key(&f, KEY_DOWN) & FR_REDRAW) && f.menu.sel == 1);
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.dialog);
+	draw(&s, &f);
+	snprintf(t, sizeof t, "%s-dialog", name);
+	save(&s, t);
+	sfree(&s);
 }
 
 static void input(void)
@@ -183,7 +232,7 @@ static void courses(uint8_t scale)
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_COURSES);
 	CHECK(front_tap(&f, 80, f.menu.y + 3) & FR_REDRAW);
 	CHECK(f.screen == SCR_MENU && f.course == 0 && f.menu.sel == MAIN_COURSES + 1 && f.saved);
-	free(s.bits);
+	sfree(&s);
 }
 
 /* A band that runs past the surface or is cut short is refused. */
@@ -198,7 +247,7 @@ static void bad_bands(void)
 	CHECK(gfx_pic_band(&s, band, 10) == -1);           /* 127 bytes of 800 */
 	band[6] = 8;
 	CHECK(gfx_pic_band(&s, band, 10) == -1);           /* wrong depth */
-	free(s.bits);
+	sfree(&s);
 }
 
 /* The byte-at-a-time 2-bit text matches the pixel-at-a-time path: the same
@@ -259,6 +308,12 @@ int main(int argc, char **argv)
 
 	screens(1);
 	screens(2);
+	screens_at(160, 160, 1, 4, "d4");
+	screens_at(160, 160, 1, 1, "d1");
+	screens_at(160, 160, 1, 8, "d8");
+	screens_at(320, 480, 2, 8, "tall");
+	screens_at(480, 320, 2, 8, "wide");
+	screens_at(320, 448, 2, 8, "tx");
 	input();
 	courses(1);
 	courses(2);

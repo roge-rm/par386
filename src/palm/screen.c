@@ -1,0 +1,616 @@
+/* The screen. Modes, deepest first:
+ * - 16-bit colour: the screen stays at 16 bits; the game draws 8-bit
+ *   palette indexes into a bitmap and gfx_to16 turns what changed into the
+ *   16-bit offscreen window that's copied to the display.
+ * - 8-bit colour with the master palette set.
+ * - 4, 2 or 1 bit greys, drawn straight into the offscreen window.
+ * Double density screens (OS 5) and Sony HR Clies (OS 4, the HR library)
+ * draw at 2 pixels a unit. Where the input area can be closed (PINs), the
+ * game takes the whole display, up to 240 units across or down, and
+ * ScreenResize follows it when it opens, closes or turns. Sony Clies with
+ * a silk area that can be collapsed (the Silk library or Virtual Silk) do
+ * the same; Garmin iQues use the same PINS calls as Palm. */
+#define ALLOW_ACCESS_TO_INTERNALS_OF_WINDOWS
+#include <PalmOS.h>
+#include "screen.h"
+#include "sonyhr.h"
+#include "silk.h"
+
+#define kRom35 sysMakeROMVersion(3, 5, 0, sysROMStageRelease, 0)
+#define kSonyCreator 'SoNy'
+
+Surface gS;
+
+static WinHandle gOff;          /* copied to the display */
+static WinHandle gBg;           /* the kept copy, when it's a window */
+static BitmapType *gS8, *gBg8;  /* 16-bit mode: the 8-bit surface and its kept copy */
+static Surface gBgS;
+static Boolean gHaveBg;
+static UInt8 *gOffBits;         /* 16-bit mode: gOff's pixels */
+static UInt16 gOffRb;
+static Boolean gLE;             /* gOff's 16-bit pixels are low byte first */
+static Boolean g16, gDD, gRom35, gPins, gPinsClosed, gSmall;
+static Boolean gDepthSet, gPalSet;
+static UInt32 gOldDepth, gDepths, gPinsVer;
+static UInt16 gPinsOld;         /* the input area's state at launch */
+#ifdef DEBUG
+static UInt8 gFailMakes;        /* Make fails this many more times */
+#endif
+static UInt8 gDepth;            /* the screen's depth */
+/* Sony HR */
+static Boolean gSony, gSonyLoaded, gSonyOpen, gSonyMode;
+static UInt16 gSonyRef;
+static UInt32 gSonyW, gSonyH, gSonyDepth;
+static Boolean gSonyColour;
+/* Sony silk */
+static Boolean gSilk, gSilkLoaded, gVsk;
+static UInt16 gSilkRef, gVskOld;
+/* registered for the display's resize notification */
+static UInt32 gNotifyType;
+static Boolean gResizing;
+
+/* Sets the palette from the Pal8 resource (256 RGB triples). */
+static void SetPalette(void)
+{
+	MemHandle h = DmGetResource('Pal8', 1000);
+	RGBColorType *pal;
+	UInt8 *p;
+	UInt16 i;
+
+	if (!h) return;
+	if (MemHandleSize(h) < 256 * 3) {
+		DmReleaseResource(h);
+		return;
+	}
+	pal = MemPtrNew(256 * sizeof(RGBColorType));
+	if (pal) {
+		p = MemHandleLock(h);
+		for (i = 0; i < 256; i++) {
+			pal[i].index = (UInt8)i;
+			pal[i].r = p[i * 3];
+			pal[i].g = p[i * 3 + 1];
+			pal[i].b = p[i * 3 + 2];
+		}
+		MemHandleUnlock(h);
+		gPalSet = WinPalette(winPaletteSet, 0, 256, pal) == errNone;
+		MemPtrFree(pal);
+	}
+	DmReleaseResource(h);
+}
+
+/* Only removes a library loaded here, after it's closed. */
+static void SonyClose(void)
+{
+	Err err = errNone;
+
+	if (gSonyMode)
+		HRWinScreenMode(gSonyRef, winScreenModeSet, &gSonyW, &gSonyH, &gSonyDepth, &gSonyColour);
+	if (gSonyOpen) err = HRClose(gSonyRef);
+	if (gSonyLoaded && err == errNone) SysLibRemove(gSonyRef);
+	gSony = gSonyLoaded = gSonyOpen = gSonyMode = false;
+}
+
+/* Opens the Sony HR library and keeps the mode to put back; the mode is
+ * set with the depth. */
+static Boolean SonyOpen(void)
+{
+	UInt16 version;
+
+	if (SysLibFind("Sony HR Library", &gSonyRef) != errNone) {
+		if (SysLibLoad('libr', 'SlHr', &gSonyRef) != errNone) return false;
+		gSonyLoaded = true;
+	}
+	if (HROpen(gSonyRef) != errNone) {
+		SonyClose();
+		return false;
+	}
+	gSonyOpen = true;
+	if (HRGetAPIVersion(gSonyRef, &version) != errNone || !version ||
+	    HRWinScreenMode(gSonyRef, winScreenModeGet, &gSonyW, &gSonyH, &gSonyDepth, &gSonyColour) != errNone) {
+		SonyClose();
+		return false;
+	}
+	gSony = true;
+	return true;
+}
+
+/* Sets the screen's depth, keeping the old one to put back. */
+static Boolean SetDepth(UInt32 depth)
+{
+	if (gSony) {
+		UInt32 w = 320, h = 320;
+		if (HRWinScreenMode(gSonyRef, winScreenModeSet, &w, &h, &depth, NULL) != errNone) return false;
+		gSonyMode = true;
+		return true;
+	}
+	if (!gDepthSet && WinScreenMode(winScreenModeGet, NULL, NULL, &gOldDepth, NULL) != errNone) return false;
+	if (WinScreenMode(winScreenModeSet, NULL, NULL, &depth, NULL) != errNone) return false;
+	gDepthSet = true;
+	return true;
+}
+
+/* An offscreen window of the screen's depth, w x h pixels. */
+static WinHandle NewWin(Int16 w, Int16 h)
+{
+	UInt16 err;
+
+	if (gSony) return HRWinCreateOffscreenWindow(gSonyRef, w, h, screenFormat, &err);
+	if (gDD) return WinCreateOffscreenWindow(w / 2, h / 2, nativeFormat, &err);
+	return WinCreateOffscreenWindow(w, h, screenFormat, &err);
+}
+
+/* A window's pixels and bytes a row. */
+static UInt8 *WinBits(WinHandle win, UInt16 *rb)
+{
+	if (gRom35) {
+		BitmapType *b = WinGetBitmap(win);
+		Coord w, h;
+		BmpGetDimensions(b, &w, &h, rb);
+		return BmpGetBits(b);
+	} else {
+		WindowType *wp = (WindowType *)win;
+		*rb = (UInt16)((((UInt16)wp->displayWidthV20 * gDepth + 15) >> 4) << 1);
+		return wp->displayAddrV20;
+	}
+}
+
+static void Free(void)
+{
+	if (gOff) WinDeleteWindow(gOff, false);
+	if (gBg) WinDeleteWindow(gBg, false);
+	if (gS8) BmpDelete(gS8);
+	if (gBg8) BmpDelete(gBg8);
+	gOff = gBg = NULL;
+	gS8 = gBg8 = NULL;
+	gOffBits = NULL;
+	gHaveBg = false;
+	/* nothing draws until Make works again */
+	gS.bits = NULL;
+	gS.w = gS.h = gS.lw = gS.lh = 0;
+	gS.rowBytes = 0;
+}
+
+/* The size to draw at, in pixels: the display, at most 240 units either way
+ * and a multiple of 16 pixels across, or 160 units square when gSmall. */
+/* The display's size in units. Sony HR gives pixels. */
+static void Extent(Coord *ew, Coord *eh)
+{
+	if (gSony) {
+		HRWinGetDisplayExtent(gSonyRef, ew, eh);
+		*ew /= 2;
+		*eh /= 2;
+	} else {
+		WinGetDisplayExtent(ew, eh);
+	}
+}
+
+static void Size(Int16 *w, Int16 *h)
+{
+	Coord ew = 160, eh = 160;
+	Int16 sc = gS.scale;
+
+	if (gRom35 && (!gSony || gSilk) && !gSmall) Extent(&ew, &eh);
+	if (ew > 240) ew = 240;
+	if (eh > 240) eh = 240;
+	if (ew < 160) ew = 160;
+	if (eh < 160) eh = 160;
+	*w = (Int16)((ew * sc) & ~15);
+	*h = (Int16)(eh * sc);
+}
+
+/* Whether gOff's 16-bit pixels are low byte first (ARM devices): writes
+ * pure red high byte first to the top left pixel and asks the OS what it
+ * sees there. */
+static Boolean Swapped(void)
+{
+	RGBColorType c;
+	WinHandle old;
+	UInt32 win = 0, rom = 0;
+
+	/* WinGetPixelRGB is missing from some OS 3.5 builds */
+	FtrGet(sysFtrCreator, sysFtrNumWinVersion, &win);
+	FtrGet(sysFtrCreator, sysFtrNumROMVersion, &rom);
+	if (win < 4 && rom < 0x05000000UL) return false;
+	old = WinSetDrawWindow(gOff);
+	gOffBits[0] = 0xF8;
+	gOffBits[1] = 0x00;
+	WinGetPixelRGB(0, 0, &c);
+	WinSetDrawWindow(old);
+	return c.r < 0x80;
+}
+
+/* Makes the buffers for the current size. */
+static Err Make(void)
+{
+	Int16 w, h;
+	UInt16 rb, err;
+
+#ifdef DEBUG
+	if (gFailMakes) {
+		gFailMakes--;
+		return 1;
+	}
+#endif
+	Size(&w, &h);
+	gOff = NewWin(w, h);
+	if (!gOff) return 1;
+	/* an OS 5 window can stay at the hardware's depth after a lower one is set */
+	if (gRom35 && !gSony && BmpGetBitDepth(WinGetBitmap(gOff)) != (g16 ? 16 : gDepth)) return 3;
+	if (g16) {
+		gOffBits = WinBits(gOff, &gOffRb);
+		gLE = Swapped();
+		gS8 = BmpCreate(w, h, 8, NULL, &err);
+		if (!gS8) return 1;
+		gS.bits = BmpGetBits(gS8);
+		{
+			Coord bw, bh;
+			BmpGetDimensions(gS8, &bw, &bh, &rb);
+		}
+	} else {
+		gS.bits = WinBits(gOff, &rb);
+	}
+	gS.w = w;
+	gS.h = h;
+	gS.rowBytes = rb;
+	gS.depth = g16 ? 8 : gDepth;
+	if (!gS.bits) return 2;
+	gfx_init(&gS);
+	return errNone;
+}
+
+/* Collapses the Sony silk area, keeping what to put back. */
+static void SilkOpen(void)
+{
+	UInt32 info = 0, ver;
+	UInt16 dirs;
+
+	FtrGet(kSonyCreator, sonyFtrSysInfo, &info);
+	if (FtrGet(kSonyCreator, sonyFtrVskVersion, &ver) != errNone) ver = 0;
+	if (!ver && !(info && (((SonySysInfo *)info)->libr & sonyLibrSilk))) return;
+	if (SysLibFind(silkLibName, &gSilkRef) != errNone) {
+		if (SysLibLoad(sysFileTLibrary, silkLibCreator, &gSilkRef) != errNone) return;
+		gSilkLoaded = true;
+	}
+	if (ver) {
+		if (VskOpen(gSilkRef) == errNone) {
+			gSilk = gVsk = true;
+			if (VskGetState(gSilkRef, vskStateResize, &gVskOld) != errNone) gVskOld = vskResizeMax;
+			/* later versions resize across too (the UX turns) */
+			dirs = ver >= vskVersionNum2 ? vskResizeVertically | vskResizeHorizontally : vskResizeVertically;
+			if (VskSetState(gSilkRef, vskStateEnable, dirs) != errNone)
+				VskSetState(gSilkRef, vskStateEnable, vskResizeVertically);
+			VskSetState(gSilkRef, vskStateResize, vskResizeNone);
+		}
+	} else if (SilkLibOpen(gSilkRef) == errNone) {
+		gSilk = true;
+		SilkLibEnableResize(gSilkRef);
+		SilkLibResizeDispWin(gSilkRef, silkResizeMax);
+	}
+	if (!gSilk && gSilkLoaded) {
+		SysLibRemove(gSilkRef);
+		gSilkLoaded = false;
+	}
+}
+
+/* Puts the silk area back and only removes a library loaded here. */
+static void SilkClose(void)
+{
+	Err err = errNone;
+
+	if (gVsk) {
+		VskSetState(gSilkRef, vskStateResize, gVskOld);
+		VskSetState(gSilkRef, vskStateEnable, vskResizeDisable);
+		err = VskClose(gSilkRef);
+	} else if (gSilk) {
+		SilkLibResizeDispWin(gSilkRef, silkResizeNormal);
+		SilkLibDisableResize(gSilkRef);
+		err = SilkLibClose(gSilkRef);
+	}
+	if (gSilkLoaded && err == errNone) SysLibRemove(gSilkRef);
+	gSilk = gSilkLoaded = gVsk = false;
+}
+
+/* The display changed size: a winDisplayChangedEvent for the main form,
+ * as Palm's PINS sends itself. Ours while ScreenResize runs are left out. */
+static Err Notified(SysNotifyParamType *p)
+{
+	EventType e;
+
+	(void)p;
+	if (gResizing) return errNone;
+	MemSet(&e, sizeof(e), 0);
+	e.eType = winDisplayChangedEvent;
+	EvtAddUniqueEventToQueue(&e, 0, true);
+	return errNone;
+}
+
+/* Garmin's PINS only broadcasts sysNotifyDisplayResizedEvent; Sony's silk
+ * the display change. Taken off again in ScreenClose. */
+static void NotifyOpen(void)
+{
+	UInt16 card;
+	LocalID db;
+	UInt32 type = gSilk ? sysNotifyDisplayChangeEvent : sysNotifyDisplayResizedEvent;
+
+	if (!gSilk && !gPins) return;
+	if (SysCurAppDatabase(&card, &db) != errNone) return;
+	if (SysNotifyRegister(card, db, type, Notified, sysNotifyNormalPriority, NULL) == errNone)
+		gNotifyType = type;
+}
+
+static void NotifyClose(void)
+{
+	UInt16 card;
+	LocalID db;
+
+	if (gNotifyType && SysCurAppDatabase(&card, &db) == errNone)
+		SysNotifyUnregister(card, db, gNotifyType, sysNotifyNormalPriority);
+	gNotifyType = 0;
+}
+
+static Int16 StepDown(void);
+
+Err ScreenOpen(void)
+{
+	UInt32 rom = 0, win = 0, depths = 1, density = kDensityLow, v, sv, depth;
+	Int16 res;
+
+	FtrGet(sysFtrCreator, sysFtrNumROMVersion, &rom);
+	gRom35 = rom >= kRom35;
+	if (gRom35) FtrGet(sysFtrCreator, sysFtrNumWinVersion, &win);
+	if (win >= 4) WinScreenGetAttribute(winScreenDensity, &density);
+	gDD = density == kDensityDouble;
+	gPins = FtrGet(pinCreator, pinFtrAPIVersion, &v) == errNone;
+	if (gPins) gPinsVer = v;
+	if (FtrGet(kSonyCreator, sonyFtrSysInfo, &sv) == errNone) {
+		if (!gDD && win < 4) SonyOpen();
+		if (gRom35) SilkOpen();
+	}
+	if (WinScreenMode(winScreenModeGetSupportedDepths, NULL, NULL, &depths, NULL) != errNone)
+		depths = 1;
+	gDepths = depths;
+
+	/* the deepest the screen has; colour needs OS 3.5 */
+	if (gRom35 && (depths & 0x8000)) depth = 16;
+	else if (gRom35 && (depths & 0x80)) depth = 8;
+	else if (depths & 0x08) depth = 4;
+	else if (depths & 0x02) depth = 2;
+	else depth = 1;
+#if defined(DEBUG) && defined(FORCE_DEPTH)
+	depth = FORCE_DEPTH;
+#endif
+	if (!SetDepth(depth)) {
+		/* a 16-bit screen that won't say so, or a depth it refuses */
+		if (depth == 16 && gRom35 && (depths & 0x80) && SetDepth(8)) depth = 8;
+		else if (depth > 2 && (depths & 0x02) && SetDepth(2)) depth = 2;
+		else return 1;
+	}
+	gDepth = (UInt8)depth;
+	g16 = depth == 16;
+	if (depth == 8) SetPalette();
+	MemSet(&gS, sizeof(gS), 0);
+	gS.scale = gDD || gSony ? 2 : 1;
+	if (Make() != errNone && g16) {
+		/* no room for the 16-bit buffers; depth changes here must not notify */
+		gResizing = true;
+		res = StepDown();
+		gResizing = false;
+		if (res == SCREEN_FAILED) return 1;
+	}
+	if (!gOff || !gS.bits) return 1;
+	if (gRom35) NotifyOpen();
+	return errNone;
+}
+
+void ScreenClose(void)
+{
+	NotifyClose();
+	Free();
+	if (gPalSet) WinPalette(winPaletteSetToDefault, 0, 256, NULL);
+	gPalSet = false;
+	if (gDepthSet) WinScreenMode(winScreenModeSet, NULL, NULL, &gOldDepth, NULL);
+	gDepthSet = false;
+	SonyClose();
+	SilkClose();
+	/* pinInputAreaUser is PINS 1.1 (OS 5.3) */
+	if (gPinsClosed) PINSetInputAreaState(gPinsVer >= pinAPIVersion1_1 ? pinInputAreaUser : gPinsOld);
+	gPinsClosed = false;
+}
+
+void ScreenFormInit(FormType *frm)
+{
+	if (!gPins) return;
+	/* up to 240 units either way, so the input area can close and the screen turn */
+	WinSetConstraintsSize(FrmGetWindowHandle(frm), 160, 240, 240, 160, 240, 240);
+	FrmSetDIAPolicyAttr(frm, frmDIAPolicyCustom);
+	PINSetInputTriggerState(pinInputTriggerEnabled);
+	if (!gPinsClosed) {
+		gPinsOld = PINGetInputAreaState();
+		if (gPinsOld == pinInputAreaNone) gPinsOld = pinInputAreaOpen;
+	}
+	PINSetInputAreaState(pinInputAreaClosed);
+	gPinsClosed = true;
+}
+
+/* Sets a lower depth while running: the palette goes back to the
+ * system's when leaving 8 bits. */
+static Boolean StepDepth(UInt32 depth)
+{
+	if (!SetDepth(depth)) return false;
+	if (depth != 8 && gPalSet) {
+		WinPalette(winPaletteSetToDefault, 0, 256, NULL);
+		gPalSet = false;
+	}
+	gDepth = (UInt8)depth;
+	g16 = false;
+	if (depth == 8) SetPalette();
+	return true;
+}
+
+/* No room for the buffers: steps down until they fit. */
+static Int16 StepDown(void)
+{
+	WinHandle old;
+	UInt8 have, k;
+
+	/* no room: 8 bits with the palette, as ScreenOpen does */
+	Free();
+	if (g16 && StepDepth(8) && Make() == errNone) return SCREEN_NEW;
+	/* then 160 units square at 2 bits, 1, or the depth it had, top left on
+	 * a blank display */
+	have = gDepth > 8 ? 8 : gDepth;
+	gSmall = true;
+	for (k = 0; k < 3; k++) {
+		Free();
+		if (k == 0 && !(gDepths & 0x02)) continue;
+		if (StepDepth(k == 0 ? 2 : k == 1 ? 1 : have) && Make() == errNone) {
+			old = WinSetDrawWindow(WinGetDisplayWindow());
+			WinEraseWindow();
+			WinSetDrawWindow(old);
+			return SCREEN_NEW;
+		}
+	}
+	Free();
+	return SCREEN_FAILED;
+}
+
+/* Makes the buffers again for a new size, stepping down if there's no room. */
+static Int16 Remake(void)
+{
+	Free();
+	if (Make() == errNone) return SCREEN_NEW;
+	return StepDown();
+}
+
+Int16 ScreenResize(void)
+{
+	Int16 w, h, res;
+	RectangleType r;
+	FormType *frm = FrmGetActiveForm();
+
+	if (!gRom35 || (gSony && !gSilk)) return SCREEN_SAME;
+	/* the form's window takes the whole display */
+	if (frm) {
+		Coord ew, eh;
+		Extent(&ew, &eh);
+		RctSetRectangle(&r, 0, 0, ew, eh);
+		WinSetBounds(FrmGetWindowHandle(frm), &r);
+	}
+	gSmall = false;
+	Size(&w, &h);
+	if (gS.bits && w == gS.w && h == gS.h) return SCREEN_SAME;
+	/* depth changes made here notify too */
+	gResizing = true;
+	res = Remake();
+	gResizing = false;
+	return res;
+}
+
+#ifdef DEBUG
+void ScreenFailNext(void)
+{
+	gFailMakes++;
+}
+#endif
+
+/* Rounds a pixel rectangle out to whole units and keeps it on gS. */
+static Boolean Clip(const URect *d, Int16 *x0, Int16 *y0, Int16 *x1, Int16 *y1)
+{
+	Int16 m = gS.scale - 1;
+
+	*x0 = d->x < 0 ? 0 : d->x & ~m;
+	*y0 = d->y < 0 ? 0 : d->y & ~m;
+	*x1 = (d->x + d->w + m) & ~m;
+	*y1 = (d->y + d->h + m) & ~m;
+	if (*x1 > gS.w) *x1 = gS.w;
+	if (*y1 > gS.h) *y1 = gS.h;
+	return *x1 > *x0 && *y1 > *y0;
+}
+
+void ScreenShow(const URect *d)
+{
+	Int16 x0, y0, x1, y1, sc = gS.scale;
+	RectangleType r;
+
+	if (!gOff || !gS.bits || !Clip(d, &x0, &y0, &x1, &y1)) return;
+	if (g16) gfx_to16(&gS, gOffBits, gOffRb, x0, y0, x1 - x0, y1 - y0, gLE);
+	if (gSony) {
+		RctSetRectangle(&r, x0, y0, x1 - x0, y1 - y0);
+		HRWinCopyRectangle(gSonyRef, gOff, WinGetDisplayWindow(), &r, x0, y0, winPaint);
+		return;
+	}
+	RctSetRectangle(&r, x0 / sc, y0 / sc, (x1 - x0) / sc, (y1 - y0) / sc);
+	WinCopyRectangle(gOff, WinGetDisplayWindow(), &r, x0 / sc, y0 / sc, winPaint);
+}
+
+void ScreenShowAll(void)
+{
+	URect u;
+	u.x = u.y = 0;
+	u.w = gS.w;
+	u.h = gS.h;
+	ScreenShow(&u);
+}
+
+Boolean ScreenKeep(void)
+{
+	UInt16 err, rb;
+
+	if (!gS.bits) return false;
+	if (!gHaveBg) {
+		gBgS = gS;
+		if (g16) {
+			gBg8 = BmpCreate(gS.w, gS.h, 8, NULL, &err);
+			if (gBg8) {
+				Coord bw, bh;
+				BmpGetDimensions(gBg8, &bw, &bh, &rb);
+				gBgS.bits = BmpGetBits(gBg8);
+			}
+		} else {
+			gBg = NewWin(gS.w, gS.h);
+			if (gBg) gBgS.bits = WinBits(gBg, &rb);
+		}
+		if ((!gBg && !gBg8) || !gBgS.bits || rb != gS.rowBytes) {
+			ScreenDropKept();
+			return false;
+		}
+		gHaveBg = true;
+	}
+	gfx_copy(&gBgS, &gS, 0, 0, gS.w, gS.h);
+	return true;
+}
+
+Surface *ScreenKept(void)
+{
+	return gHaveBg ? &gBgS : NULL;
+}
+
+void ScreenRestore(const URect *d)
+{
+	if (gHaveBg) gfx_copy(&gS, &gBgS, d->x, d->y, d->w, d->h);
+}
+
+void ScreenRestoreAll(void)
+{
+	if (gHaveBg) gfx_copy(&gS, &gBgS, 0, 0, gS.w, gS.h);
+}
+
+void ScreenDropKept(void)
+{
+	if (gBg) WinDeleteWindow(gBg, false);
+	if (gBg8) BmpDelete(gBg8);
+	gBg = NULL;
+	gBg8 = NULL;
+	gHaveBg = false;
+}
+
+UInt32 ScreenPicType(void)
+{
+	return gS.depth == 8 ? 'Pic8' : 'Pic2';
+}
+
+void ScreenDescribe(char *t)
+{
+	StrPrintF(t, "%u%s %ux%u%s%s", (UInt16)gDepth, gSony ? " HR" : gDD ? " DD" : "",
+	          (UInt16)gS.w, (UInt16)gS.h, gLE ? " LE" : "", gPins ? " P" : "");
+}

@@ -31,7 +31,7 @@ INCLUDES = $(addprefix -I,$(shell find $(SDK)/include -type d))
 CFLAGS   = -O2 -Wall -Wno-unknown-pragmas $(DEFS) $(INCLUDES) -Isrc/core -Isrc/palm
 LDFLAGS  = -L$(SDK)/lib/m68k-palmos-coff
 
-PALMSRCS = main
+PALMSRCS = main screen
 CORESRCS = fixed trig vec hole gfx ui front render play ball rules card
 OBJS     = $(addprefix $(BUILD)/,$(addsuffix .o,$(PALMSRCS) $(CORESRCS)))
 
@@ -148,9 +148,12 @@ build/rendertest: host/rendertest.c $(HOSTSRC) src/core/*.h | $(BUILD)
 
 # Draws the test hole from the tee, mid-fairway, near the green and the
 # green view for putting at
-# 160x160 2-bit and 320x320 8-bit, writes PNGs to $(DEBUGDIR)/m3 and
+# 160x160 2-bit and 320x320 8-bit, 4-bit and 1-bit at 160, 16-bit output
+# and the 320x480 and 480x320 screens, writes PNGs to $(DEBUGDIR)/m3 and
 # compares them with host/ref/. render-ref stores the current ones there.
-REFS     = tee-160 tee-320 fairway-160 fairway-320 approach-160 approach-320 green-160 green-320
+REFS     = tee-160 tee-320 fairway-160 fairway-320 approach-160 approach-320 green-160 green-320 \
+           d4-tee-160 d4-green-160 d1-tee-160 d1-green-160 d8-tee-320-16 \
+           tee-320x480-16 green-320x480-16 map-320x480 tee-480x320-16 green-480x320-16 map-480x320
 
 render-test: build/rendertest build/courses/Par386-Test.pdb $(ART)/obj.rcp
 	rm -rf build/render && mkdir -p build/render

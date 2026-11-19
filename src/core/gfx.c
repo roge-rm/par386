@@ -1,6 +1,8 @@
 #include "gfx.h"
 #include "fonttab.h"
 #include "fixed.h"
+#include "pal565.h"
+#include "pal.h"
 
 static const uint8_t ui_grey[UIC_COUNT] = {
 #define X(name, r, g, b, grey) grey,
@@ -22,6 +24,9 @@ void gfx_init(Surface *s)
 	uint8_t i, top = (uint8_t)((1 << s->depth) - 1);
 
 	s->lg = (uint8_t)(s->depth == 8 ? 3 : s->depth == 4 ? 2 : s->depth == 2 ? 1 : 0);
+	s->lw = (int16_t)(s->w / s->scale);
+	s->lh = (int16_t)(s->h / s->scale);
+	s->ox = s->oy = 0;
 
 	for (i = 0; i < UIC_COUNT; i++) {
 		if (s->depth >= 8) {
@@ -34,6 +39,13 @@ void gfx_init(Surface *s)
 			s->pb[i] = (uint8_t)(top - hi);
 		}
 	}
+}
+
+void gfx_centre(Surface *s, int on)
+{
+	/* whole bytes across at every depth: a multiple of 8 pixels */
+	s->ox = on ? (int16_t)(((s->lw - 160) / 2 * s->scale) & ~7) : 0;
+	s->oy = on ? (int16_t)((s->lh - 160) / 2 * s->scale) : 0;
 }
 
 uint32_t gfx_ui_rgb(uint8_t c)
@@ -181,18 +193,57 @@ void gfx_ball(Surface *s, int16_t x, int16_t y)
 int16_t gfx_ball_w(void) { return BALL_W; }
 int16_t gfx_ball_h(void) { return BALL_H; }
 
+/* 2-bit picture pixels at other depths, as the IIIx shows its greys (light
+ * grey near white): 1 bit keeps only black, 4 bits and colour use those greys. */
+static const uint8_t pic2to4[4] = { 0, 1, 3, 15 };
+static const uint8_t pic2to8[4] = { 0, PAL_GREY + 7, PAL_GREY + 6, 255 };
+
+/* One unpacked picture row at another depth (bd), or an 8-bit 320 wide row
+ * halved onto a 160 wide 8-bit surface. */
+static void SEC_UI pic_row(Surface *s, int16_t y, const uint8_t *src, uint16_t rb, uint8_t bd)
+{
+	int16_t x, n;
+	uint8_t *p = rowp(s, y);
+
+	if (bd == 8) {
+		n = (int16_t)(rb >> 1);
+		for (x = 0; x < n && s->ox + x < s->w; x++) p[s->ox + x] = src[x << 1];
+		return;
+	}
+	n = (int16_t)(rb << 2);
+	for (x = 0; x < n && s->ox + x < s->w; x++) {
+		uint8_t v = (uint8_t)((src[x >> 2] >> (6 - ((x & 3) << 1))) & 3);
+		v = s->depth == 8 ? pic2to8[v] : s->depth == 4 ? pic2to4[v] : (uint8_t)(v == 3);
+		put(s, p, (int16_t)(s->ox + x), v);
+	}
+}
+
 int gfx_pic_band(Surface *s, const uint8_t *d, uint32_t len)
 {
-	uint16_t y0, rows, rb, col = 0, row = 0;
+	uint16_t y0, rows, rb, col = 0, row = 0, ob;
 	uint32_t i = 8;
-	uint8_t *p;
+	uint8_t *p, conv, bd, buf[320];
 
 	if (len < 8) return -1;
 	y0 = (uint16_t)((d[0] << 8) | d[1]);
 	rows = (uint16_t)((d[2] << 8) | d[3]);
 	rb = (uint16_t)((d[4] << 8) | d[5]);
-	if (d[6] != s->depth || rb > s->rowBytes || y0 + rows > s->h) return -1;
-	p = rowp(s, (int16_t)y0);
+	bd = d[6];
+	ob = (uint16_t)(((uint16_t)s->ox << s->lg) >> 3);
+	/* the picture's own depth goes straight in; 2 bits can go to 1, 4 or 8,
+	 * and 8 bits at 320 to 8 bits at 160 */
+	conv = bd != s->depth || (bd == 8 && s->scale == 1 && rb > (uint16_t)s->w);
+	if (conv && !(bd == 2 && s->depth != 16) && !(bd == 8 && s->depth == 8 && s->scale == 1 && rb <= sizeof(buf)))
+		return -1;
+	if (bd == 8 && conv) {
+		y0 >>= 1;
+		if (y0 + ((rows + 1) >> 1) + s->oy > s->h) return -1;
+	} else if (conv) {
+		if (rb > sizeof(buf) || y0 + rows + s->oy > s->h) return -1;
+	} else if (rb + ob > s->rowBytes || y0 + rows + s->oy > s->h) {
+		return -1;
+	}
+	p = conv ? buf : rowp(s, (int16_t)(y0 + s->oy)) + ob;
 	while (row < rows) {
 		int8_t n;
 		uint16_t cnt, run;
@@ -220,10 +271,33 @@ int gfx_pic_band(Surface *s, const uint8_t *d, uint32_t len)
 			}
 			if (col == rb) {
 				col = 0;
-				p += s->rowBytes;
+				if (!conv) p += s->rowBytes;
+				else if (bd == 2) pic_row(s, (int16_t)(y0 + row + s->oy), buf, rb, bd);
+				else if (!(row & 1)) pic_row(s, (int16_t)(y0 + (row >> 1) + s->oy), buf, rb, bd);
 				row++;
 			}
 		}
 	}
 	return 0;
+}
+
+void gfx_to16(const Surface *s, uint8_t *d, uint16_t rb, int16_t x, int16_t y, int16_t w, int16_t h, uint8_t le)
+{
+	int16_t x1 = x + w, y1 = y + h, i, j;
+
+	if (s->depth != 8) return;
+	if (x < 0) x = 0;
+	if (y < 0) y = 0;
+	if (x1 > s->w) x1 = s->w;
+	if (y1 > s->h) y1 = s->h;
+	for (j = y; j < y1; j++) {
+		const uint8_t *p = rowp(s, j) + x;
+		uint8_t *q = d + MULU16(j, rb) + ((uint16_t)x << 1);
+		for (i = x; i < x1; i++) {
+			uint16_t c = pal_565[*p++];
+			if (le) c = (uint16_t)((c << 8) | (c >> 8));
+			*q++ = (uint8_t)(c >> 8);
+			*q++ = (uint8_t)c;
+		}
+	}
 }

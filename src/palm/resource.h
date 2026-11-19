@@ -1,11 +1,12 @@
 #ifndef RESOURCE_H
 #define RESOURCE_H
 
-#define kAppVersion         "0.3.0"
+#define kAppVersion         "0.4.0"
 
 #define MainForm            1000
 #define RomIncompatibleAlert 1100
 #define ScreenAlert         1101
+#define MemoryAlert         1102
 
 #define AppIconFamily       1000
 #define AppSmallIconFamily  1001

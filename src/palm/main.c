@@ -6,6 +6,7 @@
 #include "resource.h"
 #include "front.h"
 #include "play.h"
+#include "screen.h"
 
 #define kMinRomVersion sysMakeROMVersion(3, 1, 0, sysROMStageRelease, 0)
 #define kRom35 sysMakeROMVersion(3, 5, 0, sysROMStageRelease, 0)
@@ -19,16 +20,11 @@
 #define kNavSelect     0x0010
 #define vchrTxCenter   0x013D
 
-static WinHandle gOff;
-static WinHandle gBg;          /* the last picture, so menu moves skip unpacking it */
-static UInt16 gBgPic;
+static UInt16 gBgPic;         /* what the kept copy holds: a picture's ID or PIC_SCENE */
 #ifdef DEBUG
 static UInt32 gShowTicks;
 #endif
-static Surface gS;
 static Front gFront;
-static Boolean gHiRes, gDepthSet, gPalSet;
-static UInt32 gOldDepth;
 static UInt32 gHeapStart;      /* free dynamic heap at launch */
 
 /* Playing a hole. The hole record stays locked in the course database and
@@ -41,7 +37,7 @@ static UInt32 gHeapStart;      /* free dynamic heap at launch */
 /* The saved round: record 0, written by rules_pack. */
 #define kSaveName    "Par386 Save"
 #define kSaveType    'Save'
-#define PIC_SCENE    0xFFFF     /* gBgPic when gBg holds the scene */
+#define PIC_SCENE    0xFFFF     /* gBgPic when the kept copy holds the scene */
 static Boolean gPlaying;
 static Play gPlay;
 static Round gRound;
@@ -54,9 +50,7 @@ static char gCourseNames[FRONT_COURSES][dmDBNameLength];
 static UInt8 gCourseCount;
 static MemHandle gHoleH, gGridH;
 static UInt32 gMinFree;        /* least free heap while the scene was drawn */
-static Surface gBgS;           /* gBg's pixels, when it holds the scene */
 static Boolean gAnim;          /* play wants frames */
-static Boolean gRom35;
 #ifdef DEBUG
 static RenderStats gStats;
 static UInt32 gDrawTicks, gMapTicks;
@@ -92,152 +86,55 @@ static void DebugCoreCheck(void)
 }
 #endif
 
-/* Sets the palette from the Pal8 resource (256 RGB triples). */
-static void SetPalette(void)
+/* The 160 unit square the front screens use, in pixels from the top left. */
+static void FrontOrigin(Int16 *x, Int16 *y)
 {
-	MemHandle h = DmGetResource('Pal8', 1000);
-	RGBColorType *pal;
-	UInt8 *p;
-	UInt16 i;
-
-	if (!h) return;
-	if (MemHandleSize(h) < 256 * 3) {
-		DmReleaseResource(h);
-		return;
-	}
-	pal = MemPtrNew(256 * sizeof(RGBColorType));
-	if (pal) {
-		p = MemHandleLock(h);
-		for (i = 0; i < 256; i++) {
-			pal[i].index = (UInt8)i;
-			pal[i].r = p[i * 3];
-			pal[i].g = p[i * 3 + 1];
-			pal[i].b = p[i * 3 + 2];
-		}
-		MemHandleUnlock(h);
-		gPalSet = WinPalette(winPaletteSet, 0, 256, pal) == errNone;
-		MemPtrFree(pal);
-	}
-	DmReleaseResource(h);
-}
-
-/* Picks the mode: 320x320 at 8 bits on double density screens, else
- * 160x160 at 2 bits (1 if that's all there is). Makes the offscreen window
- * and finds its pixels. */
-static Err ScreenOpen(void)
-{
-	UInt32 rom = 0, win = 0, depths = 1, depth, density = kDensityLow;
-	Coord w, h;
-	UInt16 rb, err = 0;
-
-	FtrGet(sysFtrCreator, sysFtrNumROMVersion, &rom);
-	if (rom >= kRom35)
-		FtrGet(sysFtrCreator, sysFtrNumWinVersion, &win);
-	if (win >= 4)
-		WinScreenGetAttribute(winScreenDensity, &density);
-	if (WinScreenMode(winScreenModeGetSupportedDepths, NULL, NULL, &depths, NULL) != errNone)
-		depths = 1;
-	gHiRes = density == kDensityDouble && (depths & 0x80);
-	depth = gHiRes ? 8 : (depths & 2) ? 2 : 1;
-	if (WinScreenMode(winScreenModeGet, NULL, NULL, &gOldDepth, NULL) == errNone &&
-	    WinScreenMode(winScreenModeSet, NULL, NULL, &depth, NULL) == errNone)
-		gDepthSet = true;
-	else
-		return 1;
-	if (depth == 8)
-		SetPalette();
-
-	gOff = WinCreateOffscreenWindow(160, 160, gHiRes ? nativeFormat : screenFormat, &err);
-	if (!gOff) return err ? err : 1;
-	MemSet(&gS, sizeof(gS), 0);
-	if (rom >= kRom35) {
-		BitmapType *b = WinGetBitmap(gOff);
-		BmpGetDimensions(b, &w, &h, &rb);
-		gS.bits = BmpGetBits(b);
-	} else {
-		WindowType *wp = (WindowType *)gOff;
-		gS.bits = wp->displayAddrV20;
-		w = wp->displayWidthV20;
-		h = wp->displayHeightV20;
-		rb = (UInt16)((((UInt16)w * depth + 15) >> 4) << 1);
-	}
-	gS.w = w;
-	gS.h = h;
-	gS.rowBytes = rb;
-	gS.depth = (UInt8)depth;
-	gS.scale = gHiRes ? 2 : 1;
-	if (!gS.bits || w != 160 * gS.scale || h != 160 * gS.scale) return 2;
-	gfx_init(&gS);
-	gRom35 = rom >= kRom35;
-	return errNone;
-}
-
-static void ScreenClose(void)
-{
-	if (gOff) WinDeleteWindow(gOff, false);
-	if (gBg) WinDeleteWindow(gBg, false);
-	gOff = gBg = NULL;
-	gBgPic = 0;
-	if (gPalSet) WinPalette(winPaletteSetToDefault, 0, 256, NULL);
-	gPalSet = false;
-	if (gDepthSet) WinScreenMode(winScreenModeSet, NULL, NULL, &gOldDepth, NULL);
-	gDepthSet = false;
-}
-
-static void Show(void)
-{
-	RectangleType r = { { 0, 0 }, { 160, 160 } };
-
-#ifdef DEBUG
-	UInt32 t = TimGetTicks();
-#endif
-	WinCopyRectangle(gOff, WinGetDisplayWindow(), &r, 0, 0, winPaint);
-#ifdef DEBUG
-	gShowTicks = TimGetTicks() - t;
-#endif
+	gfx_centre(&gS, 1);
+	*x = gS.ox;
+	*y = gS.oy;
+	gfx_centre(&gS, 0);
 }
 
 /* Draws the screen's picture band by band, then the game's text and boxes. */
 static void Redraw(void)
 {
-	UInt32 type = gHiRes ? 'Pic8' : 'Pic2';
+	UInt32 type = ScreenPicType();
 	UInt16 id = front_picture(&gFront), k;
 	MemHandle h;
-	RectangleType r = { { 0, 0 }, { 160, 160 } };
 #ifdef DEBUG
 	UInt32 t0 = TimGetTicks(), t1, t2;
 #endif
 
-	if (gBg && gBgPic == id) {
-		WinCopyRectangle(gBg, gOff, &r, 0, 0, winPaint);
+	if (!gS.bits) return;
+	if (ScreenKept() && gBgPic == id) {
+		ScreenRestoreAll();
 	} else {
-		k = 0;
-		if (gS.depth != 1)
-			for (; (h = DmGetResource(type, id + k)) != NULL; k++) {
-				gfx_pic_band(&gS, MemHandleLock(h), MemHandleSize(h));
-				MemHandleUnlock(h);
-				DmReleaseResource(h);
-			}
-		if (!k)
-			gfx_fill(&gS, 0, 0, gS.w, gS.h, UIC_BLACK);
+		/* the picture in a 160 unit square in the middle, black round it */
+		gfx_fill(&gS, 0, 0, gS.w, gS.h, UIC_BLACK);
+		gfx_centre(&gS, 1);
+		for (k = 0; (h = DmGetResource(type, id + k)) != NULL; k++) {
+			gfx_pic_band(&gS, MemHandleLock(h), MemHandleSize(h));
+			MemHandleUnlock(h);
+			DmReleaseResource(h);
+		}
+		gfx_centre(&gS, 0);
 		/* Keep a copy if there's room; without one every redraw unpacks. */
-		if (!gBg) {
-			UInt16 err;
-			gBg = WinCreateOffscreenWindow(160, 160, gHiRes ? nativeFormat : screenFormat, &err);
-		}
-		if (gBg) {
-			WinCopyRectangle(gOff, gBg, &r, 0, 0, winPaint);
-			gBgPic = id;
-		}
+		gBgPic = ScreenKeep() ? id : 0;
 	}
 #ifdef DEBUG
 	t1 = TimGetTicks();
 #endif
+	gfx_centre(&gS, 1);
 	front_draw(&gFront, &gS);
+	gfx_centre(&gS, 0);
 #ifdef DEBUG
 	t2 = TimGetTicks();
-	if (gFront.screen == SCR_TITLE)
+	if (gFront.screen == SCR_TITLE) {
+		char m[32];
 		gfx_text(&gS, 0, 0, debugLine, StrLen(debugLine), UIC_WHITE);
+		ScreenDescribe(m);
+		gfx_text(&gS, 0, 8 * gS.scale, m, StrLen(m), UIC_WHITE);
+	}
 	{
 		/* Ticks for the background, the front's drawing and the last copy to
 		 * the screen, and the free heap in KB, bottom right. */
@@ -248,7 +145,7 @@ static void Redraw(void)
 		gfx_text(&gS, gS.w - StrLen(t) * 8 * gS.scale, gS.h - 8 * gS.scale, t, StrLen(t), UIC_WHITE);
 	}
 #endif
-	Show();
+	ScreenShowAll();
 }
 
 /* Our keys, or KEY_NONE for ones the system should have (app buttons, Home, power). */
@@ -278,10 +175,13 @@ static UInt8 MapKey(const EventType *e)
 	return c >= 32 && c < 256 ? KEY_OTHER : KEY_NONE;
 }
 
+static Boolean gQuitting;
+
 static void Quit(void)
 {
 	EventType e;
 
+	gQuitting = true;
 	MemSet(&e, sizeof(e), 0);
 	e.eType = appStopEvent;
 	EvtAddEventToQueue(&e);
@@ -292,30 +192,39 @@ static Boolean RedrawLines(void)
 {
 	UInt8 k, line[2];
 	URect u;
-	RectangleType r;
+	Int16 ox, oy, sc = gS.scale;
 
 #ifdef DEBUG
 	UInt32 t0 = TimGetTicks();
 	char t[12];
 #endif
 
-	if (!gBg || gBgPic != front_picture(&gFront)) return false;
+	if (!ScreenKept() || gBgPic != front_picture(&gFront)) return false;
 	line[0] = gFront.oldSel;
 	line[1] = gFront.menu.sel;
+	FrontOrigin(&ox, &oy);
 	for (k = 0; k < 2; k++) {
 		ui_menu_line_rect(&gFront.menu, line[k], &u);
-		RctSetRectangle(&r, u.x, u.y, u.w, u.h + 1);
-		WinCopyRectangle(gBg, gOff, &r, r.topLeft.x, r.topLeft.y, winPaint);
+		u.x = ox + u.x * sc;
+		u.y = oy + u.y * sc;
+		u.w *= sc;
+		u.h = (u.h + 1) * sc;
+		ScreenRestore(&u);
+		gfx_centre(&gS, 1);
 		ui_menu_draw_line(&gS, &gFront.menu, line[k]);
-		WinCopyRectangle(gOff, WinGetDisplayWindow(), &r, r.topLeft.x, r.topLeft.y, winPaint);
+		gfx_centre(&gS, 0);
+		ScreenShow(&u);
 	}
 #ifdef DEBUG
 	/* Ticks for the two lines, bottom left. */
 	StrPrintF(t, "L%lu", TimGetTicks() - t0);
 	gfx_fill(&gS, 0, gS.h - 8 * gS.scale, 32 * gS.scale, 8 * gS.scale, UIC_BLACK);
 	gfx_text(&gS, 0, gS.h - 8 * gS.scale, t, StrLen(t), UIC_WHITE);
-	RctSetRectangle(&r, 0, 152, 32, 8);
-	WinCopyRectangle(gOff, WinGetDisplayWindow(), &r, 0, 152, winPaint);
+	u.x = 0;
+	u.y = gS.h - 8 * sc;
+	u.w = 32 * sc;
+	u.h = 8 * sc;
+	ScreenShow(&u);
 #endif
 	return true;
 }
@@ -528,20 +437,11 @@ static void LockArt(RenderData *d, UInt32 type, UInt16 id, MemHandle *hs, UInt16
 	hs[(*n)++] = h;
 }
 
-/* Copies the scene to gBg, so overlays can be taken off and the map put back
- * without drawing it again, and points gBgS at its pixels. */
+/* Copies the scene to the kept copy (screen.c), so overlays can be taken
+ * off and the map put back without drawing it again. */
 static void KeepScene(void)
 {
-	RectangleType r = { { 0, 0 }, { 160, 160 } };
-	UInt16 err;
-
-	if (!gBg) gBg = WinCreateOffscreenWindow(160, 160, gHiRes ? nativeFormat : screenFormat, &err);
-	if (gBg) {
-		WinCopyRectangle(gOff, gBg, &r, 0, 0, winPaint);
-		gBgPic = PIC_SCENE;
-		gBgS = gS;
-		gBgS.bits = gRom35 ? BmpGetBits(WinGetBitmap(gBg)) : ((WindowType *)gBg)->displayAddrV20;
-	}
+	gBgPic = ScreenKeep() ? PIC_SCENE : 0;
 }
 
 /* Time for the play code, in ms. */
@@ -551,25 +451,6 @@ static UInt32 NowMs(void)
 	return (t / tps) * 1000 + (t % tps) * 1000 / tps;
 }
 
-/* Copies a rectangle of gOff's pixels to the screen, in standard coordinates. */
-static void ShowRect(const URect *d)
-{
-	Int16 sc = gS.scale, x0 = d->x, y0 = d->y, x1 = d->x + d->w, y1 = d->y + d->h;
-	RectangleType r;
-
-	if (x0 < 0) x0 = 0;
-	if (y0 < 0) y0 = 0;
-	x0 /= sc;
-	y0 /= sc;
-	x1 = (x1 + sc - 1) / sc;
-	y1 = (y1 + sc - 1) / sc;
-	if (x1 > 160) x1 = 160;
-	if (y1 > 160) y1 = 160;
-	if (x1 <= x0 || y1 <= y0) return;
-	RctSetRectangle(&r, x0, y0, x1 - x0, y1 - y0);
-	WinCopyRectangle(gOff, WinGetDisplayWindow(), &r, x0, y0, winPaint);
-}
-
 static void SceneRender(void);
 
 /* Shows the strip saying whose turn it is while the scene draws. */
@@ -577,12 +458,13 @@ static void TurnStrip(void)
 {
 	URect u;
 
+	if (!gS.bits) return;
 	play_turn(&gS, &gPlay);
 	u.x = 0;
-	u.y = (160 - RENDER_STATUS) * gS.scale;
+	u.y = gS.h - RENDER_STATUS * gS.scale;
 	u.w = gS.w;
 	u.h = RENDER_STATUS * gS.scale;
-	ShowRect(&u);
+	ScreenShow(&u);
 }
 
 #ifdef DEBUG
@@ -603,15 +485,15 @@ static void PlayFrame(void)
 #endif
 
 	gAnim = false;
-	if (!gPlaying || gPlay.view != PLAY_SCENE) return;
-	f = play_frame(&gPlay, &gS, gBg && gBgPic == PIC_SCENE ? &gBgS : NULL, NowMs());
+	if (!gPlaying || gPlay.view != PLAY_SCENE || !gS.bits) return;
+	f = play_frame(&gPlay, &gS, gBgPic == PIC_SCENE ? ScreenKept() : NULL, NowMs());
 	if (f & PL_RENDER) {
 		/* the next shot, or aimed off the side: SceneRender comes back here once it's drawn */
 		if (f & PL_TURN) TurnStrip();
 		SceneRender();
 		return;
 	}
-	if (f & PL_DIRTY) ShowRect(&gPlay.dirty);
+	if (f & PL_DIRTY) ScreenShow(&gPlay.dirty);
 	gAnim = (f & PL_ANIM) != 0;
 #ifdef DEBUG
 	SimTime(st, t0);
@@ -664,6 +546,7 @@ static void SceneRender(void)
 	UInt32 t0;
 #endif
 
+	if (!gS.bits) return;
 	if (gPlay.rv.green) {
 #ifdef DEBUG
 		t0 = TimGetTicks();
@@ -716,8 +599,7 @@ static void SceneRender(void)
 
 static void PlayAct(int f)
 {
-	RectangleType r = { { 0, 0 }, { 160, 160 } };
-
+	if (!gS.bits) return;
 	if (f & PL_BACK) {
 		/* the round is kept to continue, unless it's over */
 		gAnim = false;
@@ -740,9 +622,9 @@ static void PlayAct(int f)
 	} else if (f & PL_CARD) {
 		/* over the kept scene; saved when it opens at the end of a hole */
 		gAnim = false;
-		if (gBg && gBgPic == PIC_SCENE) WinCopyRectangle(gBg, gOff, &r, 0, 0, winPaint);
+		if (ScreenKept() && gBgPic == PIC_SCENE) ScreenRestoreAll();
 		play_card(&gS, &gPlay);
-		Show();
+		ScreenShowAll();
 		if (gPlay.card != CARD_VIEW) SaveRound();
 	} else if (f & PL_MAP) {
 #ifdef DEBUG
@@ -754,9 +636,9 @@ static void PlayAct(int f)
 		gMapTicks = TimGetTicks() - t0;
 #endif
 		PlayStatus();
-		Show();
-	} else if ((f & PL_SCENE) && gBg && gBgPic == PIC_SCENE) {
-		WinCopyRectangle(gBg, gOff, &r, 0, 0, winPaint);
+		ScreenShowAll();
+	} else if ((f & PL_SCENE) && ScreenKept() && gBgPic == PIC_SCENE) {
+		ScreenRestoreAll();
 		PlayFrame();
 	} else if (f & (PL_SCENE | PL_RENDER)) {
 		if (f & PL_TURN) TurnStrip();
@@ -828,26 +710,103 @@ static void SkipHole(void)
 }
 #endif
 
+/* No memory for even the smallest screen: the round is kept to continue
+ * and the app closes. */
+static void ScreenLost(void)
+{
+	if (gQuitting) return;
+	gAnim = false;
+	gBgPic = 0;
+	if (gPlaying) {
+		SaveRound();
+		PlayEnd();
+	}
+	FrmAlert(MemoryAlert);
+	Quit();
+}
+
+/* The display changed size (the input area or a turn): the buffers are made
+ * again at the new size and the screen drawn again. The map or card is drawn
+ * again by itself; the scene is drawn when it closes. */
+static void Resized(void)
+{
+	Int16 r;
+
+	if (gQuitting) return;
+	r = ScreenResize();
+	if (r == SCREEN_FAILED) {
+		ScreenLost();
+		return;
+	}
+	if (r == SCREEN_SAME) {
+		ScreenShowAll();
+		return;
+	}
+	gBgPic = 0;
+	if (!gPlaying) {
+		Redraw();
+		return;
+	}
+	gAnim = false;
+	play_resized(&gPlay);
+	if (gPlay.view == PLAY_MAP) {
+		PlayAct(PL_MAP);
+	} else if (gPlay.view == PLAY_CARD) {
+		gfx_fill(&gS, 0, 0, gS.w, gS.h, UIC_BLACK);
+		play_card(&gS, &gPlay);
+		ScreenShowAll();
+	} else {
+		SceneRender();
+	}
+}
+
 static Boolean MainFormHandleEvent(EventType *e)
 {
 	switch (e->eType) {
 	case frmOpenEvent:
 		FrmDrawForm(FrmGetActiveForm());
+		/* the input area may have been closed before launch, so no
+		 * winDisplayChangedEvent comes to fit the form */
+		if (ScreenResize() == SCREEN_FAILED) {
+			ScreenLost();
+			return true;
+		}
+		gBgPic = 0;
 		Redraw();
 		return true;
 	case frmUpdateEvent:
-		Show();
+		ScreenShowAll();
+		return true;
+	case winDisplayChangedEvent:
+		Resized();
 		return true;
 	case penDownEvent:
+		if (!gS.bits) return true;
 #ifdef DEBUG
+		/* a tap in the bottom left corner makes the next screen buffers
+		 * fail once more, for testing ScreenResize */
+		if (e->screenX < 8 && e->screenY >= gS.lh - 8) {
+			ScreenFailNext();
+			return true;
+		}
 		/* a tap in the top left corner skips the hole, as n does */
 		if (gPlaying && e->screenX < 8 && e->screenY < 8) {
 			SkipHole();
 			return true;
 		}
+		/* and the top right corner puts the ball on the green */
+		if (gPlaying && e->screenX >= gS.lw - 8 && e->screenY < 8 && gPlay.view == PLAY_SCENE) {
+			PlayAct(play_debug_green(&gPlay));
+			return true;
+		}
 #endif
-		if (gPlaying) PlayInput(true, e->screenX, e->screenY, 0);
-		else Act(front_tap(&gFront, e->screenX, e->screenY));
+		if (gPlaying) {
+			PlayInput(true, e->screenX, e->screenY, 0);
+		} else {
+			Int16 ox, oy;
+			FrontOrigin(&ox, &oy);
+			Act(front_tap(&gFront, e->screenX - ox / gS.scale, e->screenY - oy / gS.scale));
+		}
 		return true;
 	default:
 		return false;
@@ -860,7 +819,10 @@ static Boolean ApplicationHandleEvent(EventType *e)
 		UInt16 id = e->data.frmLoad.formID;
 		FormType *form = FrmInitForm(id);
 		FrmSetActiveForm(form);
-		if (id == MainForm) FrmSetEventHandler(form, MainFormHandleEvent);
+		if (id == MainForm) {
+			FrmSetEventHandler(form, MainFormHandleEvent);
+			ScreenFormInit(form);
+		}
 		return true;
 	}
 	return false;
@@ -878,12 +840,21 @@ static void EventLoop(void)
 		EvtGetEvent(&e, gAnim ? 1 : evtWaitForever);
 		if (gAnim) PlayFrame();
 		if (e.eType == nilEvent && gPlaying) continue;
+		/* with no screen buffers only the system gets keys */
+		if (e.eType == keyDownEvent && !gS.bits) {
+			SysHandleEvent(&e);
+			continue;
+		}
 		if (e.eType == keyDownEvent && gPlaying) {
 			/* the Menu button and backspace go back to the clubhouse */
 			WChar c = e.data.keyDown.chr;
 #ifdef DEBUG
 			if (c == 'n' || c == 'N') {
 				SkipHole();
+				continue;
+			}
+			if ((c == 'g' || c == 'G') && gPlay.view == PLAY_SCENE) {
+				PlayAct(play_debug_green(&gPlay));
 				continue;
 			}
 #endif

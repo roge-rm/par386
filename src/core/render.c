@@ -148,6 +148,20 @@ static inline int16_t SEC_RENDER dz6(int32_t camb, int32_t hb)
 	return (int16_t)d;
 }
 
+/* Checks the surface fits the renderer: 160 to 240 units across and down,
+ * a multiple of 16 pixels across. Sets the view's height, all but the
+ * status strip, and returns half of how much taller it is than on a square
+ * screen: the horizon moves down by that, so the sky and the ground in
+ * front both grow. Returns -1 if it doesn't fit. */
+static int16_t SEC_RENDER fit(const Surface *s, int16_t *vh)
+{
+	int16_t sc = s->scale;
+	if (sc < 1 || sc > 2 || s->w < 160 * sc || s->w > 240 * sc || (s->w & 15) ||
+	    s->h < 160 * sc || s->h > 240 * sc) return -1;
+	*vh = (int16_t)(s->h - RENDER_STATUS * sc);
+	return (int16_t)((*vh - (160 - RENDER_STATUS) * sc) / 2);
+}
+
 /* Writes palette index c at (x, y); p points at the byte holding the pixel. */
 static void SEC_RENDER put(const R *r, uint8_t *p, int16_t x, int16_t y, uint8_t c)
 {
@@ -169,9 +183,11 @@ static void SEC_RENDER put(const R *r, uint8_t *p, int16_t x, int16_t y, uint8_t
 		else *p = (uint8_t)((*p & 0x0F) | (v << 4));
 		break;
 	default:
-		g = (uint16_t)(255 - pal_grey[c]);
+		/* the 2-bit pattern, made for screens where only black shows:
+		 * black stays, dark grey is black on one pixel in 4, the rest white */
+		v = (uint8_t)((pal_pat2[((uint16_t)c << 2) | (y & 3)] >> (6 - ((x & 3) << 1))) & 3);
 		m = (uint8_t)(0x80 >> (x & 7));
-		if (g > (bayer[((y & 3) << 2) | (x & 3)] << 4) + 8) *p |= m;
+		if (v == 3 || (v == 2 && (x & y & 1))) *p |= m;
 		else *p &= (uint8_t)~m;
 		break;
 	}
@@ -886,7 +902,7 @@ int render_scene(Surface *s, const RenderView *v, const RenderArt *a, void *work
 	int32_t bh;
 	uint32_t t;
 
-	if (s->scale < 1 || s->scale > 2 || s->w != 160 * s->scale || s->h < 160 * s->scale) return -1;
+	if (fit(s, &r.vh) < 0) return -1;
 	r.st = stats ? stats : &local;
 	{
 		RenderStats z = { 0, 0, 0, 0, 0, 0, 0, 0, 0, { 0, 0, 0, 0, 0 } };
@@ -896,8 +912,7 @@ int render_scene(Surface *s, const RenderView *v, const RenderArt *a, void *work
 	r.rb = s->rowBytes;
 	r.w = s->w;
 	r.scale = s->scale;
-	r.vh = (int16_t)((160 - RENDER_STATUS) * s->scale);
-	r.yh = (int16_t)(HORIZON * s->scale);
+	r.yh = (int16_t)(HORIZON * s->scale + fit(s, &y));
 	r.f = (int16_t)(FOCAL * s->scale);
 	r.cx = s->w / 2;
 	r.lg = (uint8_t)(s->depth == 8 ? 3 : s->depth == 4 ? 2 : s->depth == 2 ? 1 : 0);
@@ -986,14 +1001,13 @@ int render_map(Surface *s, const RenderView *v, RenderMap *out)
 	int16_t x, y, left, top, mw, mh, sc;
 	uint16_t i;
 	HoleObject o;
-	uint8_t col[SURF_COUNT], xcell[320];
+	uint8_t col[SURF_COUNT], xcell[480];
 
-	if (s->scale < 1 || s->scale > 2 || s->w != 160 * s->scale || s->h < 160 * s->scale) return -1;
+	if (fit(s, &r.vh) < 0) return -1;
 	r.bits = s->bits;
 	r.rb = s->rowBytes;
 	r.w = s->w;
 	sc = s->scale;
-	r.vh = (int16_t)((160 - RENDER_STATUS) * sc);
 	r.lg = (uint8_t)(s->depth == 8 ? 3 : s->depth == 4 ? 2 : s->depth == 2 ? 1 : 0);
 
 	/* yards per pixel, so the whole hole fits with a 2 pixel margin */
@@ -1165,6 +1179,7 @@ static fixed SEC_RENDER green_cam(const Surface *s, const RenderView *v, RenderC
 	const Hole *h = v->hole;
 	vec2 pin = h->pins[v->pin & 3];
 	fixed len = vec2_len(vec2_sub(pin, v->ball)), back, zb;
+	int16_t vh;
 
 	if (len < GREEN_NEAR) len = GREEN_NEAR;
 	if (len > GREEN_FAR) len = GREEN_FAR;
@@ -1183,7 +1198,7 @@ static fixed SEC_RENDER green_cam(const Surface *s, const RenderView *v, RenderC
 	c->camz = c->zref + (zb - c->zref) * GREEN_ZK + len;
 	c->f = (int16_t)(GREEN_FOCAL * s->scale);
 	c->cx = s->w / 2;
-	c->yh = (int16_t)(GREEN_ROW * s->scale);
+	c->yh = (int16_t)(GREEN_ROW * s->scale + fit(s, &vh));
 	c->back = (int16_t)(back >> 16);
 	return len;
 }
@@ -1303,11 +1318,10 @@ int render_green(Surface *s, const RenderView *v)
 	uint32_t lined, past = 0;     /* cells with lines in this row of cells and the one past it */
 	uint8_t line = s->depth == 8 ? PAL_GREEN : PAL_BLACK;
 
-	if (s->scale < 1 || s->scale > 2 || s->w != 160 * s->scale || s->h < 160 * s->scale) return -1;
+	if (fit(s, &r.vh) < 0) return -1;
 	r.bits = s->bits;
 	r.rb = s->rowBytes;
 	r.w = s->w;
-	r.vh = (int16_t)((160 - RENDER_STATUS) * s->scale);
 	r.lg = (uint8_t)(s->depth == 8 ? 3 : s->depth == 4 ? 2 : s->depth == 2 ? 1 : 0);
 	len = green_cam(s, v, &c);
 	hbb = hb_at(h, v->ball.x, v->ball.y);
@@ -1426,6 +1440,7 @@ int render_green(Surface *s, const RenderView *v)
 static void SEC_RENDER scene_cam(const Surface *s, const RenderView *v, RenderCam *c)
 
 {
+	int16_t vh;
 	int32_t bh = hb_at(v->hole, v->ball.x, v->ball.y);
 
 	c->fx = icos(v->aim);
@@ -1437,7 +1452,7 @@ static void SEC_RENDER scene_cam(const Surface *s, const RenderView *v, RenderCa
 	c->camz = v->hole->base + fix_mul(bh << 8, v->hole->step) + CAM_UP;
 	c->f = (int16_t)(FOCAL * s->scale);
 	c->cx = s->w / 2;
-	c->yh = (int16_t)(HORIZON * s->scale);
+	c->yh = (int16_t)(HORIZON * s->scale + fit(s, &vh));
 	c->pc = 16384;
 	c->ps = 0;
 	c->zref = 0;

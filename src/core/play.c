@@ -6,14 +6,14 @@
 #define R_METER  4
 #define R_ALL    8      /* the scene under the overlays is new */
 
-#define STRIP_Y   (160 - RENDER_STATUS)
+#define STRIP_Y   (s->lh - RENDER_STATUS)   /* the strip's top in logical units */
 #define FLY_MS    42    /* a path point in the air: 1.5 times real time */
 #define ROLL_MS   62    /* a point on the ground: twice real time */
 #define RESULT_MS 1500
 #define AIM_STEP  182   /* a degree */
 #define AIM_EDGE  56    /* the marker this far off the centre draws the scene again */
-#define MAP_X     136   /* the Map button on the strip's second line */
-#define CARD_X    128   /* and the Card button on the map's */
+#define MAP_X     (s->lw - 24)   /* the Map button on the strip's second line */
+#define CARD_X    (s->lw - 32)   /* and the Card button on the map's */
 #define S16       (MTR_SNAP * 16)
 #define W16       (MTR_W * 16)
 
@@ -99,6 +99,8 @@ void play_init(Play *p, const Hole *h, const SurfaceGrid *g, uint32_t seed)
 	p->lie = LIE_TEE;
 	p->stroke = 1;
 	p->view = PLAY_SCENE;
+	p->geo.lw = p->geo.lh = 160;
+	p->geo.scale = 1;
 	ball_wind(seed, h->number, &p->wind_mph, &p->wind_dir);
 	setup(p);
 }
@@ -349,6 +351,7 @@ int play_key(Play *p, uint8_t key, uint32_t now)
 
 static void SEC_UI camera(Play *p, const Surface *s)
 {
+	p->geo = *s;
 	if (!p->cam_ok) render_camera(s, &p->rv, &p->cam);
 	p->cam_ok = 1;
 }
@@ -382,8 +385,10 @@ static void SEC_UI aim_at(Play *p, int16_t tx)
 
 int play_tap(Play *p, int16_t x, int16_t y, uint32_t now)
 {
+	const Surface *s = &p->geo;
+
 	if (p->view == PLAY_CARD) {
-		int i = card_hit(p->round, p->card, p->page, x, y);
+		int i = card_hit(p->round, p->card, p->page, x - (s->lw - 160) / 2, y - (s->lh - 160) / 2);
 		return i < 0 ? 0 : card_button(p, (uint8_t)i);
 	}
 	if (p->view == PLAY_MAP) {
@@ -397,8 +402,7 @@ int play_tap(Play *p, int16_t x, int16_t y, uint32_t now)
 		if (p->state == PS_AIM) return click(p, now);
 		return 0;
 	}
-	/* cx is 80 times the scale */
-	if (p->state == PS_AIM && p->cam_ok) aim_at(p, (int16_t)(x * (p->cam.cx / 80)));
+	if (p->state == PS_AIM && p->cam_ok) aim_at(p, (int16_t)(x * s->scale));
 	return 0;
 }
 
@@ -428,7 +432,8 @@ static void SEC_UI over(Surface *s, int16_t x, int16_t y, int16_t w, int16_t h, 
 /* Remembers pixels drawn over the scene, to take off again from the kept copy. */
 static void SEC_UI patch(Play *p, int16_t x, int16_t y, int16_t w, int16_t h)
 {
-	int16_t vh = (int16_t)(STRIP_Y * (p->cam.cx / 80));
+	const Surface *s = &p->geo;
+	int16_t vh = (int16_t)(STRIP_Y * s->scale);
 	if (y + h > vh) h = vh - y;
 	if (h <= 0) return;
 	if (p->npatch < PLAY_PATCHES) {
@@ -554,7 +559,7 @@ static void SEC_UI draw_strip(Play *p, Surface *s)
 	char t[24];
 	int16_t n = 0;
 
-	ui_fill(s, 0, STRIP_Y, 160, RENDER_STATUS, UIC_BLACK);
+	ui_fill(s, 0, STRIP_Y, s->lw, RENDER_STATUS, UIC_BLACK);
 	if (p->state == PS_RESULT || p->state == PS_DONE) {
 		line(s, 0, p->msg1);
 		line(s, 1, p->msg2);
@@ -589,7 +594,7 @@ static void SEC_UI draw_strip(Play *p, Surface *s)
 		lie_line(p, s);
 	}
 	if (p->state == PS_AIM) {
-		ui_fill(s, MAP_X, STRIP_Y + UI_CHAR, 160 - MAP_X, UI_CHAR, UIC_WHITE);
+		ui_fill(s, MAP_X - 2, STRIP_Y + UI_CHAR, s->lw - MAP_X + 2, UI_CHAR, UIC_WHITE);
 		ui_text(s, MAP_X, STRIP_Y + UI_CHAR, "Map", 3, UIC_BLACK, -1);
 	}
 	dirty(p, 0, (int16_t)(STRIP_Y * s->scale), s->w, (int16_t)(RENDER_STATUS * s->scale));
@@ -610,7 +615,7 @@ static void SEC_UI draw_meter(Play *p, Surface *s, int16_t x0, int16_t x1)
 {
 	int16_t y = STRIP_Y, top = p->state == PS_UP ? p->mpos : p->turn, k, m = MTR_X + (p->mpos >> 4);
 
-	mfill(s, x0, x1, 0, y, 160, UI_CHAR, UIC_BLACK);
+	mfill(s, x0, x1, 0, y, s->lw, UI_CHAR, UIC_BLACK);
 	mfill(s, x0, x1, MTR_X - 1, y + 1, MTR_W + 2, 6, UIC_WHITE);
 	mfill(s, x0, x1, MTR_X, y + 2, MTR_W, 4, UIC_BLACK);
 	if (top > S16) mfill(s, x0, x1, MTR_X + MTR_SNAP, y + 2, (top - S16) >> 4, 4, UIC_BALL_LT);
@@ -755,6 +760,24 @@ static int SEC_UI next(Play *p)
 	return PL_RENDER;
 }
 
+#ifdef DEBUG
+int play_debug_green(Play *p)
+{
+	vec2 to = pin(p);
+	p->rv.ball = vec2_make(to.x - (2L << 16), to.y - (7L << 16));
+	p->lie = LIE_GREEN;
+	setup(p);
+	return PL_RENDER;
+}
+#endif
+
+void play_resized(Play *p)
+{
+	p->cam_ok = 0;
+	p->npatch = 0;
+	p->redraw |= R_ALL;
+}
+
 void play_settle(Play *p)
 {
 	Round *r = p->round;
@@ -874,7 +897,7 @@ int play_frame(Play *p, Surface *s, const Surface *bg, uint32_t now)
 	}
 	if (p->redraw & R_STRIP) draw_strip(p, s);
 	if ((p->redraw & R_STRIP) && (p->state == PS_UP || p->state == PS_DOWN)) {
-		draw_meter(p, s, 0, 160);
+		draw_meter(p, s, 0, s->lw);
 	} else if (p->redraw & R_METER) {
 		/* only between where the marker was and where it is, as the power fill follows it */
 		int16_t m = MTR_X + (p->mpos >> 4), a = m < p->mshown ? m : p->mshown, b = m < p->mshown ? p->mshown : m;
@@ -902,7 +925,7 @@ void play_status(Surface *s, const Play *p, const char *info)
 	char t[24];
 	int16_t n = 0;
 
-	ui_fill(s, 0, STRIP_Y, 160, RENDER_STATUS, UIC_BLACK);
+	ui_fill(s, 0, STRIP_Y, s->lw, RENDER_STATUS, UIC_BLACK);
 	add(t, &n, "Hole ");
 	n += play_num(t + n, h->number);
 	add(t, &n, " Par ");
@@ -916,7 +939,7 @@ void play_status(Surface *s, const Play *p, const char *info)
 		/* the Card button at the right */
 		for (n = 0; info[n] && n < CARD_X / UI_CHAR - 1; n++) {}
 		ui_text(s, 0, STRIP_Y + UI_CHAR, info, n, UIC_WHITE, -1);
-		ui_fill(s, CARD_X, STRIP_Y + UI_CHAR, 160 - CARD_X, UI_CHAR, UIC_WHITE);
+		ui_fill(s, CARD_X - 2, STRIP_Y + UI_CHAR, s->lw - CARD_X + 2, UI_CHAR, UIC_WHITE);
 		ui_text(s, CARD_X, STRIP_Y + UI_CHAR, "Card", 4, UIC_BLACK, -1);
 	} else {
 		line(s, 1, info);
@@ -929,7 +952,7 @@ void play_turn(Surface *s, const Play *p)
 	char t[24];
 	int16_t n = 0;
 
-	ui_fill(s, 0, STRIP_Y, 160, RENDER_STATUS, UIC_BLACK);
+	ui_fill(s, 0, STRIP_Y, s->lw, RENDER_STATUS, UIC_BLACK);
 	add(t, &n, "Hole ");
 	n += play_num(t + n, h->number);
 	add(t, &n, " Par ");
@@ -948,7 +971,10 @@ void play_turn(Surface *s, const Play *p)
 
 void play_card(Surface *s, const Play *p)
 {
-	if (p->round) card_draw(s, p->round, p->card, p->page, p->csel);
+	Surface c = *s;
+	/* the card in a 160 unit square in the middle */
+	gfx_centre(&c, 1);
+	if (p->round) card_draw(&c, p->round, p->card, p->page, p->csel);
 }
 
 void play_map(Surface *s, const Play *p)
@@ -973,7 +999,7 @@ void play_map(Surface *s, const Play *p)
 	/* the yardage in a black box beside the middle of the line, kept on screen */
 	x = (int16_t)((m.bx + m.px) / 2 / sc + 4);
 	y = (int16_t)((m.by + m.py) / 2 / sc - UI_CHAR / 2);
-	if (x + n * UI_CHAR > 159) x = (int16_t)((m.bx + m.px) / 2 / sc - 4 - n * UI_CHAR);
+	if (x + n * UI_CHAR > s->lw - 1) x = (int16_t)((m.bx + m.px) / 2 / sc - 4 - n * UI_CHAR);
 	if (x < 0) x = 0;
 	if (y < 0) y = 0;
 	if (y > STRIP_Y - UI_CHAR) y = STRIP_Y - UI_CHAR;

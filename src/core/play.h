@@ -81,6 +81,7 @@ typedef struct {
 	uint8_t card, page, csel;   /* the scorecard's CARD_* mode, its page and button */
 	uint8_t card_from;          /* the view it was opened from, PLAY_SCENE or PLAY_MAP */
 	Shot shot;
+	Surface geo;                /* the surface's size and scale as last drawn, for taps */
 } Play;
 
 /* A hole on its own with one player, from the tee. seed sets the wind, as
@@ -92,6 +93,14 @@ void SEC_UI play_start(Play *p, const Hole *h, const SurfaceGrid *g, Round *r);
 /* Before the round is saved and play left: a shot in the air counts where
  * it ends up, and a finished hole moves the round on to the next. */
 void SEC_UI play_settle(Play *p);
+/* The surface changed size: the camera is worked out again and everything
+ * drawn again on the next frame. */
+void SEC_UI play_resized(Play *p);
+#ifdef DEBUG
+/* Debug builds: puts the ball on the green 7 yd short of the pin, for
+ * screenshots of the green view. Returns PL_RENDER. */
+int SEC_UI play_debug_green(Play *p);
+#endif
 int SEC_UI play_key(Play *p, uint8_t key, uint32_t now);
 /* x and y in logical units. */
 int SEC_UI play_tap(Play *p, int16_t x, int16_t y, uint32_t now);

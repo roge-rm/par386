@@ -267,6 +267,11 @@ def main():
          '/* Grass noise, 16 x 16, row major, -8 to 7. */',
          'static const int8_t pal_noise[256] = {', rows_c(noise_table()), '};', '']
     (ROOT / 'src/core/paltab.h').write_text('\n'.join(t))
+    c565 = [((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3) for r, g, b in rgb]
+    t = ['/* Made by tools/mkpal.py, don\'t edit. Only gfx.c includes it. */', '',
+         '/* Each palette index as 16-bit colour, 5 bits red, 6 green, 5 blue. */',
+         'static const uint16_t pal_565[256] = {', rows_c(c565, 12), '};', '']
+    (ROOT / 'src/core/pal565.h').write_text('\n'.join(t))
     print('palette: %d used, %d spare' % (ramps['spare'][0], ramps['spare'][1]))
 
 

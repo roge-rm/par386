@@ -3,7 +3,8 @@
 
   refcmp.py PGMDIR OUTDIR REFDIR [--update] [NAME ...]
 Every PGM in PGMDIR becomes OUTDIR/NAME.png: 8-bit ones with the master
-palette, 2-bit ones in the greys the IIIx shows, plus a 3x copy of each
+palette, 2-bit ones in the greys the IIIx shows, 1 and 4-bit
+ones in even greys, PPMs (16-bit colour) as RGB, plus a 3x copy of each
 160 one (NAME-x3.png) for looking at. NAMEs listed (default all) are compared
 pixel for pixel with REFDIR/NAME.png; --update copies them there instead.
 Exits 1 on any difference or missing reference. A REFDIR of - only makes
@@ -33,13 +34,20 @@ def read_pgm(path):
         i = j
     i += 1
     w, h, mx = int(parts[1]), int(parts[2]), int(parts[3])
-    return w, h, mx, data[i:i + w * h]
+    return w, h, mx, data[i:i + w * h * (3 if data[:2] == b'P6' else 1)]
 
 
 def to_png(path):
+    if path.suffix == '.ppm':
+        # 16-bit colour, kept as RGB
+        w, h, mx, px = read_pgm(path)
+        return Image.frombytes('RGB', (w, h), px)
     w, h, mx, px = read_pgm(path)
     im = Image.frombytes('P', (w, h), px)
-    if mx == 255:
+    if mx in (1, 15):
+        # 2 and 16 greys, evenly spaced, 0 white
+        im.putpalette([v for i in range(mx + 1) for v in [255 - i * 255 // mx] * 3])
+    elif mx == 255:
         rgb, _, _, _ = mkpal.build()
         im.putpalette([v for c in rgb for v in c])
     else:
@@ -55,7 +63,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     bad = 0
     seen = set()
-    for p in sorted(src.glob('*.pgm')):
+    for p in sorted(list(src.glob('*.pgm')) + list(src.glob('*.ppm'))):
         im = to_png(p)
         im.save(out / f'{p.stem}.png', optimize=True)
         if im.width == 160:
@@ -74,7 +82,7 @@ def main():
             bad += 1
             continue
         a = Image.open(r)
-        if a.size != im.size or a.mode != 'P' or a.tobytes() != im.tobytes():
+        if a.size != im.size or a.mode != im.mode or a.tobytes() != im.tobytes():
             diff = sum(x != y for x, y in zip(a.tobytes(), im.tobytes())) if a.size == im.size else -1
             print(f'refcmp: {p.stem} differs from {r} ({diff} pixels)')
             bad += 1

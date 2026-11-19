@@ -45,3 +45,11 @@ BEGIN
   MESSAGE "Par 386 couldn't set up the screen. Try closing other apps first."
   BUTTONS "OK"
 END
+
+ALERT ID MemoryAlert
+ERROR
+BEGIN
+  TITLE "Par 386"
+  MESSAGE "There's not enough memory for the screen, so Par 386 will close. A round in play is kept to continue."
+  BUTTONS "OK"
+END

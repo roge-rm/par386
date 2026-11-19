@@ -31,15 +31,15 @@ uint8_t ui_parts(const char *list, char sep)
 
 void ui_fill(Surface *s, int16_t x, int16_t y, int16_t w, int16_t h, uint8_t c)
 {
-	gfx_fill(s, x * s->scale, y * s->scale, w * s->scale, h * s->scale, c);
+	gfx_fill(s, s->ox + x * s->scale, s->oy + y * s->scale, w * s->scale, h * s->scale, c);
 }
 
 void ui_text(Surface *s, int16_t x, int16_t y, const char *t, int16_t n, uint8_t c, int8_t shadow)
 {
 	/* No shadow where it would be the text's own colour, as on 4 greys. */
 	if (shadow >= 0 && (s->pa[shadow] != s->pa[c] || s->pb[shadow] != s->pb[c]))
-		gfx_text(s, (x + 1) * s->scale, (y + 1) * s->scale, t, n, (uint8_t)shadow);
-	gfx_text(s, x * s->scale, y * s->scale, t, n, c);
+		gfx_text(s, s->ox + (x + 1) * s->scale, s->oy + (y + 1) * s->scale, t, n, (uint8_t)shadow);
+	gfx_text(s, s->ox + x * s->scale, s->oy + y * s->scale, t, n, c);
 }
 
 void ui_ctext(Surface *s, int16_t cx, int16_t y, const char *t, int16_t n, uint8_t c, int8_t shadow)
@@ -104,7 +104,7 @@ void ui_menu_draw_line(Surface *s, const UiMenu *m, uint8_t i)
 		ui_fill(s, r.x, r.y, r.w, r.h, UIC_BAR);
 		ui_fill(s, r.x, r.y, r.w, 1, UIC_BAR_LT);
 		ui_fill(s, r.x, r.y + r.h - 1, r.w, 1, UIC_BAR_DK);
-		gfx_ball(s, (m->x + 3) * s->scale, (r.y + (r.h - gfx_ball_h()) / 2) * s->scale);
+		gfx_ball(s, s->ox + (m->x + 3) * s->scale, s->oy + (r.y + (r.h - gfx_ball_h()) / 2) * s->scale);
 	}
 	ui_text(s, m->x + 14, ty, t, n, i == m->sel ? UIC_TEXT_HI : UIC_TEXT, UIC_SHADOW);
 }

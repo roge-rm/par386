@@ -96,39 +96,95 @@ static void art_free(RenderArt *a)
 	free((void *)a->backdrop.p);
 }
 
-static void surface_d(Surface *s, int scale, int depth)
+#define GUARD 64
+
+/* A w x h surface with GUARD guard bytes either side of its pixels. */
+static void surface_wh(Surface *s, int w, int h, int scale, int depth)
 {
+	uint8_t *b;
 	memset(s, 0, sizeof *s);
 	s->scale = (uint8_t)scale;
 	s->depth = (uint8_t)depth;
-	s->w = s->h = (int16_t)(160 * scale);
+	s->w = (int16_t)w;
+	s->h = (int16_t)h;
 	s->rowBytes = (uint16_t)((s->w * s->depth + 15) / 16 * 2);
-	s->bits = malloc((size_t)s->rowBytes * s->h);
+	b = malloc((size_t)s->rowBytes * s->h + 2 * GUARD);
+	memset(b, 0xA5, (size_t)s->rowBytes * s->h + 2 * GUARD);
+	s->bits = b + GUARD;
 	gfx_init(s);
 }
 
+static void surface_d(Surface *s, int scale, int depth) { surface_wh(s, 160 * scale, 160 * scale, scale, depth); }
+
 static void surface(Surface *s, int scale) { surface_d(s, scale, scale > 1 ? 8 : 2); }
+
+/* Checks the guard bytes are untouched and frees the surface. */
+static void sfree(Surface *s)
+{
+	uint8_t *b = s->bits - GUARD, *e = s->bits + (size_t)s->rowBytes * s->h;
+	int i, bad = 0;
+	for (i = 0; i < GUARD; i++) bad += (b[i] != 0xA5) + (e[i] != 0xA5);
+	CHECK(bad == 0);
+	if (bad) printf("  %d guard bytes written round a %dx%d %d-bit surface\n", bad, s->w, s->h, s->depth);
+	free(b);
+}
 
 static uint8_t pixel(const Surface *s, int x, int y)
 {
 	const uint8_t *row = s->bits + (size_t)y * s->rowBytes;
-	if (s->depth == 8) return row[x];
-	return (uint8_t)((row[x >> 2] >> (6 - 2 * (x & 3))) & 3);
+	int d = s->depth, per = 8 / d;
+	if (d == 8) return row[x];
+	return (uint8_t)((row[x / per] >> (8 - d - d * (x % per))) & ((1 << d) - 1));
 }
 
+/* NAME-W.pgm (or NAME-WxH.pgm if it isn't square); grey screens keep their
+ * depth in the maximum value, which tools/refcmp.py reads. */
 static void save(const Surface *s, const char *name)
 {
 	char path[512];
 	FILE *f;
 	int x, y;
 
-	snprintf(path, sizeof path, "%s/%s-%d.pgm", outdir, name, s->w);
+	if (s->w == s->h) snprintf(path, sizeof path, "%s/%s-%d.pgm", outdir, name, s->w);
+	else snprintf(path, sizeof path, "%s/%s-%dx%d.pgm", outdir, name, s->w, s->h);
 	f = fopen(path, "wb");
 	if (!f) { CHECK(!"open pgm"); return; }
-	fprintf(f, "P5\n%d %d\n%d\n", s->w, s->h, s->depth == 8 ? 255 : 3);
+	fprintf(f, "P5\n%d %d\n%d\n", s->w, s->h, s->depth == 8 ? 255 : (1 << s->depth) - 1);
 	for (y = 0; y < s->h; y++)
 		for (x = 0; x < s->w; x++) fputc(pixel(s, x, y), f);
 	fclose(f);
+}
+
+/* An 8-bit surface as 16-bit colour through gfx_to16, saved as NAME-W-16.ppm. */
+static void save16(const Surface *s, const char *name)
+{
+	char path[512];
+	FILE *f;
+	int x, y;
+	uint16_t rb = (uint16_t)(s->w * 2);
+	uint8_t *b = malloc((size_t)rb * s->h + 2 * GUARD), *d = b + GUARD;
+
+	memset(b, 0xA5, (size_t)rb * s->h + 2 * GUARD);
+	/* in two pieces, to check the rectangle */
+	gfx_to16(s, d, rb, 0, 0, s->w, s->h / 2, 0);
+	gfx_to16(s, d, rb, 3, s->h / 2, s->w - 3, s->h - s->h / 2, 0);
+	gfx_to16(s, d, rb, 0, s->h / 2, 3, s->h - s->h / 2, 0);
+	for (x = 0; x < GUARD; x++) CHECK(b[x] == 0xA5 && d[(size_t)rb * s->h + x] == 0xA5);
+	if (s->w == s->h) snprintf(path, sizeof path, "%s/%s-%d-16.ppm", outdir, name, s->w);
+	else snprintf(path, sizeof path, "%s/%s-%dx%d-16.ppm", outdir, name, s->w, s->h);
+	f = fopen(path, "wb");
+	if (!f) { CHECK(!"open ppm"); free(b); return; }
+	fprintf(f, "P6\n%d %d\n255\n", s->w, s->h);
+	for (y = 0; y < s->h; y++)
+		for (x = 0; x < s->w; x++) {
+			const uint8_t *q = d + (size_t)y * rb + 2 * x;
+			uint16_t c = (uint16_t)(q[0] << 8 | q[1]);
+			fputc((c >> 11) * 255 / 31, f);
+			fputc(((c >> 5) & 63) * 255 / 63, f);
+			fputc((c & 31) * 255 / 31, f);
+		}
+	fclose(f);
+	free(b);
 }
 
 /* Draws one view; checks the 8-bit view has no pixel left unwritten. */
@@ -156,7 +212,7 @@ static void gap160(const RenderView *v, const RenderArt *a)
 	Surface s;
 	surface_d(&s, 1, 8);
 	CHECK(draw(&s, v, a, NULL) == 0);
-	free(s.bits);
+	sfree(&s);
 }
 
 /* Draws a 160 view at another depth, so its pixel writes run under ASan. */
@@ -165,7 +221,7 @@ static void depth160(const RenderView *v, const RenderArt *a, int depth)
 	Surface s;
 	surface_d(&s, 1, depth);
 	CHECK(draw(&s, v, a, NULL) == 0);
-	free(s.bits);
+	sfree(&s);
 }
 
 /* Draws the hole map twice onto different fill values; any pixel that differs was never written. */
@@ -195,6 +251,38 @@ static const uint8_t *exact(const uint8_t *p, uint32_t len)
 	c = malloc(len ? len : 1);
 	memcpy(c, p, len);
 	return c;
+}
+
+/* The tee view with its status strip, the map with its labels and the green
+ * view from 7 yd short of the pin on one surface, saved as NAME-tee,
+ * NAME-map and NAME-green (NAME empty for the size alone). The guard bytes
+ * are checked when it's freed. */
+static void views(Surface *s, const char *name, const RenderView *tee, const RenderArt *a, int with16)
+{
+	char t[64];
+	Play pl;
+	RenderView gv = *tee;
+	int un;
+
+	CHECK(draw(s, tee, a, NULL) == 0);
+	play_init(&pl, tee->hole, tee->grid, 1);
+	play_frame(&pl, s, NULL, 0);
+	snprintf(t, sizeof t, "%stee", name);
+	save(s, t);
+	if (with16) save16(s, t);
+	CHECK(draw_map(s, &pl, &un) == 0);
+	CHECK(un == 0);
+	play_map(s, &pl);
+	play_status(s, &pl, NULL);
+	snprintf(t, sizeof t, "%smap", name);
+	save(s, t);
+	gv.green = 1;
+	gv.ball = vec2_make(tee->hole->pins[0].x - (2L << 16), tee->hole->pins[0].y - (7L << 16));
+	gv.aim = iatan2(tee->hole->pins[0].y - gv.ball.y, tee->hole->pins[0].x - gv.ball.x);
+	CHECK(render_green(s, &gv) == 0);
+	snprintf(t, sizeof t, "%sgreen", name);
+	save(s, t);
+	if (with16) save16(s, t);
 }
 
 static fixed Y(double v) { return (fixed)(v * 65536.0); }
@@ -265,8 +353,8 @@ int main(int argc, char **argv)
 			/* the same view again gives the same picture */
 			CHECK(draw(&s2, &v, &art[scale - 1], NULL) == 0);
 			CHECK(memcmp(s.bits, s2.bits, (size_t)s.rowBytes * s.h) == 0);
-			free(s.bits);
-			free(s2.bits);
+			sfree(&s);
+			sfree(&s2);
 		}
 	}
 
@@ -287,7 +375,7 @@ int main(int argc, char **argv)
 				CHECK(draw(&s, &v, &art[scale - 1], NULL) == 0);
 				if (i == 0) save(&s, "outside");
 				if (scale == 1) gap160(&v, &art[0]);
-				free(s.bits);
+				sfree(&s);
 			}
 		}
 		v.pin = 0;
@@ -310,7 +398,7 @@ int main(int argc, char **argv)
 			surface(&s, scale);
 			CHECK(draw(&s, &v, &art[scale - 1], NULL) == 0);
 			CHECK(draw(&s, &v, &none, NULL) == 0);
-			free(s.bits);
+			sfree(&s);
 		}
 		v.hole = &h;
 		free(bare);
@@ -337,7 +425,7 @@ int main(int argc, char **argv)
 		v.ball = h.tees[0].pos;
 		v.aim = toward(v.ball, h.aim);
 		CHECK(draw(&s, &v, &bad, NULL) == 0);
-		free(s.bits);
+		sfree(&s);
 		for (t = 0; t < RENDER_TYPES; t++)
 			for (k = 0; k < RENDER_SIZES; k++) free((void *)bad.spr[t][k].p);
 		free((void *)bad.golfer.p);
@@ -346,7 +434,7 @@ int main(int argc, char **argv)
 		surface(&s, 1);
 		s.w = 100;
 		CHECK(render_scene(&s, &v, &art[0], NULL, NULL) == -1);
-		free(s.bits);
+		sfree(&s);
 	}
 
 	/* The hole map at 160 2-bit and 320 8-bit, then the status strip and the map labels. */
@@ -366,12 +454,12 @@ int main(int argc, char **argv)
 				play_map(&s, &pl);
 			}
 			save(&s, "map");
-			free(s.bits);
+			sfree(&s);
 		}
 		surface(&s, 2);
 		play_status(&s, &pl, NULL);
 		play_map(&s, &pl);
-		free(s.bits);
+		sfree(&s);
 	}
 
 	/* The green view from 7 yd short of the pin, at both sizes and every depth,
@@ -406,8 +494,8 @@ int main(int argc, char **argv)
 				CHECK(greens > s.w * s.h / 2);
 			}
 			save(&s, "green");
-			free(s.bits);
-			free(s2.bits);
+			sfree(&s);
+			sfree(&s2);
 		}
 		/* the aim turned well off the pin both ways: nothing written outside the bitmap */
 		for (k = -1; k <= 1; k += 2) {
@@ -428,14 +516,14 @@ int main(int argc, char **argv)
 				for (g = 0; g < 64; g++) CHECK(raw[g] == 0xA5 && raw[64 + n + g] == 0xA5);
 				s.bits = keep;
 				free(raw);
-				free(s.bits);
+				sfree(&s);
 			}
 		}
 		for (k = 4; k >= 1; k >>= 2) {
 			Surface s;
 			surface_d(&s, 1, k);
 			CHECK(render_green(&s, &gv) == 0);
-			free(s.bits);
+			sfree(&s);
 		}
 		for (k = 0; k < 4; k++) {
 			Surface s;
@@ -443,28 +531,75 @@ int main(int argc, char **argv)
 			gv.aim = toward(gv.ball, h.pins[0]);
 			surface(&s, 1);
 			CHECK(render_green(&s, &gv) == 0);
-			free(s.bits);
+			sfree(&s);
 			surface(&s, 2);
 			CHECK(render_green(&s, &gv) == 0);
-			free(s.bits);
+			sfree(&s);
 		}
 		{
 			Surface s;
 			surface(&s, 1);
 			s.w = 100;
 			CHECK(render_green(&s, &gv) == -1);
-			free(s.bits);
+			sfree(&s);
 		}
+	}
+
+	/* Every depth and size: 4 and 1 bit at 160 (d4-, d1-), the 8-bit views as
+	 * 16-bit colour, the tall 320 x 480 and the landscape 480 x 320 screens. */
+	{
+		Surface s;
+		v.ball = h.tees[0].pos;
+		v.aim = toward(v.ball, h.aim);
+		v.pin = 0;
+		v.green = 0;
+		surface_d(&s, 1, 4);
+		views(&s, "d4-", &v, &art[0], 0);
+		sfree(&s);
+		surface_d(&s, 1, 1);
+		views(&s, "d1-", &v, &art[0], 0);
+		sfree(&s);
+		surface_d(&s, 1, 8);
+		views(&s, "d8-", &v, &art[0], 1);
+		sfree(&s);
+		surface_d(&s, 2, 8);
+		views(&s, "d8-", &v, &art[1], 1);
+		sfree(&s);
+		surface_wh(&s, 320, 480, 2, 8);
+		views(&s, "", &v, &art[1], 1);
+		sfree(&s);
+		surface_wh(&s, 480, 320, 2, 8);
+		views(&s, "", &v, &art[1], 1);
+		sfree(&s);
+		/* and every depth at those sizes, for the guard bytes */
+		for (i = 1; i <= 4; i <<= 1) {
+			surface_wh(&s, 320, 480, 2, i);
+			views(&s, "x-", &v, &art[1], 0);
+			sfree(&s);
+			surface_wh(&s, 480, 320, 2, i);
+			views(&s, "x-", &v, &art[1], 0);
+			sfree(&s);
+		}
+		/* too big or not a multiple of 16 across */
+		surface_wh(&s, 328, 320, 2, 8);
+		CHECK(render_scene(&s, &v, &art[1], NULL, NULL) == -1);
+		sfree(&s);
+		surface_wh(&s, 520, 320, 2, 8);
+		CHECK(render_scene(&s, &v, &art[1], NULL, NULL) == -1);
+		sfree(&s);
 	}
 
 	{
 		Surface s;
 		surface(&s, 1);
 		printf("work memory: %u bytes at 160, ", render_work_size(&s));
-		free(s.bits);
+		sfree(&s);
 		surface(&s, 2);
-		printf("%u at 320\n", render_work_size(&s));
-		free(s.bits);
+		printf("%u at 320, ", render_work_size(&s));
+		sfree(&s);
+		surface_wh(&s, 480, 320, 2, 8);
+		printf("%u at 480\n", render_work_size(&s));
+		sfree(&s);
 	}
 
 	art_free(&art[0]);
