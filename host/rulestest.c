@@ -407,6 +407,7 @@ static uint32_t rt;
 
 #define IIIX_SCENE_MS 4500   /* a scene and the turn strip, with room to spare */
 #define IIIX_HOLE_MS  2500   /* loading a hole's surface grid */
+#define IIIX_CLOCK_MS 120    /* the meter's clock starts this long after the press, once its first frames show */
 
 static void ev(uint32_t at, const char *what)
 {
@@ -439,6 +440,7 @@ static int shot(Play *p, Surface *s, Surface *bg, uint32_t *t)
 	CHECK(p->state == PS_AIM);
 	CHECK(play_key(p, KEY_SELECT, *t) & PL_ANIM);
 	tap_at(rt, 20, 150);
+	rt += IIIX_CLOCK_MS;
 	if (p->club == CLUB_PT) {
 		fixed d = vec2_len(vec2_sub(p->rv.hole->pins[0], p->rv.ball));
 		uint32_t ms = ten((double)d / p->range * MTR_UP_MS);

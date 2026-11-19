@@ -1,0 +1,12 @@
+# One centre press for the swing start, then the power press held for 900 ms
+# on the TX: it must count once, so the meter runs back past the snap line
+# and the shot is a mis-hit (no third press). Start it on the tee view.
+0 key-down center
+60 key-up center
+800 key-down center
+1000 snapshot "{out}/h-held-1000.png"
+1300 snapshot "{out}/h-held-1300.png"
+1600 snapshot "{out}/h-held-1600.png"
+1700 key-up center
+1750 snapshot "{out}/h-after-1750.png"
+2000 snapshot "{out}/h-after-2000.png"

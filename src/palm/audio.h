@@ -13,9 +13,11 @@ void AudioClose(void);
 /* A new setting from the settings screen: saved and used from now on. */
 void AudioSetMode(UInt8 mode);
 /* Plays what the core queued and steps the tune on. birds: the tee view is
- * up, so the ambience may chirp now and then. Call it after anything that
- * may queue a sound, and before waiting for an event. */
-void AudioTick(Boolean birds);
+ * up, so the ambience may chirp now and then. busy: frames are running (the
+ * meter or a flight), so the stream isn't paused now, as pausing it can
+ * hold things up for a fifth of a second. Call it after anything that may
+ * queue a sound, and before waiting for an event. */
+void AudioTick(Boolean birds, Boolean busy);
 /* Ticks to wait for an event before the next AudioTick, or evtWaitForever. */
 Int32 AudioWait(void);
 #ifdef DEBUG

@@ -8,55 +8,57 @@
 # late tap turns into the snap. On the green it opens the map for the debug
 # timings and comes back, before each putt.
 # The drive.
+# Clicks after each swing start are 120 ms later than the meter times above: on the IIIx the
+# meter's clock starts about then, once its first frames show.
 0 pen-down 20 150
 60 pen-up
-700 snapshot "{out}/s1-meter.png"
-950 pen-down 80 60
-1010 pen-up
-1660 pen-down 80 60
-1720 pen-up
-3500 snapshot "{out}/s1-flight.png"
-6500 snapshot "{out}/s1-roll.png"
-9000 snapshot "{out}/s1-result.png"
-19000 snapshot "{out}/s2-aim.png"
+820 snapshot "{out}/s1-meter.png"
+1070 pen-down 80 60
+1130 pen-up
+1780 pen-down 80 60
+1840 pen-up
+3620 snapshot "{out}/s1-flight.png"
+6620 snapshot "{out}/s1-roll.png"
+9120 snapshot "{out}/s1-result.png"
+19120 snapshot "{out}/s2-aim.png"
 # The approach.
-20000 pen-down 20 150
-20060 pen-up
-20950 pen-down 80 60
-21010 pen-up
-21660 pen-down 80 60
-21720 pen-up
-23500 snapshot "{out}/s2-flight.png"
-26500 snapshot "{out}/s2-roll.png"
-28800 snapshot "{out}/s2-result.png"
-38000 snapshot "{out}/p1-aim.png"
+20120 pen-down 20 150
+20180 pen-up
+21190 pen-down 80 60
+21250 pen-up
+21900 pen-down 80 60
+21960 pen-up
+23740 snapshot "{out}/s2-flight.png"
+26740 snapshot "{out}/s2-roll.png"
+29040 snapshot "{out}/s2-result.png"
+38240 snapshot "{out}/p1-aim.png"
 # The map, with the green view's draw time (S, ms) on its strip, and back.
-38200 pen-down 119 153
-38260 pen-up
-39000 snapshot "{out}/p1-map.png"
-39200 pen-down 80 60
-39260 pen-up
+38440 pen-down 119 153
+38500 pen-up
+39240 snapshot "{out}/p1-map.png"
+39440 pen-down 80 60
+39500 pen-up
 # The first putt.
-40000 pen-down 20 150
-40060 pen-up
-40400 snapshot "{out}/p1-meter.png"
-40730 pen-down 80 60
-40790 pen-up
-41800 snapshot "{out}/p1-roll.png"
-44400 snapshot "{out}/p1-result.png"
+40240 pen-down 20 150
+40300 pen-up
+40760 snapshot "{out}/p1-meter.png"
+41090 pen-down 80 60
+41150 pen-up
+42160 snapshot "{out}/p1-roll.png"
+44760 snapshot "{out}/p1-result.png"
 # The map again for the putting meter and roll frame times, and back.
-47000 pen-down 119 153
-47060 pen-up
-48000 snapshot "{out}/p2-map.png"
-48200 pen-down 80 60
-48260 pen-up
-51000 snapshot "{out}/p2-aim.png"
+47360 pen-down 119 153
+47420 pen-up
+48360 snapshot "{out}/p2-map.png"
+48560 pen-down 80 60
+48620 pen-up
+51360 snapshot "{out}/p2-aim.png"
 # The second, and in.
-52000 pen-down 20 150
-52060 pen-up
-52390 pen-down 80 60
-52450 pen-up
-52900 snapshot "{out}/p2-roll.png"
-53400 snapshot "{out}/p2-drop.png"
-54300 snapshot "{out}/p2-result.png"
-57000 snapshot "{out}/done.png"
+52360 pen-down 20 150
+52420 pen-up
+52870 pen-down 80 60
+52930 pen-up
+53380 snapshot "{out}/p2-roll.png"
+53880 snapshot "{out}/p2-drop.png"
+54780 snapshot "{out}/p2-result.png"
+57480 snapshot "{out}/done.png"

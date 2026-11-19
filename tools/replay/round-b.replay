@@ -3,111 +3,111 @@
 500 snapshot "{out}/b-resume.png"
 1000 pen-down 20 150
 1060 pen-up
-1400 pen-down 80 60
-1460 pen-up
-1700 pen-down 80 60
-1760 pen-up
-11338 pen-down 20 150
-11398 pen-up
-11738 pen-down 80 60
-11798 pen-up
-12038 pen-down 80 60
-12098 pen-up
-21676 pen-down 20 150
-21736 pen-up
-22336 pen-down 80 60
-22396 pen-up
-32148 pen-down 20 150
-32208 pen-up
-32808 pen-down 80 60
-32868 pen-up
-42620 pen-down 20 150
-42680 pen-up
-43230 pen-down 80 60
-43290 pen-up
-52050 pen-down 20 150
-52110 pen-up
-52660 pen-down 80 60
-52720 pen-up
-61480 pen-down 20 150
-61540 pen-up
-61790 pen-down 80 60
-61850 pen-up
-64990 snapshot "{out}/b-holed-2-1.png"
-65490 pen-down 80 60
-65550 pen-up
-66990 snapshot "{out}/b-turn.png"
-70290 pen-down 20 150
-70350 pen-up
-70600 pen-down 80 60
-70660 pen-up
-73800 snapshot "{out}/b-holed-2-2.png"
-74300 pen-down 80 60
-74360 pen-up
-76100 snapshot "{out}/b-card-hole2.png"
-77100 pen-down 80 116
-77160 pen-up
-78600 snapshot "{out}/b-next-hole.png"
-84100 pen-down 20 150
-84160 pen-up
-85050 pen-down 80 60
-85110 pen-up
-85760 pen-down 80 60
-85820 pen-up
-98324 pen-down 20 150
-98384 pen-up
-99274 pen-down 80 60
-99334 pen-up
-99984 pen-down 80 60
-100044 pen-up
-112548 pen-down 20 150
-112608 pen-up
-113498 pen-down 80 60
-113558 pen-up
-114208 pen-down 80 60
-114268 pen-up
-126064 pen-down 20 150
-126124 pen-up
-127014 pen-down 80 60
-127074 pen-up
-127724 pen-down 80 60
-127784 pen-up
-139580 pen-down 20 150
-139640 pen-up
-140530 pen-down 80 60
-140590 pen-up
-141240 pen-down 80 60
-141300 pen-up
-152356 pen-down 20 150
-152416 pen-up
-153306 pen-down 80 60
-153366 pen-up
-154016 pen-down 80 60
-154076 pen-up
-165132 pen-down 20 150
-165192 pen-up
-165792 pen-down 80 60
-165852 pen-up
-175666 pen-down 20 150
-175726 pen-up
-176326 pen-down 80 60
-176386 pen-up
-186200 pen-down 20 150
-186260 pen-up
-186720 pen-down 80 60
-186780 pen-up
-190168 snapshot "{out}/b-holed-3-1.png"
-190668 pen-down 80 60
-190728 pen-up
-192168 snapshot "{out}/b-turn.png"
-195468 pen-down 20 150
-195528 pen-up
-195988 pen-down 80 60
-196048 pen-up
-199436 snapshot "{out}/b-holed-3-2.png"
-199936 pen-down 80 60
-199996 pen-up
-201736 snapshot "{out}/b-card-final.png"
-202736 pen-down 80 116
-202796 pen-up
-205236 snapshot "{out}/b-clubhouse.png"
+1520 pen-down 80 60
+1580 pen-up
+1820 pen-down 80 60
+1880 pen-up
+11458 pen-down 20 150
+11518 pen-up
+11978 pen-down 80 60
+12038 pen-up
+12278 pen-down 80 60
+12338 pen-up
+21916 pen-down 20 150
+21976 pen-up
+22696 pen-down 80 60
+22756 pen-up
+32508 pen-down 20 150
+32568 pen-up
+33288 pen-down 80 60
+33348 pen-up
+43100 pen-down 20 150
+43160 pen-up
+43830 pen-down 80 60
+43890 pen-up
+52650 pen-down 20 150
+52710 pen-up
+53380 pen-down 80 60
+53440 pen-up
+62200 pen-down 20 150
+62260 pen-up
+62630 pen-down 80 60
+62690 pen-up
+65830 snapshot "{out}/b-holed-2-1.png"
+66330 pen-down 80 60
+66390 pen-up
+67830 snapshot "{out}/b-turn.png"
+71130 pen-down 20 150
+71190 pen-up
+71560 pen-down 80 60
+71620 pen-up
+74760 snapshot "{out}/b-holed-2-2.png"
+75260 pen-down 80 60
+75320 pen-up
+77060 snapshot "{out}/b-card-hole2.png"
+78060 pen-down 80 116
+78120 pen-up
+79560 snapshot "{out}/b-next-hole.png"
+85060 pen-down 20 150
+85120 pen-up
+86130 pen-down 80 60
+86190 pen-up
+86840 pen-down 80 60
+86900 pen-up
+99404 pen-down 20 150
+99464 pen-up
+100474 pen-down 80 60
+100534 pen-up
+101184 pen-down 80 60
+101244 pen-up
+113748 pen-down 20 150
+113808 pen-up
+114818 pen-down 80 60
+114878 pen-up
+115528 pen-down 80 60
+115588 pen-up
+127384 pen-down 20 150
+127444 pen-up
+128454 pen-down 80 60
+128514 pen-up
+129164 pen-down 80 60
+129224 pen-up
+141020 pen-down 20 150
+141080 pen-up
+142090 pen-down 80 60
+142150 pen-up
+142800 pen-down 80 60
+142860 pen-up
+153916 pen-down 20 150
+153976 pen-up
+154986 pen-down 80 60
+155046 pen-up
+155696 pen-down 80 60
+155756 pen-up
+166812 pen-down 20 150
+166872 pen-up
+167592 pen-down 80 60
+167652 pen-up
+177466 pen-down 20 150
+177526 pen-up
+178246 pen-down 80 60
+178306 pen-up
+188120 pen-down 20 150
+188180 pen-up
+188760 pen-down 80 60
+188820 pen-up
+192208 snapshot "{out}/b-holed-3-1.png"
+192708 pen-down 80 60
+192768 pen-up
+194208 snapshot "{out}/b-turn.png"
+197508 pen-down 20 150
+197568 pen-up
+198148 pen-down 80 60
+198208 pen-up
+201596 snapshot "{out}/b-holed-3-2.png"
+202096 pen-down 80 60
+202156 pen-up
+203896 snapshot "{out}/b-card-final.png"
+204896 pen-down 80 116
+204956 pen-up
+207396 snapshot "{out}/b-clubhouse.png"

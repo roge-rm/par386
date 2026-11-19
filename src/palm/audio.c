@@ -357,7 +357,7 @@ void AudioSetMode(UInt8 mode)
 	}
 }
 
-void AudioTick(Boolean birds)
+void AudioTick(Boolean birds, Boolean busy)
 {
 	UInt8 id;
 	UInt32 now = TimGetTicks();
@@ -377,7 +377,7 @@ void AudioTick(Boolean birds)
 	}
 	/* pause when both voices have been idle for 0.2 s, so the last buffer is out first */
 	if (gStream && !gPaused) {
-		if (gMode != SOUND_OFF && (Busy(0) || Busy(1))) {
+		if (busy || (gMode != SOUND_OFF && (Busy(0) || Busy(1)))) {
 			gPauseSet = false;
 		} else if (!gPauseSet) {
 			gPauseSet = true;

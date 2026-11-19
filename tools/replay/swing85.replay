@@ -1,19 +1,21 @@
 # A swing at 85 % power with the snap on time: start on the strip, power
 # after 850 ms, snap when the marker comes back to the snap line
 # (850 + 0.85 * 750 ms), with screenshots of the meter, the flight and the result.
+# Clicks after each swing start are 120 ms later than the meter times above: on the IIIx the
+# meter's clock starts about then, once its first frames show.
 0 pen-down 20 150
 60 pen-up
-600 snapshot "{out}/s{n}-meter-up.png"
-850 pen-down 80 60
-910 pen-up
-1150 snapshot "{out}/s{n}-meter-down.png"
-1487 pen-down 80 60
-1547 pen-up
-2200 snapshot "{out}/s{n}-flight-1.png"
-2800 snapshot "{out}/s{n}-flight-2.png"
-3400 snapshot "{out}/s{n}-flight-3.png"
-4000 snapshot "{out}/s{n}-flight-4.png"
-4600 snapshot "{out}/s{n}-flight-5.png"
-5300 snapshot "{out}/s{n}-flight-6.png"
-6000 snapshot "{out}/s{n}-result-1.png"
-6800 snapshot "{out}/s{n}-result-2.png"
+720 snapshot "{out}/s{n}-meter-up.png"
+970 pen-down 80 60
+1030 pen-up
+1270 snapshot "{out}/s{n}-meter-down.png"
+1607 pen-down 80 60
+1667 pen-up
+2320 snapshot "{out}/s{n}-flight-1.png"
+2920 snapshot "{out}/s{n}-flight-2.png"
+3520 snapshot "{out}/s{n}-flight-3.png"
+4120 snapshot "{out}/s{n}-flight-4.png"
+4720 snapshot "{out}/s{n}-flight-5.png"
+5420 snapshot "{out}/s{n}-flight-6.png"
+6120 snapshot "{out}/s{n}-result-1.png"
+6920 snapshot "{out}/s{n}-result-2.png"

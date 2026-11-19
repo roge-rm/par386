@@ -724,6 +724,164 @@ static void swing(Play *p, Surface *s, Surface *bg, uint32_t t, uint32_t up, int
 	play_key(p, KEY_SELECT, (uint32_t)((int32_t)ts + off));
 }
 
+/* A select key press through the gate, as main.c does: play_key only if it counts. */
+#define S16_T (MTR_SNAP * 16)
+
+static int gated(Play *p, KeyGate *k, uint16_t code, uint8_t repeat, uint8_t up, uint32_t t)
+{
+	if (!gate_press(k, code, code == 0x13D ? 0x136 : 0, repeat, up, t)) return -1;
+	return play_key(p, KEY_SELECT, t);
+}
+
+/* One press counts once: the TX centre's two codes, auto-repeats, a held key, bounce;
+ * a quick real second press still counts. And the meter's clock starts once its
+ * first frames are on the screen (play_shown). */
+static void press_tests(const Hole *h, const SurfaceGrid *g)
+{
+	Play p;
+	Surface s, bg;
+	KeyGate k;
+	uint32_t t;
+	const uint16_t TX = 0x13D, ROCK = 0x136;
+
+	/* the gate on its own */
+	memset(&k, 0, sizeof k);
+	CHECK(gate_press(&k, TX, ROCK, 0, 1, 1000) == 1);
+	CHECK(gate_press(&k, ROCK, 0, 0, 0, 1010) == 0);         /* the same press's second code */
+	CHECK(gate_press(&k, TX, ROCK, 1, 1, 1300) == 0);           /* auto-repeat */
+	CHECK(gate_press(&k, TX, ROCK, 0, 1, 1300) == 1);           /* no release seen yet on this device: counts */
+	gate_release(&k, TX, ROCK);
+	CHECK(gate_press(&k, TX, ROCK, 0, 1, 1320) == 0);           /* bounce */
+	CHECK(gate_press(&k, TX, ROCK, 0, 1, 1400) == 1);           /* a quick real second press */
+	CHECK(gate_press(&k, TX, ROCK, 0, 1, 1700) == 0);           /* held: no release came */
+	CHECK(gate_press(&k, ROCK, 0, 0, 0, 1750) == 1);         /* another key, past the pair window */
+	CHECK(gate_press(&k, TX, ROCK, 0, 1, 3500) == 1);
+	CHECK(gate_press(&k, TX, ROCK, 0, 1, 3600) == 0);
+	CHECK(gate_press(&k, TX, ROCK, 0, 1, 3500 + GATE_HELD_MS + 10) == 1);    /* a release that never came */
+	CHECK(gate_press(&k, 'x', 0, 0, 0, 6000) == 1);
+	/* a release only frees the key that's held; a flush frees it whatever came */
+	CHECK(gate_press(&k, TX, ROCK, 0, 1, 8000) == 1);
+	gate_release(&k, 'x', 0);
+	CHECK(gate_press(&k, TX, ROCK, 0, 1, 8300) == 0);
+	gate_release(&k, 0x205, 0x205);
+	CHECK(gate_press(&k, TX, ROCK, 0, 1, 8400) == 0);
+	gate_flush(&k);
+	CHECK(gate_press(&k, TX, ROCK, 0, 1, 8500) == 1);       /* the release was flushed with the keys while the green view drew */
+	gate_release(&k, 0, ROCK);                              /* by key code */
+	CHECK(gate_press(&k, TX, ROCK, 0, 1, 8600) == 1);
+
+	surface2(&s);
+	surface2(&bg);
+
+	/* a swing with the TX's events: each press sends both codes, the power press is held with
+	 * repeats and an unflagged copy; it's still at PS_DOWN until the real third press */
+	memset(&k, 0, sizeof k);
+	play_init(&p, h, g, 7);
+	play_frame(&p, &s, &bg, 0);
+	CHECK(gated(&p, &k, TX, 0, 1, 1000) & PL_ANIM);
+	CHECK(gated(&p, &k, ROCK, 0, 0, 1005) == -1);
+	gate_release(&k, TX, ROCK);
+	play_frame(&p, &s, &bg, 1060);
+	CHECK(gated(&p, &k, TX, 0, 1, 1800) & PL_ANIM);
+	CHECK(p.state == PS_DOWN);
+	CHECK(gated(&p, &k, ROCK, 0, 0, 1805) == -1);
+	CHECK(gated(&p, &k, TX, 1, 1, 2100) == -1);
+	CHECK(gated(&p, &k, TX, 0, 1, 2200) == -1);
+	play_frame(&p, &s, &bg, 2250);
+	CHECK(p.state == PS_DOWN);
+	gate_release(&k, TX, ROCK);
+	CHECK(gated(&p, &k, TX, 0, 1, 1800 + 600) & PL_ANIM);
+	CHECK(p.state == PS_FLY && p.power > YD(0.79) && p.power < YD(0.81) && p.snap == 0);
+
+	/* a quick real double press at the top: power, then snap 120 ms later */
+	play_init(&p, h, g, 7);
+	play_frame(&p, &s, &bg, 0);
+	CHECK(gated(&p, &k, TX, 0, 1, 10000) & PL_ANIM);
+	gate_release(&k, TX, ROCK);
+	CHECK(gated(&p, &k, TX, 0, 1, 10000 + MTR_UP_MS * 16 / 100) & PL_ANIM);
+	gate_release(&k, TX, ROCK);
+	CHECK(p.state == PS_DOWN);
+	CHECK(gated(&p, &k, TX, 0, 1, 10000 + MTR_UP_MS * 16 / 100 + 120) & PL_ANIM);
+	CHECK(p.state == PS_FLY && p.snap == 0);
+
+	/* the meter runs out at the top and turns back: a press within MTR_GRACE_MS is the power press at
+	 * full and the way down starts from it; a later one is the snap */
+	play_init(&p, h, g, 7);
+	play_frame(&p, &s, &bg, 0);
+	CHECK(play_key(&p, KEY_SELECT, 30000) & PL_ANIM);
+	play_frame(&p, &s, &bg, 30500);
+	play_frame(&p, &s, &bg, 30000 + MTR_UP_MS + 20);
+	CHECK(p.state == PS_DOWN && p.autoturn && p.t1 == 30000 + MTR_UP_MS);
+	CHECK(play_key(&p, KEY_SELECT, 30000 + MTR_UP_MS + 100) & PL_ANIM);
+	CHECK(p.state == PS_DOWN && !p.autoturn && p.t1 == 30000 + MTR_UP_MS + 100 && p.power == FIX_ONE);
+	play_frame(&p, &s, &bg, 30000 + MTR_UP_MS + 400);
+	CHECK(play_key(&p, KEY_SELECT, 30000 + MTR_UP_MS + 100 + MTR_DOWN_MS) & PL_ANIM);
+	CHECK(p.state == PS_FLY && p.snap == 0 && p.power == FIX_ONE && !p.mishit);
+	play_init(&p, h, g, 7);
+	play_frame(&p, &s, &bg, 0);
+	CHECK(play_key(&p, KEY_SELECT, 40000) & PL_ANIM);
+	play_frame(&p, &s, &bg, 40000 + MTR_UP_MS + 10);
+	CHECK(p.state == PS_DOWN && p.autoturn);
+	CHECK(play_key(&p, KEY_SELECT, 40000 + MTR_UP_MS + MTR_GRACE_MS + 10) & PL_ANIM);
+	CHECK(p.state == PS_FLY && p.snap == FIX_ONE);
+	/* the grace runs from when full shows: a slow frame doesn't use it up */
+	play_init(&p, h, g, 7);
+	play_frame(&p, &s, &bg, 0);
+	CHECK(play_key(&p, KEY_SELECT, 45000) & PL_ANIM);
+	p.mfirst = 0;
+	play_frame(&p, &s, &bg, 45000 + MTR_UP_MS + 10);
+	CHECK(p.autoturn == 1 && p.tg == 45000 + MTR_UP_MS + 10);
+	play_shown(&p, 45000 + MTR_UP_MS + 200);
+	CHECK(p.autoturn == 2 && p.tg == 45000 + MTR_UP_MS + 200);
+	CHECK(play_key(&p, KEY_SELECT, 45000 + MTR_UP_MS + 300) & PL_ANIM);
+	CHECK(p.state == PS_DOWN && p.power == FIX_ONE && p.t1 == 45000 + MTR_UP_MS + 300);
+	/* a power press before the top turns it as usual, so no grace after it */
+	play_init(&p, h, g, 7);
+	play_frame(&p, &s, &bg, 0);
+	CHECK(play_key(&p, KEY_SELECT, 50000) & PL_ANIM);
+	CHECK(play_key(&p, KEY_SELECT, 50000 + MTR_UP_MS - 20) & PL_ANIM);
+	CHECK(p.state == PS_DOWN && !p.autoturn);
+	CHECK(play_key(&p, KEY_SELECT, 50000 + MTR_UP_MS + 40) & PL_ANIM);
+	CHECK(p.state == PS_FLY);
+
+	/* the meter's clock: the first frame draws the meter empty and leaves the golfer at address,
+	 * the second has his backswing; each shown frame starts the clock again */
+	play_init(&p, h, g, 7);
+	{
+		RenderGolfer gf;
+		memset(&gf, 0, sizeof gf);
+		p.golf = &gf;             /* no art: pose() does nothing, which this part doesn't need */
+		play_frame(&p, &s, &bg, 0);
+		p.golf = 0;
+	}
+	CHECK(play_key(&p, KEY_SELECT, 20000) & PL_ANIM);
+	CHECK(p.mfirst == 2);
+	CHECK(play_frame(&p, &s, &bg, 20010) & PL_DIRTY);
+	CHECK(p.mpos >= S16_T && p.mpos < S16_T + 16 * 2);
+	{
+		int16_t m1 = p.mpos, m2;
+		play_shown(&p, 20300);                     /* the first frame took 300 ms to show */
+		CHECK(p.mfirst == 1 && p.t0 <= 20300 && p.t0 >= 20300 - 20);
+		play_frame(&p, &s, &bg, 20300);
+		CHECK(p.mpos >= m1 && p.mpos < S16_T + 16 * 2);   /* where it showed, not back, not on */
+		play_frame(&p, &s, &bg, 20310);
+		m2 = p.mpos;
+		play_shown(&p, 20400);                     /* the second (his backswing) took 90 ms */
+		CHECK(p.mfirst == 0);
+		play_frame(&p, &s, &bg, 20400);
+		CHECK(p.mpos >= m2 && p.mpos <= m2 + 1);   /* never steps back */
+		play_shown(&p, 20500);                     /* no more restarts */
+		CHECK(p.mfirst == 0);
+	}
+	t = p.t0;
+	play_frame(&p, &s, &bg, t + MTR_UP_MS / 2);
+	CHECK(p.state == PS_UP);
+	CHECK(play_key(&p, KEY_SELECT, t + MTR_UP_MS * 4 / 5) & PL_ANIM);
+	CHECK(p.power > YD(0.79) && p.power < YD(0.81));
+	free(s.bits);
+	free(bg.bits);
+}
+
 static void meter_tests(const Hole *h, const SurfaceGrid *g)
 {
 	Play p;
@@ -1208,6 +1366,7 @@ int main(int argc, char **argv)
 	putt_tests();
 	test_hole(&h, &g);
 	meter_tests(&h, &g);
+	press_tests(&h, &g);
 	green_tests(&h, &g);
 	shotmap_tests(&h, &g);
 

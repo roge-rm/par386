@@ -3,76 +3,76 @@
 700 snapshot "{out}/a-shot1-aim.png"
 1000 pen-down 20 150
 1060 pen-up
-1950 pen-down 80 60
-2010 pen-up
-2660 pen-down 80 60
-2720 pen-up
-15550 snapshot "{out}/a-shot2-aim.png"
-15850 pen-down 20 150
-15910 pen-up
-16800 pen-down 80 60
-16860 pen-up
-17510 pen-down 80 60
-17570 pen-up
-30400 snapshot "{out}/a-shot3-aim.png"
-30700 pen-down 20 150
-30760 pen-up
-31650 pen-down 80 60
-31710 pen-up
-32360 pen-down 80 60
-32420 pen-up
-44730 pen-down 119 153
-44790 pen-up
-46230 snapshot "{out}/a-map.png"
-46730 pen-down 140 156
-46790 pen-up
-48230 snapshot "{out}/a-card.png"
-48730 pen-down 80 116
-48790 pen-up
-49930 snapshot "{out}/a-shot4-aim.png"
-50230 pen-down 20 150
-50290 pen-up
-51180 pen-down 80 60
-51240 pen-up
-51890 pen-down 80 60
-51950 pen-up
-64260 pen-down 20 150
-64320 pen-up
-64910 pen-down 80 60
-64970 pen-up
-74350 pen-down 20 150
-74410 pen-up
-75000 pen-down 80 60
-75060 pen-up
-84440 pen-down 20 150
-84500 pen-up
-84970 pen-down 80 60
-85030 pen-up
-88356 snapshot "{out}/a-holed-1-1.png"
-88856 pen-down 80 60
-88916 pen-up
-90356 snapshot "{out}/a-turn.png"
-93656 pen-down 20 150
-93716 pen-up
-94186 pen-down 80 60
-94246 pen-up
-97572 snapshot "{out}/a-holed-1-2.png"
-98072 pen-down 80 60
-98132 pen-up
-99872 snapshot "{out}/a-card-hole1.png"
-100872 pen-down 80 116
-100932 pen-up
-102372 snapshot "{out}/a-next-hole.png"
-107872 pen-down 20 150
-107932 pen-up
-108822 pen-down 80 60
-108882 pen-up
-109532 pen-down 80 60
-109592 pen-up
-121182 pen-down 20 150
-121242 pen-up
-122132 pen-down 80 60
-122192 pen-up
-122842 pen-down 80 60
-122902 pen-up
-134192 snapshot "{out}/a-leave.png"
+2070 pen-down 80 60
+2130 pen-up
+2780 pen-down 80 60
+2840 pen-up
+15670 snapshot "{out}/a-shot2-aim.png"
+15970 pen-down 20 150
+16030 pen-up
+17040 pen-down 80 60
+17100 pen-up
+17750 pen-down 80 60
+17810 pen-up
+30640 snapshot "{out}/a-shot3-aim.png"
+30940 pen-down 20 150
+31000 pen-up
+32010 pen-down 80 60
+32070 pen-up
+32720 pen-down 80 60
+32780 pen-up
+45090 pen-down 119 153
+45150 pen-up
+46590 snapshot "{out}/a-map.png"
+47090 pen-down 140 156
+47150 pen-up
+48590 snapshot "{out}/a-card.png"
+49090 pen-down 80 116
+49150 pen-up
+50290 snapshot "{out}/a-shot4-aim.png"
+50590 pen-down 20 150
+50650 pen-up
+51660 pen-down 80 60
+51720 pen-up
+52370 pen-down 80 60
+52430 pen-up
+64740 pen-down 20 150
+64800 pen-up
+65510 pen-down 80 60
+65570 pen-up
+74950 pen-down 20 150
+75010 pen-up
+75720 pen-down 80 60
+75780 pen-up
+85160 pen-down 20 150
+85220 pen-up
+85810 pen-down 80 60
+85870 pen-up
+89196 snapshot "{out}/a-holed-1-1.png"
+89696 pen-down 80 60
+89756 pen-up
+91196 snapshot "{out}/a-turn.png"
+94496 pen-down 20 150
+94556 pen-up
+95146 pen-down 80 60
+95206 pen-up
+98532 snapshot "{out}/a-holed-1-2.png"
+99032 pen-down 80 60
+99092 pen-up
+100832 snapshot "{out}/a-card-hole1.png"
+101832 pen-down 80 116
+101892 pen-up
+103332 snapshot "{out}/a-next-hole.png"
+108832 pen-down 20 150
+108892 pen-up
+109902 pen-down 80 60
+109962 pen-up
+110612 pen-down 80 60
+110672 pen-up
+122262 pen-down 20 150
+122322 pen-up
+123332 pen-down 80 60
+123392 pen-up
+124042 pen-down 80 60
+124102 pen-up
+135392 snapshot "{out}/a-leave.png"

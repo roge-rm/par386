@@ -1,10 +1,12 @@
 # hole1.replay's second shot (95 %, snap on time), started on the aim view once it's drawn.
+# Clicks after each swing start are 120 ms later than the meter times above: on the IIIx the
+# meter's clock starts about then, once its first frames show.
 0 pen-down 20 150
 60 pen-up
-950 pen-down 80 60
-1010 pen-up
-1660 pen-down 80 60
-1720 pen-up
-3500 snapshot "{out}/{n}-flight.png"
-6500 snapshot "{out}/{n}-roll.png"
-8800 snapshot "{out}/{n}-result.png"
+1070 pen-down 80 60
+1130 pen-up
+1780 pen-down 80 60
+1840 pen-up
+3620 snapshot "{out}/{n}-flight.png"
+6620 snapshot "{out}/{n}-roll.png"
+8920 snapshot "{out}/{n}-result.png"

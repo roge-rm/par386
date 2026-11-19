@@ -24,6 +24,9 @@
 #define kNavRight      0x0008
 #define kNavSelect     0x0010
 #define vchrTxCenter   0x013D
+#ifndef willSendUpKeyMask
+#define willSendUpKeyMask 0x0800  /* palmOne: a keyUpEvent comes when it's let go */
+#endif
 
 static UInt16 gBgPic;         /* what the kept copy holds: a picture's ID or PIC_SCENE */
 #ifdef DEBUG
@@ -78,6 +81,10 @@ static UInt32 gDrawTicks, gMapTicks;
 static UInt32 gFadeStep, gGapTicks, gLastFrame;
 /* ticks and counts of meter and flight frames, and ticks for the last shot's physics */
 static UInt32 gMtrTicks, gMtrN, gFlyTicks, gFlyN, gSimTicks;
+/* the last swing: the key or tap, its first meter frame on the screen, the meter's clock starting and the longest gap between meter frames, in ticks;
+ * the marker on that first frame in % of full power, and how many meter frames have shown */
+static UInt32 gSwKey, gSwFirst, gSwLast, gSwGap, gSwClock;
+static Int16 gSwPos, gSwN;
 #endif
 
 #ifdef DEBUG
@@ -183,6 +190,7 @@ static void Redraw(void)
 }
 
 static Boolean gTxCenter;               /* the centre key has come as vchrTxCenter */
+static KeyGate gGate;                   /* one select per press */
 
 /* Our keys, or KEY_NONE for ones the system should have (Home, power and the like).
  * The four app buttons are ours while the game runs: Select, Map, Scorecard and
@@ -877,7 +885,7 @@ static void PlayAct(int f);
 /* Plays what the core queued; the birds only on the scene while playing. */
 static void Sound(void)
 {
-	AudioTick(gPlaying && gPlay.view == PLAY_SCENE && snd_ambient_on());
+	AudioTick(gPlaying && gPlay.view == PLAY_SCENE && snd_ambient_on(), gAnim);
 }
 
 /* Shows the strip saying whose turn it is while the scene draws. */
@@ -1018,9 +1026,30 @@ static void PlayFrame(void)
 		SceneRender();
 		return;
 	}
-	if (f & PL_DIRTY) ScreenShow(&gPlay.dirty);
+	if (f & PL_DIRTY) {
+		if (gPlay.dirty.w > 0) ScreenShow(&gPlay.dirty);
+		if (gPlay.gdirty.w > 0) ScreenShow(&gPlay.gdirty);
+		/* the meter's clock starts once its first frames are on the screen, and the late power press's grace once full shows */
+		if (gPlay.mfirst || gPlay.autoturn == 1) {
+			play_shown(&gPlay, NowMs());
+#ifdef DEBUG
+			if (!gPlay.mfirst) gSwClock = TimGetTicks();
+#endif
+		}
+	}
 	gAnim = (f & PL_ANIM) != 0;
 #ifdef DEBUG
+	if ((f & PL_DIRTY) && (gPlay.state == PS_UP || gPlay.state == PS_DOWN)) {
+		UInt32 t = TimGetTicks();
+		if (!gSwN) {
+			gSwFirst = t;
+			gSwPos = (Int16)(((Int32)gPlay.mpos - 16 * MTR_SNAP) * 100 / (16 * (MTR_W - MTR_SNAP)));
+		} else if (t - gSwLast > gSwGap) {
+			gSwGap = t - gSwLast;
+		}
+		gSwLast = t;
+		gSwN++;
+	}
 	gLast3D = TimGetTicks() - t0;
 	gLastPrep = 0;
 #endif
@@ -1067,6 +1096,12 @@ static void PlayStatus(void)
 	          gGapPrep * 1000 / tps, gSwitchTicks * 1000 / tps, gFadeStep * 1000 / tps);
 	gfx_fill(&gS, 0, 16 * gS.scale, (Int16)(StrLen(t) * 8 * gS.scale), 8 * gS.scale, UIC_BLACK);
 	gfx_text(&gS, 0, 16 * gS.scale, t, StrLen(t), UIC_WHITE);
+	/* the last swing, in ms from the key: its first meter frame on the screen and the meter's clock starting;
+	 * the marker on that frame in %, the longest gap between meter frames in ms */
+	StrPrintF(t, "k%lu c%lu p%d x%lu", gSwN ? (gSwFirst - gSwKey) * 1000 / tps : 0,
+	          gSwClock ? (gSwClock - gSwKey) * 1000 / tps : 0, gSwPos, gSwGap * 1000 / tps);
+	gfx_fill(&gS, 0, 24 * gS.scale, (Int16)(StrLen(t) * 8 * gS.scale), 8 * gS.scale, UIC_BLACK);
+	gfx_text(&gS, 0, 24 * gS.scale, t, StrLen(t), UIC_WHITE);
 #else
 	play_status(&gS, &gPlay, NULL);
 #endif
@@ -1100,6 +1135,7 @@ static void SceneRender(void)
 		KeepScene();
 		EvtFlushPenQueue();
 		EvtFlushKeyQueue();
+		gate_flush(&gGate);
 		PlayFrame();
 		return;
 	}
@@ -1145,6 +1181,7 @@ static void SceneRender(void)
 	/* taps and keys made while it drew are dropped */
 	EvtFlushPenQueue();
 	EvtFlushKeyQueue();
+	gate_flush(&gGate);
 	PlayFrame();
 }
 
@@ -1262,7 +1299,13 @@ static void PlayInput(Boolean tap, Int16 x, Int16 y, UInt8 key)
 	int f = tap ? play_tap(&gPlay, x, y, NowMs()) : play_key(&gPlay, key, NowMs());
 #ifdef DEBUG
 	SimTime(st, t0);
-	if (st == PS_AIM && gPlay.state == PS_UP) gMtrTicks = gMtrN = gFlyTicks = gFlyN = 0;
+	if (st == PS_AIM && gPlay.state == PS_UP) {
+		gMtrTicks = gMtrN = gFlyTicks = gFlyN = 0;
+		gSwKey = t0;
+		gSwClock = 0;
+		gSwN = 0;
+		gSwGap = 0;
+	}
 #endif
 	PlayAct(f);
 }
@@ -1334,6 +1377,7 @@ static void ScreenLost(void)
 		PlayEnd();
 	}
 	FrmAlert(MemoryAlert);
+	gate_flush(&gGate);
 	Quit();
 }
 
@@ -1461,6 +1505,11 @@ static void EventLoop(void)
 		}
 		/* the press that wakes the device isn't ours: no select or swing from it */
 		if (e.eType == keyDownEvent && WakeKey(&e)) continue;
+		if (e.eType == keyUpEvent) gate_release(&gGate, e.data.keyUp.chr, e.data.keyUp.keyCode);
+		/* a select key counts once a press (two codes for one press, repeats, bounce) */
+		if (e.eType == keyDownEvent && MapKey(&e) == KEY_SELECT &&
+		    !gate_press(&gGate, e.data.keyDown.chr, e.data.keyDown.keyCode, (e.data.keyDown.modifiers & autoRepeatKeyMask) != 0,
+		                (e.data.keyDown.modifiers & willSendUpKeyMask) != 0, NowMs())) continue;
 		if (e.eType == keyDownEvent && gPlaying) {
 			/* the Menu button and backspace go back to the clubhouse */
 			WChar c = e.data.keyDown.chr;
@@ -1482,6 +1531,8 @@ static void EventLoop(void)
 				PlayInput(false, 0, 0, key);
 				continue;
 			}
+			/* the TX centre's second code: the system can take 70 ms over it, mid-swing */
+			if (c == vchrRockerCenter && gTxCenter) continue;
 		}
 		if (e.eType == keyDownEvent && (key = MapKey(&e)) != KEY_NONE) {
 			Act(front_key(&gFront, key));

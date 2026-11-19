@@ -1,8 +1,10 @@
 # hole1.replay's first putt, started on the aim view once it's drawn.
+# Clicks after each swing start are 120 ms later than the meter times above: on the IIIx the
+# meter's clock starts about then, once its first frames show.
 0 pen-down 20 150
 60 pen-up
-400 snapshot "{out}/{n}-meter.png"
-730 pen-down 80 60
-790 pen-up
-1800 snapshot "{out}/{n}-roll.png"
-4400 snapshot "{out}/{n}-result.png"
+520 snapshot "{out}/{n}-meter.png"
+850 pen-down 80 60
+910 pen-up
+1920 snapshot "{out}/{n}-roll.png"
+4520 snapshot "{out}/{n}-result.png"

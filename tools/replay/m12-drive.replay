@@ -1,12 +1,14 @@
 # A drive at 95 % power with the snap on time, as hole1.replay's first shot,
 # started on the tee view once it's drawn. Screenshots are named by the replay's number.
+# Clicks after each swing start are 120 ms later than the meter times above: on the IIIx the
+# meter's clock starts about then, once its first frames show.
 0 pen-down 20 150
 60 pen-up
-700 snapshot "{out}/{n}-meter.png"
-950 pen-down 80 60
-1010 pen-up
-1660 pen-down 80 60
-1720 pen-up
-3500 snapshot "{out}/{n}-flight.png"
-6500 snapshot "{out}/{n}-roll.png"
-9000 snapshot "{out}/{n}-result.png"
+820 snapshot "{out}/{n}-meter.png"
+1070 pen-down 80 60
+1130 pen-up
+1780 pen-down 80 60
+1840 pen-up
+3620 snapshot "{out}/{n}-flight.png"
+6620 snapshot "{out}/{n}-roll.png"
+9120 snapshot "{out}/{n}-result.png"

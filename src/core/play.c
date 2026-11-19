@@ -409,6 +409,8 @@ static int SEC_UI click(Play *p, uint32_t now)
 		snd_play(SND_SWING);
 		p->state = PS_UP;
 		p->t0 = now;
+		p->mfirst = 2;
+		p->autoturn = 0;
 		p->mpos = S16;
 		p->power = FIX_ONE;
 		p->snap = 0;
@@ -433,10 +435,23 @@ static int SEC_UI click(Play *p, uint32_t now)
 		p->state = PS_DOWN;
 		return PL_ANIM;
 	case PS_DOWN: {
-		/* when the marker crossed (or will cross) the snap line, and how far off the click was */
-		uint32_t ts = p->t1 + (uint32_t)((int32_t)(p->turn - S16) * MTR_DOWN_MS / (W16 - S16));
-		int32_t err = (int32_t)(now - ts), a = err < 0 ? -err : err;
+		uint32_t ts;
+		int32_t err, a;
 		fixed e;
+		if (p->autoturn && (uint32_t)(now - p->tg) < MTR_GRACE_MS) {
+			/* just after the meter turned back by itself: the power press at full, and the way down starts now */
+			p->autoturn = 0;
+			p->t1 = now;
+			p->mpos = W16;
+			p->redraw |= R_METER;
+			snd_play(SND_CLICK);
+			return PL_ANIM;
+		}
+		p->autoturn = 0;
+		/* when the marker crossed (or will cross) the snap line, and how far off the click was */
+		ts = p->t1 + (uint32_t)((int32_t)(p->turn - S16) * MTR_DOWN_MS / (W16 - S16));
+		err = (int32_t)(now - ts);
+		a = err < 0 ? -err : err;
 		a = a > 10 ? a - 10 : 0;
 		e = a >= MTR_SNAP_MS ? FIX_ONE : (fixed)((a << 16) / MTR_SNAP_MS);
 		p->snap = err > 0 ? -e : e;
@@ -1229,26 +1244,39 @@ void play_settle(Play *p)
 
 /* The golfer's pose for where the swing is: address while aiming, half way
  * back then the top as the meter goes up, the top on the way down and the
- * finish once the ball is struck. With the putter he stays at address. */
+ * finish once the ball is struck. With the putter he stays at address.
+ * During the swing only s gets the new pose unless an overlay is over him,
+ * to keep the meter's frames short: the kept copy catches up with the
+ * finish, which every swing ends with. */
 static void SEC_UI pose(Play *p, Surface *s, Surface *bg)
 {
 	RenderGolfer *g = p->golf;
-	uint8_t want, ball = p->state <= PS_DOWN;
+	uint8_t want, ball = p->state <= PS_DOWN, k, over = 0;
 	int16_t x, y, w, h;
 
 	if (!g || !g->w || p->rv.green) return;
+	/* the meter's first frame shows on its own, he swings back on the next */
+	if (p->state == PS_UP && p->mfirst == 2 && (p->redraw & R_STRIP)) return;
 	if (p->club == CLUB_PT || p->state == PS_AIM) want = POSE_ADDRESS;
 	else if (p->state == PS_UP) want = p->mpos < (S16 + W16) / 2 ? POSE_BACK : POSE_TOP;
 	else if (p->state == PS_DOWN) want = POSE_TOP;
 	else want = POSE_FINISH;
 	if (want == g->shown && ball == g->ball) return;
 	if (render_pose(s, g, want, ball, &x, &y, &w, &h) < 0) return;
-	if (bg) render_pose(bg, g, want, ball, &x, &y, &w, &h);
+	/* overlays over him come off the kept copy and go on again */
+	for (k = 0; k < p->npatch; k++) {
+		const URect *r = &p->patch[k];
+		if (r->x < x + w && x < r->x + r->w && r->y < y + h && y < r->y + r->h) over = 1;
+	}
+	if (bg && (over || p->state > PS_DOWN || want == POSE_ADDRESS)) render_pose(bg, g, want, ball, &x, &y, &w, &h);
+	if (over) p->redraw |= R_OVER;
 	g->shown = want;
 	g->ball = ball;
-	dirty(p, x, y, w, h);
-	/* overlays over him come off the kept copy and go on again */
-	p->redraw |= R_OVER;
+	if (p->gdirty.w > 0) dirty(p, p->gdirty.x, p->gdirty.y, p->gdirty.w, p->gdirty.h);
+	p->gdirty.x = x;
+	p->gdirty.y = y;
+	p->gdirty.w = w;
+	p->gdirty.h = h;
 }
 
 /* Whether a computer golfer's wait is over: it starts on the first frame after wait was set. */
@@ -1634,6 +1662,7 @@ int play_frame(Play *p, Surface *s, Surface *bg, uint32_t now)
 	if (p->view != PLAY_SCENE) return 0;
 	camera(p, s);
 	p->dirty.w = 0;
+	p->gdirty.w = 0;
 	if (p->redraw & R_ALL) {
 		p->npatch = 0;
 		p->redraw = R_STRIP | R_OVER;
@@ -1661,8 +1690,13 @@ int play_frame(Play *p, Surface *s, Surface *bg, uint32_t now)
 			p->mpos = p->turn = W16;
 			p->t1 = p->t0 + MTR_UP_MS;
 			p->power = FIX_ONE;
-			if (p->club == CLUB_PT) launch(p);
-			else p->state = PS_DOWN;
+			if (p->club == CLUB_PT) {
+				launch(p);
+			} else {
+				p->state = PS_DOWN;
+				p->autoturn = 1;
+				p->tg = now;
+			}
 		}
 		p->redraw |= R_METER;
 		flags |= PL_ANIM;
@@ -1752,8 +1786,55 @@ int play_frame(Play *p, Surface *s, Surface *bg, uint32_t now)
 		draw_meter(p, s, a - 3, b + 3);
 	}
 	p->redraw = 0;
-	if (p->dirty.w > 0) flags |= PL_DIRTY;
+	if (p->dirty.w > 0 || p->gdirty.w > 0) flags |= PL_DIRTY;
 	return flags;
+}
+
+void play_shown(Play *p, uint32_t now)
+{
+	if (p->autoturn == 1) {
+		/* the full marker is on the screen: the grace for a late power press runs from now */
+		p->tg = now;
+		p->autoturn = 2;
+	}
+	if (!p->mfirst) return;
+	if (p->state == PS_UP && p->view == PLAY_SCENE) {
+		/* the clock as if the marker on the screen had been reached just now: it never steps back
+		 * (the time is rounded up so meter_pos gives at least mpos) */
+		int32_t d = p->mpos > S16 ? p->mpos - S16 : 0;
+		p->t0 = now - (uint32_t)((d * MTR_UP_MS + (W16 - S16) - 1) / (W16 - S16));
+		p->mfirst--;
+	} else {
+		p->mfirst = 0;
+	}
+}
+
+int gate_press(KeyGate *g, uint16_t code, uint16_t key, uint8_t repeat, uint8_t up, uint32_t now)
+{
+	uint32_t e = now - g->t;
+
+	if (repeat) return 0;
+	if (g->code) {
+		if (code != g->code && e < GATE_PAIR_MS) return 0;
+		if (code == g->code && (e < GATE_BOUNCE_MS || (g->held && g->ups && e < GATE_HELD_MS))) return 0;
+	}
+	g->code = code;
+	g->key = key;
+	g->held = up;
+	g->t = now;
+	return 1;
+}
+
+void gate_release(KeyGate *g, uint16_t code, uint16_t key)
+{
+	if (!g->code || (code != g->code && (!key || key != g->key))) return;
+	g->held = 0;
+	g->ups = 1;
+}
+
+void gate_flush(KeyGate *g)
+{
+	g->held = 0;
 }
 
 int16_t play_num(char *t, uint32_t v)

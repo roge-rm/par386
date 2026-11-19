@@ -27,7 +27,7 @@ enum { PS_AIM, PS_UP, PS_DOWN, PS_FLY, PS_RESULT, PS_DONE };
 #define PL_SCENE  2     /* put back the kept scene, then call play_frame */
 #define PL_MAP    4     /* draw the map */
 #define PL_BACK   8     /* back to the clubhouse */
-#define PL_DIRTY  16    /* copy the dirty rectangle to the screen */
+#define PL_DIRTY  16    /* copy the dirty rectangle, and gdirty if it isn't empty, to the screen */
 #define PL_ANIM   32    /* call play_frame again soon */
 #define PL_CARD   64    /* put back the kept scene and draw the scorecard over it (play_card) */
 #define PL_NEXT   128   /* load the round's hole and play_start it */
@@ -56,6 +56,7 @@ enum { PS_AIM, PS_UP, PS_DOWN, PS_FLY, PS_RESULT, PS_DONE };
 #define MTR_UP_MS  1000 /* the snap line to full power */
 #define MTR_DOWN_MS 750 /* full power back to the snap line */
 #define MTR_SNAP_MS 80  /* this far off the snap line past a 10 ms window is a full miss */
+#define MTR_GRACE_MS 120 /* a press this soon after the meter turns back by itself is the power press at full */
 
 /* A ball left this many feet from the cup on the green, as the panel
  * shows it (to the nearest foot), is given: the next putt counts and the
@@ -76,11 +77,15 @@ typedef struct {
 	uint8_t npatch;
 	URect patch[PLAY_PATCHES];  /* overlay pixels drawn over the scene */
 	URect dirty;                /* pixels to copy to the screen */
+	URect gdirty;               /* the golfer's when his pose changed, kept apart so the two don't make one big copy */
 	/* the swing */
 	uint32_t t0, t1;            /* when the swing started and when it turned */
 	int16_t turn;               /* the marker where it turned, 1/16 units from the bar's left */
 	int16_t mpos;               /* the marker now */
 	int16_t mshown;             /* the marker's column as last drawn, logical units */
+	uint8_t autoturn;           /* the meter reached full with no power press and turned back: 1 drawn, 2 on the screen since tg */
+	uint32_t tg;                /* when the full marker was drawn, then shown (play_shown) */
+	uint8_t mfirst;             /* the meter's first two frames (the meter, then the golfer's backswing) still to show, for play_shown */
 	fixed power, snap;
 	fixed range;                /* putter: yards at full power on a flat green */
 	uint8_t mishit;
@@ -144,6 +149,13 @@ int SEC_UI play_tap(Play *p, int16_t x, int16_t y, uint32_t now);
  * there's none). The golfer's pose follows the swing in s and bg. Call
  * after PL_RENDER or PL_SCENE, and while PL_ANIM is set. */
 int SEC_UI play_frame(Play *p, Surface *s, Surface *bg, uint32_t now);
+/* Call after the frame play_frame drew is on the screen. The swing or
+ * putting meter's first frame draws only the meter and the second the
+ * golfer's backswing; once each shows, the meter's clock is set back so
+ * the marker on the screen is where it is now, so it starts empty however
+ * long they took to show and never steps back. The grace for a late power
+ * press runs from when the full marker shows. */
+void SEC_UI play_shown(Play *p, uint32_t now);
 /* The panel on the map: hole, par and yards, and below them info if it
  * isn't 0 (the hole's name if it is), with the Card button in a round; or
  * a computer golfer's shot; or for a shot on the map the club, the carry
@@ -169,6 +181,34 @@ int SEC_UI play_map_wanted(const Play *p);
  * platform fades from the scene to m, calling play_frame on m for each
  * step, and then copies m to the scene's surface. */
 int SEC_UI play_map_prep(Surface *m, Play *p, int16_t rows);
+/* One press of a select key counts once. Some devices send two codes
+ * for one press (the TX centre sends vchrTxCenter and vchrRockerCenter),
+ * repeat a held key, or a worn switch bounces. A select press counts
+ * unless it repeats, comes from another code within GATE_PAIR_MS of the
+ * one that counted, comes again from the same code while that one is
+ * held (a release was promised and hasn't come, on a device that has sent
+ * releases before; for at most GATE_HELD_MS), or within GATE_BOUNCE_MS of
+ * it. A real second press, however quick, counts. */
+#define GATE_PAIR_MS   200
+#define GATE_BOUNCE_MS 40
+#define GATE_HELD_MS   1500
+typedef struct {
+	uint16_t code;              /* the character of the press that counted last, 0 for none */
+	uint16_t key;               /* and its key code */
+	uint8_t held;               /* it's down and its release will come */
+	uint8_t ups;                /* releases have come before, so held can be trusted */
+	uint32_t t;                 /* when it counted */
+} KeyGate;
+/* A select press of code (its character, non-zero) and key (its key
+ * code), with repeat set for an auto-repeat and up set if a release will be
+ * reported. Returns 1 if it counts. */
+int SEC_CORE gate_press(KeyGate *g, uint16_t code, uint16_t key, uint8_t repeat, uint8_t up, uint32_t now);
+/* A key was let go: it's the held one if its character or key code matches. */
+void SEC_CORE gate_release(KeyGate *g, uint16_t code, uint16_t key);
+/* Key events were thrown away (a flush or an alert's own event loop), so a
+ * release may be lost: nothing counts as held. A key still down only sends
+ * auto-repeats, which are dropped anyway. */
+void SEC_CORE gate_flush(KeyGate *g);
 /* Writes v in decimal at t, returns the length. */
 int16_t SEC_UI play_num(char *t, uint32_t v);
 
