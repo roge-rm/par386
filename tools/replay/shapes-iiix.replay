@@ -1,0 +1,50 @@
+# Two shaped shots on hole 1 of the test course with the IIIx app buttons:
+# Memo (hard4) picks the shape and Date Book (hard1) does the three swing
+# clicks. Start it on the tee view once it's drawn. The drive is a draw (one
+# Memo press), the second shot a punch (five presses from normal on an iron),
+# both at 95 % power with the snap on time.
+0 key-down hard4
+80 key-up hard4
+1500 snapshot "{out}/s1-aim.png"
+2000 key-down hard1
+2060 key-up hard1
+2950 key-down hard1
+3010 key-up hard1
+3660 key-down hard1
+3720 key-up hard1
+5500 snapshot "{out}/s1-flight.png"
+8500 snapshot "{out}/s1-roll.png"
+10500 snapshot "{out}/s1-result.png"
+11000 snapshot "{out}/s1-result2.png"
+21000 snapshot "{out}/s2-tee.png"
+22000 key-down hard4
+22080 key-up hard4
+22300 key-down hard4
+22380 key-up hard4
+22600 key-down hard4
+22680 key-up hard4
+22900 key-down hard4
+22980 key-up hard4
+23200 key-down hard4
+23280 key-up hard4
+24500 snapshot "{out}/s2-aim.png"
+25000 key-down hard1
+25060 key-up hard1
+25950 key-down hard1
+26010 key-up hard1
+26660 key-down hard1
+26720 key-up hard1
+28000 snapshot "{out}/s2-flight.png"
+30500 snapshot "{out}/s2-roll.png"
+32500 snapshot "{out}/s2-result.png"
+33000 snapshot "{out}/s2-result2.png"
+36000 snapshot "{out}/s2-end.png"
+37000 key-down hard2
+37080 key-up hard2
+40000 snapshot "{out}/map.png"
+40500 key-down hard2
+40580 key-up hard2
+44000 snapshot "{out}/back.png"
+44500 key-down hard3
+44580 key-up hard3
+46000 snapshot "{out}/card.png"

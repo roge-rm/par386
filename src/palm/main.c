@@ -169,7 +169,9 @@ static void Redraw(void)
 
 static Boolean gTxCenter;               /* the centre key has come as vchrTxCenter */
 
-/* Our keys, or KEY_NONE for ones the system should have (app buttons, Home, power). */
+/* Our keys, or KEY_NONE for ones the system should have (Home, power and the like).
+ * The four app buttons are ours while the game runs: Select, Map, Scorecard and
+ * the shot shape, so the system doesn't launch their apps. */
 static UInt8 MapKey(const EventType *e)
 {
 	WChar c = e->data.keyDown.chr;
@@ -193,6 +195,10 @@ static UInt8 MapKey(const EventType *e)
 		}
 	}
 	switch (c) {
+	case vchrHard1: return KEY_SELECT;
+	case vchrHard2: return KEY_MAP;
+	case vchrHard3: return KEY_CARD;
+	case vchrHard4: return KEY_SHAPE;
 	case vchrPageUp: case vchrRockerUp: case chrUpArrow: return KEY_UP;
 	case vchrPageDown: case vchrRockerDown: case chrDownArrow: return KEY_DOWN;
 	case vchrRockerLeft: case chrLeftArrow: return KEY_LEFT;

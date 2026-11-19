@@ -239,6 +239,118 @@ static void snap_tests(void)
 	}
 }
 
+/* The highest point of a shot's path above where it started, in yards. */
+static double apex(const Shot *s)
+{
+	int k, top = 0;
+	for (k = 0; k < s->n; k++)
+		if (s->path[k].z - s->path[0].z > top) top = s->path[k].z - s->path[0].z;
+	return top / 16.0;
+}
+
+/* How far the flight curved right (above 0) or left, in yards: four times
+ * how far the point halfway through the flight is off the line from the
+ * start to the landing, as for a steady sideways pull. */
+static double curve(const Shot *s)
+{
+	int m = s->fly_n / 2;
+	double x0 = s->path[0].x / 16.0, y0 = s->path[0].y / 16.0;
+	double mx = s->path[m].x / 16.0, my = s->path[m].y / 16.0;
+	double lx = TOYD(s->land.x), ly = TOYD(s->land.y);
+	double off = mx - (x0 + (lx - x0) / (ly - y0) * (my - y0));
+	return -4 * off;
+}
+
+typedef struct { double carry, total, apex, side, curve; } Res;
+
+static Res shape_shot(uint8_t club, uint8_t shape, uint8_t mph, angle dir)
+{
+	ShotIn in = shot_in(club);
+	Shot *s;
+	Res r;
+	in.shape = shape;
+	in.wind = ball_wind_vec(mph, dir);
+	s = play(&in);
+	r.carry = TOYD(s->carry);
+	r.total = TOYD(s->total);
+	r.apex = apex(s);
+	r.side = TOYD(s->land.x - s->start.x);
+	r.curve = curve(s);
+	CHECK(s->result == SHOT_OK);
+	return r;
+}
+
+static void shape_tests(void)
+{
+	static const uint8_t cl[3] = { CLUB_DR, CLUB_7I, CLUB_SW };
+	int i, k;
+
+	/* which clubs have which shapes, and the cycle */
+	CHECK(ball_shape_ok(CLUB_PT, SHAPE_NORMAL) && !ball_shape_ok(CLUB_PT, SHAPE_DRAW));
+	CHECK(ball_shape_next(CLUB_PT, SHAPE_NORMAL) == SHAPE_NORMAL);
+	CHECK(!ball_shape_ok(CLUB_DR, SHAPE_PUNCH) && !ball_shape_ok(CLUB_5W, SHAPE_PUNCH) && ball_shape_ok(CLUB_3I, SHAPE_PUNCH));
+	CHECK(!ball_shape_ok(CLUB_8I, SHAPE_OPEN) && ball_shape_ok(CLUB_9I, SHAPE_OPEN) && ball_shape_ok(CLUB_LW, SHAPE_OPEN));
+	CHECK(ball_shape_next(CLUB_DR, SHAPE_LOW) == SHAPE_NORMAL);
+	CHECK(ball_shape_next(CLUB_7I, SHAPE_LOW) == SHAPE_PUNCH && ball_shape_next(CLUB_7I, SHAPE_PUNCH) == SHAPE_NORMAL);
+	CHECK(ball_shape_next(CLUB_SW, SHAPE_PUNCH) == SHAPE_OPEN && ball_shape_next(CLUB_SW, SHAPE_OPEN) == SHAPE_NORMAL);
+	/* the putter ignores a shape */
+	{
+		ShotIn in = shot_in(CLUB_PT);
+		Shot *s;
+		fixed t;
+		flat_make(0, SURF_GREEN);
+		in.lie = LIE_GREEN;
+		t = play(&in)->total;
+		in.shape = SHAPE_DRAW;
+		s = play(&in);
+		CHECK(s->total == t);
+		flat_make(0, SURF_FAIRWAY);
+	}
+
+	printf("shape  club  carry  total  apex  side  curve (against normal)\n");
+	for (k = 0; k < 3; k++) {
+		uint8_t c = cl[k];
+		Res n = shape_shot(c, SHAPE_NORMAL, 0, 0), r[SHAPE_COUNT];
+		for (i = 0; i < SHAPE_COUNT; i++) {
+			if (!ball_shape_ok(c, (uint8_t)i)) continue;
+			r[i] = shape_shot(c, (uint8_t)i, 0, 0);
+			printf("%-5s  %-4s  %+5.1f  %+5.1f  %+4.1f  %+5.1f  %+5.1f   (%.1f %.1f %.1f)\n",
+			       i ? ball_shape_name((uint8_t)i) : "Norm", ball_club_name(c),
+			       r[i].carry - n.carry, r[i].total - n.total, r[i].apex - n.apex, r[i].side, r[i].curve,
+			       r[i].carry, r[i].total, r[i].apex);
+		}
+		/* draw curves left and fade right (wedges hardly), both ending near the target; draw rolls more */
+		CHECK(r[SHAPE_DRAW].curve < (c == CLUB_SW ? -1 : -4) && r[SHAPE_FADE].curve > (c == CLUB_SW ? 1 : 4));
+		CHECK(fabs(r[SHAPE_DRAW].side) < 8 && fabs(r[SHAPE_FADE].side) < 8);
+		CHECK(r[SHAPE_DRAW].total - r[SHAPE_DRAW].carry > r[SHAPE_FADE].total - r[SHAPE_FADE].carry);
+		/* high goes higher, low lower */
+		CHECK(r[SHAPE_HIGH].apex > n.apex + 2 && r[SHAPE_LOW].apex < n.apex - 2);
+		CHECK(fabs(r[SHAPE_HIGH].side) < 1 && fabs(r[SHAPE_LOW].side) < 1);
+		if (ball_shape_ok(c, SHAPE_PUNCH)) {
+			/* punch: low, a shorter carry and more roll */
+			CHECK(r[SHAPE_PUNCH].apex < r[SHAPE_LOW].apex);
+			CHECK(r[SHAPE_PUNCH].carry < n.carry - 10);
+			CHECK(r[SHAPE_PUNCH].total - r[SHAPE_PUNCH].carry > n.total - n.carry + 3);
+		}
+		if (ball_shape_ok(c, SHAPE_OPEN)) {
+			/* open: higher, less roll */
+			CHECK(r[SHAPE_OPEN].apex > n.apex + 2);
+			CHECK(r[SHAPE_OPEN].total - r[SHAPE_OPEN].carry < n.total - n.carry);
+		}
+	}
+	/* the punch stays under the wind: a headwind and a crosswind move it less */
+	{
+		Res n = shape_shot(CLUB_7I, SHAPE_NORMAL, 0, 0), nh = shape_shot(CLUB_7I, SHAPE_NORMAL, 15, ANG_270);
+		Res nx = shape_shot(CLUB_7I, SHAPE_NORMAL, 15, 0);
+		Res p = shape_shot(CLUB_7I, SHAPE_PUNCH, 0, 0), ph = shape_shot(CLUB_7I, SHAPE_PUNCH, 15, ANG_270);
+		Res px = shape_shot(CLUB_7I, SHAPE_PUNCH, 15, 0);
+		printf("7i 15 mph headwind: normal %+.1f yd carry, punch %+.1f; across: normal %+.1f, punch %+.1f\n",
+		       nh.carry - n.carry, ph.carry - p.carry, nx.side - n.side, px.side - p.side);
+		CHECK(n.carry - nh.carry > 2 * (p.carry - ph.carry));
+		CHECK(nx.side - n.side > 2 * (px.side - p.side));
+	}
+}
+
 static void lie_tests(void)
 {
 	static const uint8_t l[] = { LIE_FAIRWAY, LIE_FIRST_CUT, LIE_ROUGH, LIE_DEEP_ROUGH, LIE_BUNKER, LIE_PLUGGED, LIE_FRINGE, LIE_PATH };
@@ -603,10 +715,36 @@ static void meter_tests(const Hole *h, const SurfaceGrid *g)
 	CHECK(play_frame(&p, &s, &bg, 80) & PL_RENDER);
 	CHECK(p.rv.aim == p.aim);
 	play_frame(&p, &s, &bg, 90);
+	/* shapes: the key goes round the driver's, a tap on the strip's button does the same, the putter has none */
+	CHECK(p.shape == SHAPE_NORMAL);
+	play_key(&p, KEY_SHAPE, 91);
+	CHECK(p.shape == SHAPE_DRAW);
+	play_frame(&p, &s, &bg, 92);
+	save(&s, "strip-draw");
+	play_tap(&p, 60, 146, 93);
+	CHECK(p.shape == SHAPE_FADE && p.state == PS_AIM);
+	play_key(&p, KEY_SHAPE, 94);
+	play_key(&p, KEY_SHAPE, 95);
+	CHECK(p.shape == SHAPE_LOW);
+	play_key(&p, KEY_SHAPE, 96);
+	CHECK(p.shape == SHAPE_NORMAL);
+	play_key(&p, KEY_SHAPE, 97);
+	play_key(&p, KEY_DOWN, 98);
+	CHECK(p.club == CLUB_3W && p.shape == SHAPE_DRAW);
+	for (f = 0; f < 15; f++) play_key(&p, KEY_DOWN, 99);
+	CHECK(p.club == CLUB_PT && p.shape == SHAPE_NORMAL);
+	play_key(&p, KEY_SHAPE, 100);
+	CHECK(p.shape == SHAPE_NORMAL);
+	/* the map key opens the map and closes it again */
 	play_init(&p, h, g, 7);
 	play_frame(&p, &s, &bg, 100);
+	CHECK(play_key(&p, KEY_MAP, 101) == PL_MAP && p.view == PLAY_MAP);
+	CHECK(play_key(&p, KEY_MAP, 102) == PL_SCENE && p.view == PLAY_SCENE);
+	play_frame(&p, &s, &bg, 103);
 
-	/* 80 % power and a perfect snap */
+	/* 80 % power and a perfect snap, as a draw; the next shot is back to normal */
+	play_key(&p, KEY_SHAPE, 104);
+	CHECK(p.shape == SHAPE_DRAW);
 	swing(&p, &s, &bg, 1000, MTR_UP_MS * 4 / 5, 0);
 	printf("meter: power %.3f snap %.3f\n", TOYD(p.power), TOYD(p.snap));
 	CHECK(p.power > YD(0.79) && p.power < YD(0.81));
@@ -623,7 +761,7 @@ static void meter_tests(const Hole *h, const SurfaceGrid *g)
 	printf("shot 1: %s, then %s; %d frames\n", p.msg1, p.msg2, frames);
 	CHECK(f & PL_RENDER);
 	CHECK(p.stroke == 2 && p.state == PS_AIM && p.lie != LIE_TEE);
-	CHECK(p.club != CLUB_DR);
+	CHECK(p.club != CLUB_DR && p.shape == SHAPE_NORMAL);
 	play_frame(&p, &s, &bg, t + 10);
 
 	/* late and early clicks give a hook and a slice in proportion */
@@ -868,6 +1006,7 @@ int main(int argc, char **argv)
 	carry_table();
 	wind_tests();
 	snap_tests();
+	shape_tests();
 	lie_tests();
 	water_oob_tests();
 	slope_tests();

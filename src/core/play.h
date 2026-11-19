@@ -54,6 +54,7 @@ typedef struct {
 	uint8_t cam_ok;
 	uint8_t view, state;
 	uint8_t club, lie, stroke;
+	uint8_t shape;              /* SHAPE_*, back to normal for each shot */
 	uint8_t wind_mph;
 	angle wind_dir;
 	angle aim;                  /* the shot's aim; the scene was drawn at rv.aim */

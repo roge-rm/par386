@@ -32,6 +32,12 @@ enum {
 	LIE_PLUGGED, LIE_FRINGE, LIE_GREEN, LIE_PATH, LIE_COUNT
 };
 
+/* Shot shapes, picked on the aim screen. Normal is the plain shot; draw
+ * starts right and curves left, fade the other way; high and low change the
+ * height; punch is low and short with more roll and less wind; open is a
+ * high, soft chip. Not every club has every shape (ball_shape_ok). */
+enum { SHAPE_NORMAL, SHAPE_DRAW, SHAPE_FADE, SHAPE_HIGH, SHAPE_LOW, SHAPE_PUNCH, SHAPE_OPEN, SHAPE_COUNT };
+
 /* How a shot ended. */
 enum { SHOT_OK, SHOT_WATER, SHOT_OOB, SHOT_HOLED };
 
@@ -52,6 +58,7 @@ typedef struct {
 	fixed range;       /* putter: yards it rolls at full power on a flat green, 0 for BALL_PUTT_MAX */
 	uint8_t club, lie;
 	uint8_t mishit;    /* the meter ran out */
+	uint8_t shape;     /* SHAPE_*, normal for the putter */
 } ShotIn;
 
 typedef struct {
@@ -82,6 +89,14 @@ uint16_t SEC_BALL ball_carry(uint8_t club, uint8_t lie);
 /* The longest club whose carry from the lie doesn't go past yards; the
  * driver only from the tee, never the putter. */
 uint8_t SEC_BALL ball_pick(uint16_t yards, uint8_t lie);
+
+/* Whether a club can play a shape: the putter only normal, punch from the
+ * 3 iron down, open from the 9 iron down. */
+uint8_t SEC_BALL ball_shape_ok(uint8_t club, uint8_t shape);
+/* The next shape the club can play after shape, round to normal. */
+uint8_t SEC_BALL ball_shape_next(uint8_t club, uint8_t shape);
+/* Short names for the strip, at most 5 characters; normal is "Shape". */
+const char *SEC_BALL ball_shape_name(uint8_t shape);
 
 /* Wind for a hole from the round's seed: 0 to 20 mph, from any direction.
  * dir is the way it blows. */

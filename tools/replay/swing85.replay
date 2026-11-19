@@ -1,7 +1,7 @@
 # A swing at 85 % power with the snap on time: start on the strip, power
 # after 850 ms, snap when the marker comes back to the snap line
 # (850 + 0.85 * 750 ms), with screenshots of the meter, the flight and the result.
-0 pen-down 60 150
+0 pen-down 20 150
 60 pen-up
 600 snapshot "{out}/s{n}-meter-up.png"
 850 pen-down 80 60

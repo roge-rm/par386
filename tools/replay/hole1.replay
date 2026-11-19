@@ -8,7 +8,7 @@
 # late tap turns into the snap. On the green it opens the map for the debug
 # timings and comes back, before each putt.
 # The drive.
-0 pen-down 60 150
+0 pen-down 20 150
 60 pen-up
 700 snapshot "{out}/s1-meter.png"
 950 pen-down 80 60
@@ -20,7 +20,7 @@
 9000 snapshot "{out}/s1-result.png"
 19000 snapshot "{out}/s2-aim.png"
 # The approach.
-20000 pen-down 60 150
+20000 pen-down 20 150
 20060 pen-up
 20950 pen-down 80 60
 21010 pen-up
@@ -37,7 +37,7 @@
 39200 pen-down 80 60
 39260 pen-up
 # The first putt.
-40000 pen-down 60 150
+40000 pen-down 20 150
 40060 pen-up
 40400 snapshot "{out}/p1-meter.png"
 40730 pen-down 80 60
@@ -52,7 +52,7 @@
 48260 pen-up
 51000 snapshot "{out}/p2-aim.png"
 # The second, and in.
-52000 pen-down 60 150
+52000 pen-down 20 150
 52060 pen-up
 52390 pen-down 80 60
 52450 pen-up

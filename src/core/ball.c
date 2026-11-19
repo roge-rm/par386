@@ -112,6 +112,28 @@ static const Bounce bounces[SURF_COUNT] = {
 	{ 64, 150, 20, 0, 56 },     /* tee */
 };
 
+/* Shapes: launch angle change in 1/4 degrees for a club that launches at
+ * 16 degrees (in proportion for others, so wedges change most), ball speed and backspin
+ * change out of 256, side spin in 1/64 of the club's side spin at full
+ * snap error (below 0 curves left), the start line pushed right in 1/4
+ * degrees for a club with the driver's side spin (less for less), and the
+ * wind the ball feels out of 256. */
+typedef struct {
+	int8_t launch, speed, spin, side, push;
+	uint8_t wind;
+	char name[6];
+} Shape;
+
+static const Shape shapes[SHAPE_COUNT] = {
+	{ 0, 0, 0, 0, 0, 0, "Shape" },
+	{ -2, 2, -8, -12, 6, 0, "Draw" },
+	{ 2, -4, 8, 12, -6, 0, "Fade" },
+	{ 12, -6, 10, 0, 0, 0, "High" },
+	{ -12, 0, -12, 0, 0, 0, "Low" },
+	{ -24, -12, -127, 0, 0, 140, "Punch" },
+	{ 16, -12, 50, 0, 0, 0, "Open" },
+};
+
 static const uint8_t surf_lie[SURF_COUNT] = {
 	LIE_ROUGH, LIE_FIRST_CUT, LIE_FAIRWAY, LIE_DEEP_ROUGH, LIE_GREEN, LIE_FRINGE,
 	LIE_BUNKER, LIE_ROUGH, LIE_PATH, LIE_ROUGH, LIE_TEE
@@ -144,6 +166,30 @@ uint8_t ball_pick(uint16_t yards, uint8_t lie)
 	for (; c < CLUB_LW; c++)
 		if (ball_carry(c, lie) <= yards) break;
 	return c;
+}
+
+uint8_t ball_shape_ok(uint8_t club, uint8_t shape)
+{
+	if (shape == SHAPE_NORMAL) return 1;
+	if (club >= CLUB_PT || shape >= SHAPE_COUNT) return 0;
+	if (shape == SHAPE_PUNCH) return club >= CLUB_3I;
+	if (shape == SHAPE_OPEN) return club >= CLUB_9I;
+	return 1;
+}
+
+uint8_t ball_shape_next(uint8_t club, uint8_t shape)
+{
+	uint8_t i;
+	for (i = 0; i < SHAPE_COUNT; i++) {
+		shape = (uint8_t)((shape + 1) % SHAPE_COUNT);
+		if (ball_shape_ok(club, shape)) break;
+	}
+	return shape;
+}
+
+const char *ball_shape_name(uint8_t shape)
+{
+	return shapes[shape < SHAPE_COUNT ? shape : SHAPE_NORMAL].name;
 }
 
 void ball_wind(uint32_t seed, uint8_t hole, uint8_t *mph, angle *dir)
@@ -342,8 +388,20 @@ void ball_shot(const ShotIn *in, Shot *o)
 		ws *= 2;
 		elev -= 728;
 	}
-	if (elev < 0) elev = 0;
 	dir = (angle)(in->aim - (int16_t)(mul((fixed)PUSH << 16, snap) / 65536L));
+	if (in->shape && in->shape < SHAPE_COUNT && c->launch && ball_shape_ok(in->club, in->shape)) {
+		const Shape *f = &shapes[in->shape];
+		sp = (sp >> 8) * (256 + f->speed);
+		wb = (wb >> 8) * (256 + f->spin);
+		ws += (((fixed)c->side << 12) >> 6) * f->side;
+		elev += (int16_t)(((int32_t)f->launch * c->launch * 1024L) / (4 * 360));
+		dir = (angle)(dir - (int16_t)(((int32_t)f->push * c->side * 65536L) / (4 * 360 * 20)));
+		if (f->wind) {
+			wx = (wx >> 8) * f->wind;
+			wy = (wy >> 8) * f->wind;
+		}
+	}
+	if (elev < 0) elev = 0;
 	{
 		fixed hs = fix_mulq14(sp, icos((angle)elev));
 		vx = fix_mulq14(hs, icos(dir));

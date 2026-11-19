@@ -1,35 +1,35 @@
 # Made by rulestest: carries on from round-a.replay after the app is left and
 # Continue round is picked, from the scene once it's drawn, to the clubhouse.
 500 snapshot "{out}/b-resume.png"
-1000 pen-down 60 150
+1000 pen-down 20 150
 1060 pen-up
 1400 pen-down 80 60
 1460 pen-up
 1700 pen-down 80 60
 1760 pen-up
-11338 pen-down 60 150
+11338 pen-down 20 150
 11398 pen-up
 11738 pen-down 80 60
 11798 pen-up
 12038 pen-down 80 60
 12098 pen-up
-21676 pen-down 60 150
+21676 pen-down 20 150
 21736 pen-up
 22336 pen-down 80 60
 22396 pen-up
-32148 pen-down 60 150
+32148 pen-down 20 150
 32208 pen-up
 32808 pen-down 80 60
 32868 pen-up
-42620 pen-down 60 150
+42620 pen-down 20 150
 42680 pen-up
 43230 pen-down 80 60
 43290 pen-up
-52050 pen-down 60 150
+52050 pen-down 20 150
 52110 pen-up
 52660 pen-down 80 60
 52720 pen-up
-61480 pen-down 60 150
+61480 pen-down 20 150
 61540 pen-up
 61790 pen-down 80 60
 61850 pen-up
@@ -37,7 +37,7 @@
 65490 pen-down 80 60
 65550 pen-up
 66990 snapshot "{out}/b-turn.png"
-70290 pen-down 60 150
+70290 pen-down 20 150
 70350 pen-up
 70600 pen-down 80 60
 70660 pen-up
@@ -48,51 +48,51 @@
 77100 pen-down 80 116
 77160 pen-up
 78600 snapshot "{out}/b-next-hole.png"
-84100 pen-down 60 150
+84100 pen-down 20 150
 84160 pen-up
 85050 pen-down 80 60
 85110 pen-up
 85760 pen-down 80 60
 85820 pen-up
-98324 pen-down 60 150
+98324 pen-down 20 150
 98384 pen-up
 99274 pen-down 80 60
 99334 pen-up
 99984 pen-down 80 60
 100044 pen-up
-112548 pen-down 60 150
+112548 pen-down 20 150
 112608 pen-up
 113498 pen-down 80 60
 113558 pen-up
 114208 pen-down 80 60
 114268 pen-up
-126064 pen-down 60 150
+126064 pen-down 20 150
 126124 pen-up
 127014 pen-down 80 60
 127074 pen-up
 127724 pen-down 80 60
 127784 pen-up
-139580 pen-down 60 150
+139580 pen-down 20 150
 139640 pen-up
 140530 pen-down 80 60
 140590 pen-up
 141240 pen-down 80 60
 141300 pen-up
-152356 pen-down 60 150
+152356 pen-down 20 150
 152416 pen-up
 153306 pen-down 80 60
 153366 pen-up
 154016 pen-down 80 60
 154076 pen-up
-165132 pen-down 60 150
+165132 pen-down 20 150
 165192 pen-up
 165792 pen-down 80 60
 165852 pen-up
-175666 pen-down 60 150
+175666 pen-down 20 150
 175726 pen-up
 176326 pen-down 80 60
 176386 pen-up
-186200 pen-down 60 150
+186200 pen-down 20 150
 186260 pen-up
 186720 pen-down 80 60
 186780 pen-up
@@ -100,7 +100,7 @@
 190668 pen-down 80 60
 190728 pen-up
 192168 snapshot "{out}/b-turn.png"
-195468 pen-down 60 150
+195468 pen-down 20 150
 195528 pen-up
 195988 pen-down 80 60
 196048 pen-up

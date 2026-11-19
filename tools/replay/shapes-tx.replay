@@ -1,0 +1,38 @@
+# A shaped drive on hole 1 of the test course on the TX: the fourth app
+# button (hard4) picks a fade, the 5-way aims a degree left and the centre
+# does the three swing clicks, 95 % power with the snap on time. Then the
+# other app buttons: hard2 opens the map and closes it, hard3 opens the
+# scorecard and closes it. Start it on the tee view once it's drawn.
+0 key-down hard4
+80 key-up hard4
+300 key-down hard4
+380 key-up hard4
+800 key-down left
+860 key-up left
+1500 snapshot "{out}/s1-aim.png"
+2000 key-down center
+2060 key-up center
+2950 key-down center
+3010 key-up center
+3660 key-down center
+3720 key-up center
+5500 snapshot "{out}/s1-flight.png"
+8500 snapshot "{out}/s1-roll.png"
+10500 snapshot "{out}/s1-result.png"
+11000 snapshot "{out}/s1-result2.png"
+20000 snapshot "{out}/s2-aim.png"
+21000 key-down hard2
+21080 key-up hard2
+24000 snapshot "{out}/map.png"
+24500 key-down hard2
+24580 key-up hard2
+28000 snapshot "{out}/back.png"
+28500 key-down hard3
+28580 key-up hard3
+30000 snapshot "{out}/card.png"
+30500 key-down hard3
+30580 key-up hard3
+33000 snapshot "{out}/after-card.png"
+33500 key-down hard1
+33560 key-up hard1
+34500 snapshot "{out}/hard1-meter.png"

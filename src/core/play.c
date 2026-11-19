@@ -15,6 +15,8 @@
 #define AIM_EDGE  56    /* the marker this far off the centre draws the scene again */
 #define MAP_X     (s->lw - 24)   /* the Map button on the strip's second line */
 #define CARD_X    (s->lw - 32)   /* and the Card button on the map's */
+#define SHAPE_X   (7 * UI_CHAR)  /* the shape button on the strip's first line, 5 characters */
+#define SHAPE_W   (5 * UI_CHAR)
 #define S16       (MTR_SNAP * 16)
 #define W16       (MTR_W * 16)
 
@@ -61,6 +63,7 @@ static void SEC_UI set_club(Play *p, uint8_t club)
 {
 	fixed r;
 	p->club = club;
+	if (!ball_shape_ok(club, p->shape)) p->shape = SHAPE_NORMAL;
 	p->rv.green = club == CLUB_PT;
 	r = vec2_len(vec2_sub(pin(p), p->rv.ball));
 	r = ((r + (r >> 1) + FIX_ONE - 1) >> 16) << 16;
@@ -79,6 +82,7 @@ static void SEC_UI setup(Play *p)
 	if (p->rv.ball.x == h->tees[0].pos.x && p->rv.ball.y == h->tees[0].pos.y) to = h->aim;
 	p->rv.aim = vec2_angle(vec2_sub(to, p->rv.ball));
 	p->aim = p->rv.aim;
+	p->shape = SHAPE_NORMAL;
 	set_club(p, p->lie == LIE_GREEN || p->lie == LIE_FRINGE ? CLUB_PT : ball_pick(pin_yards(p), p->lie));
 	p->state = PS_AIM;
 	p->cam_ok = 0;
@@ -184,6 +188,7 @@ static void SEC_UI launch(Play *p)
 	in.range = p->range;
 	in.lie = p->lie;
 	in.mishit = p->mishit;
+	in.shape = p->shape;
 	snd_play(p->club == CLUB_PT ? SND_HIT_PUTT : p->club <= CLUB_5W ? SND_HIT_WOOD : SND_HIT_IRON);
 	ball_shot(&in, &p->shot);
 	p->have_shot = 1;
@@ -351,9 +356,13 @@ int play_key(Play *p, uint8_t key, uint32_t now)
 	if (key == KEY_SELECT) return click(p, now);
 	if (p->state != PS_AIM) return 0;
 	switch (key) {
-	case KEY_OTHER:
+	case KEY_OTHER: case KEY_MAP:
 		p->view = PLAY_MAP;
 		return PL_MAP;
+	case KEY_SHAPE:
+		p->shape = ball_shape_next(p->club, p->shape);
+		p->redraw |= R_STRIP;
+		break;
 	case KEY_LEFT:
 		p->aim = (angle)(p->aim + AIM_STEP);
 		p->redraw |= R_OVER;
@@ -433,6 +442,8 @@ int play_tap(Play *p, int16_t x, int16_t y, uint32_t now)
 	if (p->state == PS_UP || p->state == PS_DOWN || p->state == PS_RESULT) return click(p, now);
 	if (y >= STRIP_Y) {
 		if (x >= MAP_X && y >= STRIP_Y + UI_CHAR) return play_key(p, KEY_OTHER, now);
+		if (p->state == PS_AIM && p->club != CLUB_PT && y < STRIP_Y + UI_CHAR &&
+		    x >= SHAPE_X - 2 && x < SHAPE_X + SHAPE_W + 2) return play_key(p, KEY_SHAPE, now);
 		if (p->state == PS_AIM) return click(p, now);
 		return 0;
 	}
@@ -605,16 +616,21 @@ static void SEC_UI draw_strip(Play *p, Surface *s)
 		line(s, 0, t);
 		lie_line(p, s);
 	} else {
-		/* club and carry, the pin, the wind */
+		/* club and carry, the shape, yards to the pin, the wind */
 		add(t, &n, ball_club_name(p->club));
-		if (p->club != CLUB_PT) {
-			add(t, &n, " ");
-			n += play_num(t + n, ball_carry(p->club, p->lie));
+		add(t, &n, " ");
+		n += play_num(t + n, ball_carry(p->club, p->lie));
+		pad(t, &n, SHAPE_X / UI_CHAR);
+		if (p->shape) add(t, &n, ball_shape_name(p->shape));
+		pad(t, &n, 13);
+		{
+			uint16_t y = pin_yards(p);
+			if (y < 100) add(t, &n, " ");
+			if (y < 10) add(t, &n, " ");
+			n += play_num(t + n, y);
 		}
-		pad(t, &n, 8);
-		add(t, &n, "Pin ");
-		n += play_num(t + n, pin_yards(p));
-		pad(t, &n, 17);
+		add(t, &n, "y");
+		pad(t, &n, 18);
 		if (p->wind_mph < 10) add(t, &n, " ");
 		n += play_num(t + n, p->wind_mph);
 		line(s, 0, t);
@@ -623,7 +639,15 @@ static void SEC_UI draw_strip(Play *p, Surface *s)
 			int16_t i, j;
 			for (j = 0; j < 7; j++)
 				for (i = 0; i < 7; i++)
-					if (a[j] & (0x80 >> i)) ui_fill(s, 16 * UI_CHAR + i, STRIP_Y + j, 1, 1, UIC_WHITE);
+					if (a[j] & (0x80 >> i)) ui_fill(s, 17 * UI_CHAR + i, STRIP_Y + j, 1, 1, UIC_WHITE);
+		}
+		if (p->state == PS_AIM) {
+			/* the shape button: what's picked, or "Shape" for a normal shot */
+			const char *nm = ball_shape_name(p->shape);
+			int16_t k;
+			for (k = 0; nm[k]; k++) {}
+			ui_fill(s, SHAPE_X - 2, STRIP_Y, SHAPE_W + 4, UI_CHAR, UIC_WHITE);
+			ui_text(s, SHAPE_X, STRIP_Y, nm, k, UIC_BLACK, -1);
 		}
 		lie_line(p, s);
 	}

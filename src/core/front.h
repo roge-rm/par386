@@ -20,8 +20,9 @@
 #define SCENERY_UNKNOWN 0xFF
 
 /* Keys, from the platform's buttons. KEY_CARD opens the scorecard while
- * playing (c or s). */
-enum { KEY_NONE, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_SELECT, KEY_OTHER, KEY_BACK, KEY_CARD };
+ * playing (c or s), KEY_MAP the map and KEY_SHAPE picks the next shot
+ * shape. */
+enum { KEY_NONE, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_SELECT, KEY_OTHER, KEY_BACK, KEY_CARD, KEY_MAP, KEY_SHAPE };
 
 /* What the platform does after a key or tap. */
 #define FR_REDRAW 1
