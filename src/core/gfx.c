@@ -3,6 +3,7 @@
 #include "fixed.h"
 #include "pal565.h"
 #include "pal.h"
+#include "to16.h"
 
 static const uint8_t ui_grey[UIC_COUNT] = {
 #define X(name, r, g, b, grey) grey,
@@ -298,27 +299,6 @@ int gfx_pic_band(Surface *s, const uint8_t *d, uint32_t len)
 	return 0;
 }
 
-void gfx_to16(const Surface *s, uint8_t *d, uint16_t rb, int16_t x, int16_t y, int16_t w, int16_t h, uint8_t le)
-{
-	int16_t x1 = x + w, y1 = y + h, i, j;
-
-	if (s->depth != 8) return;
-	if (x < 0) x = 0;
-	if (y < 0) y = 0;
-	if (x1 > s->w) x1 = s->w;
-	if (y1 > s->h) y1 = s->h;
-	for (j = y; j < y1; j++) {
-		const uint8_t *p = rowp(s, j) + x;
-		uint8_t *q = d + MULU16(j, rb) + ((uint16_t)x << 1);
-		for (i = x; i < x1; i++) {
-			uint16_t c = pal_565[*p++];
-			if (le) c = (uint16_t)((c << 8) | (c >> 8));
-			*q++ = (uint8_t)(c >> 8);
-			*q++ = (uint8_t)c;
-		}
-	}
-}
-
 /* 4x4 ordered dither values, row by row. */
 static const uint8_t dith4[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
 
@@ -364,30 +344,50 @@ void gfx_swap_mask(Surface *a, Surface *b, int16_t y0, int16_t y1, uint8_t lo, u
 	}
 }
 
+static void (*to16_fn)(const struct To16Job *a);
+
+void gfx_to16_use(void (*fn)(const struct To16Job *a))
+{
+	to16_fn = fn;
+}
+
+const uint16_t *gfx_pal565(void)
+{
+	return pal_565;
+}
+
 void gfx_to16_mask(const Surface *s, uint8_t *d, uint16_t rb, int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint8_t le,
                    uint8_t lo, uint8_t hi)
 {
-	int16_t y, x;
-	uint8_t c;
+	To16 a;
 
 	if (s->depth != 8) return;
 	if (x0 < 0) x0 = 0;
 	if (y0 < 0) y0 = 0;
 	if (x1 > s->w) x1 = s->w;
 	if (y1 > s->h) y1 = s->h;
-	for (y = y0; y < y1; y++) {
-		const uint8_t *t = dith4 + ((y & 3) << 2), *p = rowp(s, y);
-		uint8_t *q = d + MULU16(y, rb);
-		for (c = 0; c < 4; c++) {
-			if (t[c] < lo || t[c] >= hi) continue;
-			for (x = (int16_t)(((x0 + 3 - c) & ~3) + c); x < x1; x += 4) {
-				uint16_t v = pal_565[p[x]];
-				if (le) v = (uint16_t)((v << 8) | (v >> 8));
-				q[x << 1] = (uint8_t)(v >> 8);
-				q[(x << 1) + 1] = (uint8_t)v;
-			}
-		}
-	}
+	if (x1 <= x0 || y1 <= y0) return;
+	a.bits = s->bits;
+	a.d = d;
+	a.pal = pal_565;
+	a.dith = dith4;
+	a.srb = s->rowBytes;
+	a.drb = rb;
+	a.x0 = x0;
+	a.y0 = y0;
+	a.x1 = x1;
+	a.y1 = y1;
+	a.le = le;
+	a.mask = lo > 0 || hi < 16;
+	a.lo = lo;
+	a.hi = hi;
+	if (to16_fn) to16_fn(&a);
+	else to16_run(&a);
+}
+
+void gfx_to16(const Surface *s, uint8_t *d, uint16_t rb, int16_t x, int16_t y, int16_t w, int16_t h, uint8_t le)
+{
+	gfx_to16_mask(s, d, rb, x, y, (int16_t)(x + w), (int16_t)(y + h), le, 0, 16);
 }
 
 /* The masks of mask_rows: for each pattern row, 4 bytes covering the 4

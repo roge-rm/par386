@@ -2,7 +2,7 @@
 #ifndef SECTION_H
 #define SECTION_H
 
-#ifdef __palmos__
+#if defined(__palmos__) && defined(__m68k__)
 #define SEC_CORE   __attribute__((section("core")))
 #define SEC_UI     __attribute__((section("ui")))
 #define SEC_RENDER __attribute__((section("render")))

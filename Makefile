@@ -7,6 +7,7 @@
 #   make tables      makes src/core/trigtab.h, fonttab.h, pal.h and paltab.h again (the output is committed)
 #   make art         makes the title and menu pictures and the renderer's sprites in build/art/ (part of the PRC)
 #   make sounds      makes the sampled sounds in build/snd/ (part of the PRC)
+#   make arm-test    checks the ARM 16-bit conversion's entry against the plain one on the host
 #   make ui-test     draws the title and menu with the core UI kit on the host, to PNGs
 #   make render-test draws the test hole from 3 places and compares with host/ref/
 #   make course-render draws every hole of Auld Kirk from the tee, the landing area and near the green
@@ -41,8 +42,8 @@ INCLUDES = $(addprefix -I,$(shell find $(SDK)/include -type d))
 CFLAGS   = -O2 -Wall -Wno-unknown-pragmas $(DEFS) $(INCLUDES) -Isrc/core -Isrc/palm
 LDFLAGS  = -L$(SDK)/lib/m68k-palmos-coff
 
-PALMSRCS = main screen audio
-CORESRCS = fixed trig vec hole gfx ui front render play ball rules card sound cpu records
+PALMSRCS = main screen audio arm
+CORESRCS = fixed trig vec hole gfx ui front render play ball rules card sound cpu records to16
 OBJS     = $(addprefix $(BUILD)/,$(addsuffix .o,$(PALMSRCS) $(CORESRCS)))
 
 all: build/$(PRC) courses
@@ -106,8 +107,37 @@ $(SND)/snd.rcp: tools/mksound.py
 $(SND)/snd.ro: $(SND)/snd.rcp
 	pilrc -q -ro $(SND)/snd.rcp $@
 
-build/$(PRC): src/par386.def $(BUILD)/par386 $(BUILD)/par386.ro $(ART)/art.ro $(ART)/obj.ro $(SND)/snd.ro
-	build-prc -o $@ src/par386.def $(BUILD)/par386 $(BUILD)/par386.ro $(ART)/art.ro $(ART)/obj.ro $(SND)/snd.ro
+# The ARM code for OS 5 (src/arm/): one flat blob, the armc resource. It runs
+# where it lies, so armcheck fails on any relocation but a pc-relative branch,
+# and on data. Every build has it; EXTRA=-DNO_ARM only leaves it unused.
+ARMCC    = arm-palmos-gcc
+ARMFLAGS = -O2 -march=armv4t -mthumb-interwork -ffreestanding -fno-builtin -Wall -Isrc/core -Isrc/arm
+ARMOBJS  = build/arm/to16arm.o build/arm/to16.o
+
+build/arm:
+	mkdir -p build/arm
+
+build/arm/%.o: src/arm/%.c src/arm/*.h src/core/*.h | build/arm
+	@echo ARMCC $<; $(ARMCC) $(ARMFLAGS) -c $< -o $@
+
+build/arm/%.o: src/core/%.c src/core/*.h | build/arm
+	@echo ARMCC $<; $(ARMCC) $(ARMFLAGS) -c $< -o $@
+
+build/arm/armc.bin: $(ARMOBJS) src/arm/armc.ld
+	@for o in $(ARMOBJS); do \
+		if arm-palmos-readelf -r $$o | grep -E '^[0-9a-f]{8} ' | grep -v R_ARM_PC24; then \
+			echo "armcheck: $$o has a relocation the blob can't take"; exit 1; fi; done
+	arm-palmos-ld -nostdlib -T src/arm/armc.ld $(ARMOBJS) -o build/arm/armc.elf
+	@if arm-palmos-objdump -h build/arm/armc.elf | grep -E ' \.data +0*[1-9a-f]'; then \
+		echo "armcheck: the blob has data"; exit 1; fi
+	arm-palmos-objcopy -O binary -j .text build/arm/armc.elf $@
+
+build/arm/arm.ro: build/arm/armc.bin
+	echo 'DATA "armc" ID 1000 "build/arm/armc.bin"' > build/arm/arm.rcp
+	pilrc -q -ro build/arm/arm.rcp $@
+
+build/$(PRC): src/par386.def $(BUILD)/par386 $(BUILD)/par386.ro $(ART)/art.ro $(ART)/obj.ro $(SND)/snd.ro build/arm/arm.ro
+	build-prc -o $@ src/par386.def $(BUILD)/par386 $(BUILD)/par386.ro $(ART)/art.ro $(ART)/obj.ro $(SND)/snd.ro build/arm/arm.ro
 
 HOSTSRC  = $(addprefix src/core/,$(addsuffix .c,$(CORESRCS)))
 HOSTCC   = gcc -Wall -Wextra -O2 -Isrc/core -fsanitize=address,undefined -fno-sanitize-recover=all
@@ -120,6 +150,7 @@ host-test: build/hosttest
 	$(MAKE) render-test
 	$(MAKE) physics-test
 	$(MAKE) rules-test
+	$(MAKE) arm-test
 
 build/hosttest: host/hosttest.c $(HOSTSRC) src/core/*.h | $(BUILD)
 	$(HOSTCC) host/hosttest.c $(HOSTSRC) -lm -o $@
@@ -265,6 +296,14 @@ rules-test: build/rulestest build/courses/Par386-Test.pdb $(ART)/art.rcp
 cpu-round: build/rulestest build/courses/$(CRPDB)
 	build/rulestest --cpu build/courses/$(CRPDB) 8 $(or $(TEE),0)
 
+build/armtest: host/armtest.c src/arm/to16arm.c $(HOSTSRC) src/core/*.h src/arm/*.h | $(BUILD)
+	$(HOSTCC) -Isrc/arm host/armtest.c src/arm/to16arm.c $(HOSTSRC) -lm -o $@
+
+# Runs the 16-bit conversion through the ARM entry (built for the host, with
+# its big endian job) and the plain path, and checks they match.
+arm-test: build/armtest
+	build/armtest
+
 tables:
 	python3 tools/mktrig.py
 	python3 tools/mkfont.py
@@ -275,4 +314,4 @@ clean:
 
 sounds: $(SND)/snd.rcp
 
-.PHONY: sounds all release clean host-test course-test course-render cpu-round auldkirk carrighead sakurabay banksiaheath crocodilebend cascadesprings ui-test ui-ref render-test render-ref physics-test rules-test courses tables art
+.PHONY: sounds all release clean host-test course-test course-render cpu-round auldkirk carrighead sakurabay banksiaheath crocodilebend cascadesprings ui-test ui-ref arm-test render-test render-ref physics-test rules-test courses tables art

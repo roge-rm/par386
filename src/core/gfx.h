@@ -69,6 +69,12 @@ void SEC_UI gfx_to16(const Surface *s, uint8_t *d, uint16_t rb, int16_t x, int16
  * hi: the fade's steps on 16-bit screens. */
 void SEC_CORE gfx_to16_mask(const Surface *s, uint8_t *d, uint16_t rb, int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint8_t le,
                             uint8_t lo, uint8_t hi);
+/* Both go through fn from now on instead of to16_run (to16.h), or back
+ * to it with NULL: the platform's faster conversion, given the same job. */
+struct To16Job;
+void SEC_CORE gfx_to16_use(void (*fn)(const struct To16Job *a));
+/* The master palette as 16-bit colour, 256 entries in the CPU's byte order. */
+const uint16_t * SEC_CORE gfx_pal565(void);
 /* Copies from s to d (the same size and depth) the pixels of x0 to x1 and
  * y0 to y1 whose dither value is from lo up to (not) hi, rounded out to 4
  * byte groups across: the fade's steps below 16 bits. */

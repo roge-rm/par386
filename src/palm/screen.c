@@ -15,6 +15,7 @@
 #include "screen.h"
 #include "sonyhr.h"
 #include "silk.h"
+#include "arm.h"
 
 #define kRom35 sysMakeROMVersion(3, 5, 0, sysROMStageRelease, 0)
 #define kSonyCreator 'SoNy'
@@ -360,6 +361,7 @@ Err ScreenOpen(void)
 	UInt32 rom = 0, win = 0, depths = 1, density = kDensityLow, v, sv, depth;
 	Int16 res;
 
+	ArmOpen();
 	FtrGet(sysFtrCreator, sysFtrNumROMVersion, &rom);
 	gRom35 = rom >= kRom35;
 	gOS5 = rom >= 0x05000000UL;
@@ -412,6 +414,7 @@ void ScreenClose(void)
 {
 	NotifyClose();
 	Free();
+	ArmClose();
 	if (gPalSet) WinPalette(winPaletteSetToDefault, 0, 256, NULL);
 	gPalSet = false;
 	if (gDepthSet) WinScreenMode(winScreenModeSet, NULL, NULL, &gOldDepth, NULL);
@@ -814,6 +817,7 @@ UInt32 ScreenPicType(void)
 
 void ScreenDescribe(char *t)
 {
-	StrPrintF(t, "%u%s %ux%u%s%s%s", (UInt16)gDepth, gSony ? " HR" : gDD ? " DD" : "",
-	          (UInt16)gS.w, (UInt16)gS.h, gLE ? " LE" : "", gPins ? " P" : "", gS.half ? " H" : "");
+	StrPrintF(t, "%u%s %ux%u%s%s%s%s", (UInt16)gDepth, gSony ? " HR" : gDD ? " DD" : "",
+	          (UInt16)gS.w, (UInt16)gS.h, gLE ? " LE" : "", gPins ? " P" : "", gS.half ? " H" : "",
+	          ArmOn() ? " A" : "");
 }
