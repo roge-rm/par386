@@ -847,6 +847,12 @@ static void SEC_RENDER setpx(const R *r, int16_t x, int16_t y, uint8_t v, uint8_
 	int16_t i, j, n = dbl ? 2 : 1;
 	uint8_t *p, m, sh;
 
+	/* Each doubled 4-bit pixel fills a byte in each destination row. */
+	if (dbl && r->lg == 2) {
+		p = r->bits + MULU16(2 * y, r->rb) + x;
+		p[0] = p[r->rb] = (uint8_t)((v << 4) | v);
+		return;
+	}
 	if (dbl) { x <<= 1; y <<= 1; }
 	for (j = 0; j < n; j++)
 		for (i = 0; i < n; i++) {
@@ -961,6 +967,17 @@ static void SEC_RENDER under_io(const R *r, const RenderGolfer *g, uint8_t save,
 	int16_t x, y;
 
 	if (g->half) {
+		if (!save && dbl && r->lg == 2) {
+			/* Restore the doubled box without reading its destination. */
+			for (y = g->y; y < g->y + g->h; y++) {
+				uint8_t *p = r->bits + MULU16(2 * y, r->rb) + g->x, *q = p + r->rb;
+				for (x = 0; x < g->w; x++) {
+					uint8_t v = *u++;
+					*p++ = *q++ = (uint8_t)((v << 4) | v);
+				}
+			}
+			return;
+		}
 		for (y = g->y; y < g->y + g->h; y++)
 			for (x = g->x; x < g->x + g->w; x++) {
 				if (save) *u = getpx(r, x, y);

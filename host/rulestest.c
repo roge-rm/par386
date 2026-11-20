@@ -232,7 +232,7 @@ static void save_tests(void)
 {
 	Round r, q;
 	uint8_t buf[RULES_SAVE_MAX + 8], bad[RULES_SAVE_MAX + 8];
-	uint16_t len;
+	uint16_t len, old_len;
 	uint8_t pars[3] = { 4, 3, 5 };
 
 	/* a round mid-hole, round trip */
@@ -244,7 +244,7 @@ static void save_tests(void)
 	memset(r.pl[3].name, 0, sizeof r.pl[3].name);
 	strcpy(r.pl[3].name, "Dan");
 	len = rules_pack(&r, buf);
-	CHECK(len == 2 + 32 + 4 + 9 + 18 + 5 + 4 * (9 + 12 + 18));
+	CHECK(len == 2 + 32 + 4 + 9 + 18 + 5 + 4 * (9 + 12 + 18) + RULES_STATS_SAVE(4) + 1);
 	CHECK(buf[0] == 0 && buf[1] == RULES_SAVE_VERSION);
 	memset(&q, 0x55, sizeof q);
 	CHECK(rules_unpack(&q, buf, len) == 0);
@@ -264,21 +264,26 @@ static void save_tests(void)
 	/* a short round for 2 */
 	rules_init(&r, "Par386 Test", 2, 3, pars, 0xDEADBEEFUL);
 	len = rules_pack(&r, buf);
-	CHECK(len == 2 + 32 + 4 + 9 + 3 + 5 + 2 * (9 + 12 + 3));
+	CHECK(len == 2 + 32 + 4 + 9 + 3 + 5 + 2 * (9 + 12 + 3) + RULES_STATS_SAVE(2) + 1);
 	CHECK(rules_unpack(&q, buf, len) == 0 && memcmp(&q, &r, sizeof r) == 0);
 	/* the tee set round trips; a version 2 record (no tee byte) loads from the first */
 	r.tee = 2;
 	r.holeout = 1;
 	len = rules_pack(&r, buf);
 	CHECK(buf[53] == 2 && rules_unpack(&q, buf, len) == 0 && q.tee == 2 && q.holeout && memcmp(&q, &r, sizeof r) == 0);
+	old_len = (uint16_t)(len - RULES_STATS_SAVE(r.players) - 1);
 	{
 		uint8_t v2[RULES_SAVE_MAX];
 		uint16_t n = 0, i;
 		memcpy(v2, buf, len);
+		v2[1] = 6;
+		CHECK(rules_unpack(&q, v2, len - 1) == 0 && q.span == SPAN_FULL && q.stats_available);
+		v2[1] = 5;
+		CHECK(rules_unpack(&q, v2, old_len) == 0 && q.holeout && !q.stats_available);
 		v2[1] = 3;
-		CHECK(rules_unpack(&q, v2, len - 1) == 0 && q.tee == 2 && !q.holeout && !q.repeat);
+		CHECK(rules_unpack(&q, v2, old_len - 1) == 0 && q.tee == 2 && !q.holeout && !q.repeat);
 		CHECK(rules_unpack(&q, v2, len) == -1);
-		for (i = 0; i < len - 1; i++)
+		for (i = 0; i < old_len - 1; i++)
 			if (i != 53) v2[n++] = buf[i];
 		v2[1] = 2;
 		CHECK(rules_unpack(&q, v2, n) == 0 && q.tee == 0 && !q.holeout && !q.repeat);
@@ -299,12 +304,14 @@ static void save_tests(void)
 		r.pl[0].score[0] = 0;
 		len = rules_pack(&r, buf);
 		for (i = 0; i < 50; i++) v1[n++] = buf[i];
-		for (i = 54; i < len - 1; i++)
+		for (i = 54; i < old_len - 1; i++)
 			if (i != 54 + 20 && i != 54 + 24 + 20) v1[n++] = buf[i];
 		v1[1] = 1;
-		CHECK(n == len - 5 - 2);
+		CHECK(n == old_len - 5 - 2);
 		memset(&q, 0x55, sizeof q);
-		CHECK(rules_unpack(&q, v1, n) == 0 && memcmp(&q, &r, sizeof r) == 0 && q.mode == MODE_STROKE && !q.pl[1].cpu);
+		CHECK(rules_unpack(&q, v1, n) == 0 && !q.stats_available && q.mode == MODE_STROKE && !q.pl[1].cpu);
+		q.stats_available = 1;
+		CHECK(memcmp(&q, &r, sizeof r) == 0);
 		CHECK(rules_unpack(&q, v1, n - 1) == -1);
 		v1[1] = 2;
 		CHECK(rules_unpack(&q, v1, n) == -1);
@@ -335,8 +342,11 @@ static void save_tests(void)
 	BAD(50, MODE_BEST);                       /* best ball for 2 */
 	BAD(50, MODE_RANGE);                      /* practice for 2 */
 	BAD(53, COURSE_MAX_TEES);                 /* a tee set past the last */
-	BAD(len - 1, 2);                          /* repeat outside the practice green */
-	BAD(len - 1, 4);                          /* unknown round option */
+	BAD(old_len - 1, 2);                     /* repeat outside the practice green */
+	BAD(old_len - 1, 4);                     /* unknown round option */
+	BAD(old_len, 2);                         /* invalid stats availability */
+	BAD(old_len + 1, 1);                     /* a fairway without a tee shot */
+	BAD(old_len + 4, 2);                     /* invalid green marker */
 	BAD(54 + 9 + 8, LIE_COUNT);               /* a lie past the last */
 	BAD(54 + 9 + 8 + 2, 2);                   /* holed isn't 0 or 1 */
 	BAD(54 + 9 + 8 + 3, CPU_LEVELS);          /* a computer level past the last */
@@ -634,6 +644,18 @@ static void map_aim_tests(const Course *c, Surface *s)
 	}
 	CHECK(distance[0] < YD(225) && distance[1] > YD(250));
 	aim = p.aim;
+	{
+		HazardCarry hit[3];
+		CHECK(hole_hazards(h, g, p.rv.ball, aim, hit, 3) > 0);
+		CHECK(hit[0].surface == SURF_WATER && hit[0].entry > 200 && hit[0].clear <= 264 &&
+		      hit[0].entry < hit[0].clear);
+		CHECK(play_tap(&p, 20, 155, 0) == PL_CARD && p.card == CARD_BOOK);
+		play_card(s, &p);
+		save(s, "yardage-book");
+		CHECK(play_tap(&p, 80, 97, 0) == PL_MAP && p.aim == aim);
+		CHECK(play_key(&p, KEY_UP, 0) == PL_CARD && p.card == CARD_BOOK);
+		CHECK(play_key(&p, KEY_BACK, 0) == PL_MAP && p.aim == aim && p.target_range == distance[1]);
+	}
 	CHECK(play_key(&p, KEY_LEFT, 0) == PL_MAP && p.aim == (angle)(aim + 910));
 	CHECK(p.target_range == distance[1] && abs((int16_t)(vec2_angle(vec2_sub(p.target, p.rv.ball)) - p.aim)) <= 2);
 	CHECK(play_key(&p, KEY_RIGHT, 0) == PL_MAP && p.aim == aim);
@@ -645,6 +667,25 @@ static void map_aim_tests(const Course *c, Surface *s)
 	CHECK(play_key(&p, KEY_MAP, 0) == PL_SCENE && p.view == PLAY_SCENE);
 	CHECK(p.target_set && play_key(&p, KEY_DOWN, 0) == 0 && p.target_set && p.target_range == distance[1]);
 	CHECK(play_key(&p, KEY_LEFT, 0) == 0 && !p.target_set && !p.target_range);
+}
+
+static void book_edge_test(void)
+{
+	static const uint8_t cells[] = { SURF_ROUGH << 4, SURF_BUNKER << 4, SURF_ROUGH << 4,
+				       SURF_WATER << 4, SURF_WATER << 4 };
+	Hole h = {0};
+	SurfaceGrid g;
+	HazardCarry hit[3];
+	vec2 ball = vec2_make(YD(1), YD(1));
+
+	h.width = 2;
+	h.length = 10;
+	surface_size(&h, &g);
+	g.cells = cells;
+	CHECK(hole_hazards(&h, &g, ball, ANG_90, hit, 3) == 2);
+	CHECK(hit[0].surface == SURF_BUNKER && hit[0].entry == 1 && hit[0].clear == 3);
+	CHECK(hit[1].surface == SURF_WATER && hit[1].entry == 5 && !hit[1].clear);
+	CHECK(hole_hazards(&h, &g, ball, ANG_90, hit, 1) == 1);
 }
 
 static void pen_tests(const Course *c, Surface *s)
@@ -1087,6 +1128,18 @@ static void round_tests(const char *pdb)
 	gfx_fill(&s2, 0, 0, 320, 320, UIC_BAR);
 	play_card(&s2, &p);
 	save(&s2, "card-final");
+	CHECK(card_stats_button(&r, CARD_FINAL) == 1);
+	CHECK(play_key(&p, KEY_CARD, t) == PL_CARD && p.card == CARD_STATS && p.stat_player == 0);
+	gfx_fill(&s, 0, 0, 160, 160, UIC_BAR);
+	play_card(&s, &p);
+	save(&s, "round-stats");
+	gfx_fill(&s2, 0, 0, 320, 320, UIC_BAR);
+	play_card(&s2, &p);
+	save(&s2, "round-stats");
+	CHECK(play_key(&p, KEY_DOWN, t) == PL_CARD && p.stat_player == 1);
+	CHECK(play_key(&p, KEY_UP, t) == PL_CARD && p.stat_player == 0);
+	CHECK(play_key(&p, KEY_BACK, t) == PL_CARD && p.card == CARD_FINAL);
+	CHECK(play_key(&p, KEY_RIGHT, t) == PL_CARD && p.csel == 0);
 	if (rf) fclose(rf);
 	rf = NULL;
 	CHECK(play_key(&p, KEY_SELECT, t) == PL_BACK);
@@ -1113,15 +1166,15 @@ static void card_tests(void)
 		for (pl = 1; pl <= 4; pl++)
 			for (mode = 0; mode < 3; mode++)
 				for (page = 0; page < card_pages(&r) || page == 0; page++) {
+					uint8_t i;
 					rules_init(&r, "x", pl, n, pars, 1);
 					card_layout(&d, &r, mode, page);
 					CHECK(d.box.x >= 0 && d.box.y >= 0 && d.box.x + d.box.w <= 160 && d.box.y + d.box.h <= 160);
-					CHECK(d.count == (n > 9 ? 2 : 1));
-					CHECK(card_hit(&r, mode, page, d.btn[0].x + 2, d.btn[0].y + 2) == 0);
+					CHECK(d.count == (n > 9 ? 2 : 1) + (mode == CARD_FINAL));
 					CHECK(card_hit(&r, mode, page, d.box.x + 4, d.box.y + 20) == -1);
-					if (d.count > 1) {
-						CHECK(d.btn[1].x + d.btn[1].w <= d.box.x + d.box.w);
-						CHECK(card_hit(&r, mode, page, d.btn[1].x + 2, d.btn[1].y + 2) == 1);
+					for (i = 0; i < d.count; i++) {
+						CHECK(d.btn[i].x >= d.box.x && d.btn[i].x + d.btn[i].w <= d.box.x + d.box.w);
+						CHECK(card_hit(&r, mode, page, d.btn[i].x + 2, d.btn[i].y + 2) == i);
 					}
 				}
 
@@ -1310,7 +1363,7 @@ static void tournament_tests(void)
 	static const uint8_t sc[2] = { 4, 5 };
 
 	/* the same seed, the same field; another seed, another */
-	rules_init(&r, "x", 2, 18, pars, 77);
+	rules_init(&r, "Par386 Auld Kirk", 2, 18, pars, 77);
 	rules_init(&q, "x", 2, 18, pars, 78);
 	for (g = 0; g < RULES_FIELD; g++)
 		for (h = 0; h < 18; h++) {
@@ -1366,7 +1419,8 @@ static void tournament_tests(void)
 	CHECK(rules_unpack(&q, buf, len) == 0 && memcmp(&r, &q, sizeof r) == 0);
 	CHECK(rules_unpack(&q, buf, len - 1) == -1);
 	buf[1] = 4;
-	CHECK(rules_unpack(&q, buf, len - 2 - r.holes - 2 * r.players) == 0 && q.tour_stage == TOUR_SINGLE);
+	CHECK(rules_unpack(&q, buf, len - RULES_STATS_SAVE(r.players) - 3 - r.holes - 2 * r.players) == 0 &&
+	      q.tour_stage == TOUR_SINGLE && !q.stats_available);
 	n = rules_board(&r, b);
 	CHECK(n == 2 + RULES_FIELD);
 	for (i = 0; i < n; i++) CHECK(b[i].to_par == 0 && b[i].pos == 1 && b[i].tied);
@@ -1405,7 +1459,7 @@ static void tournament_tests(void)
 		save(&s2, "m12-board");
 		board_layout(&d, &r, CARD_HOLE, n);
 		CHECK(d.box.x >= 0 && d.box.y >= 0 && d.box.x + d.box.w <= 160 && d.box.y + d.box.h <= 160);
-		CHECK(strcmp(d.title, "Round 1 after 9") == 0 && d.count == 2);
+		CHECK(strcmp(d.title, "Kirk Open") == 0 && strcmp(d.text, "Round 1 after 9") == 0 && d.count == 2);
 		/* the board's Card button shows the card, whose Next hole goes on */
 		CHECK(play_key(&p, KEY_RIGHT, 0) == PL_CARD && p.csel == 1);
 		CHECK(play_key(&p, KEY_SELECT, 0) == PL_CARD && !p.board);
@@ -1430,7 +1484,7 @@ static void tournament_tests(void)
 		len = rules_pack(&r, buf);
 		CHECK(rules_unpack(&q, buf, len) == 0 && memcmp(&r, &q, sizeof r) == 0);
 		board_layout(&d, &r, CARD_FINAL, n);
-		CHECK(strcmp(d.title, "Round 1 leaders") == 0 && strcmp(d.buttons, "Round 2|Card") == 0);
+		CHECK(strcmp(d.text, "Round 1 leaders") == 0 && strcmp(d.buttons, "Round 2|Card") == 0);
 		play_start(&p, &holes[0].h, &holes[0].g, &q);
 		CHECK(p.view == PLAY_CARD && p.card == CARD_FINAL && p.board);
 		backdrop(&s);
@@ -1454,7 +1508,7 @@ static void tournament_tests(void)
 		CHECK(rules_tour_to_par(&q, 1) == 27);
 		n = rules_board(&q, b);
 		board_layout(&d, &q, CARD_HOLE, n);
-		CHECK(strcmp(d.title, "Round 2 after 9") == 0);
+		CHECK(strcmp(d.text, "Round 2 after 9") == 0);
 		p.card = CARD_HOLE;
 		p.csel = 0;
 		backdrop(&s);
@@ -1465,7 +1519,7 @@ static void tournament_tests(void)
 		save(&s2, "tournament-round2");
 		for (h = 9; h < 18; h++) hole_scores(&q, sc);
 		board_layout(&d, &q, CARD_FINAL, n);
-		CHECK(q.over && strcmp(d.title, "Final leaders") == 0);
+		CHECK(q.over && strcmp(d.text, "Final leaders") == 0);
 		CHECK(rules_tour_to_par(&q, 1) == 36);
 		free(s.bits);
 		free(s2.bits);
@@ -1854,6 +1908,50 @@ static void gimme_tests(const Course *c)
 	}
 }
 
+static void stats_tests(const Course *c)
+{
+	static Play p;
+	Round r, back;
+	RoundPlayer *a = &r.pl[0];
+	uint8_t buf[RULES_SAVE_MAX];
+	const Hole *h = &holes[0].h;
+
+	rules_init(&r, "Par386 Test", 1, c->hole_count, c->par, 9);
+	play_start(&p, h, &holes[0].g, &r);
+	p.state = PS_FLY;
+	p.have_shot = 1;
+	p.shot.result = SHOT_OK;
+	p.shot.stop = vec2_make(YD(80), YD(220));
+	p.shot.lie = LIE_FAIRWAY;
+	play_settle(&p);
+	play_settle(&p);
+	CHECK(a->stats.fairways == 1 && a->stats.drives == 1 && a->taken == 1);
+	CHECK(rules_unpack(&back, buf, rules_pack(&r, buf)) == 0 && back.stats_available &&
+	      memcmp(&back.pl[0].stats, &a->stats, sizeof a->stats) == 0);
+	play_start(&p, h, &holes[0].g, &back);
+	p.state = PS_FLY;
+	p.have_shot = 1;
+	p.shot.result = SHOT_OK;
+	p.shot.stop = vec2_make(h->pins[0].x + YD(0.6), h->pins[0].y);
+	p.shot.lie = LIE_GREEN;
+	play_settle(&p);
+	CHECK(back.pl[0].stats.greens == 1 && back.pl[0].stats.putts == 1 &&
+	      back.pl[0].score[0] == 3 && !back.pl[0].stats.green_hit);
+
+	rules_stat_shot(&r, 0, LIE_FAIRWAY, LIE_ROUGH, SHOT_WATER, 0);
+	rules_stat_shot(&r, 0, LIE_ROUGH, LIE_ROUGH, SHOT_OOB, 0);
+	rules_stat_shot(&r, 0, LIE_FRINGE, LIE_GREEN, SHOT_OK, 0);
+	rules_stat_shot(&r, 0, LIE_GREEN, LIE_GREEN, SHOT_HOLED, 0);
+	CHECK(a->stats.putts == 1 && a->stats.greens == 1 && a->stats.penalties == 2);
+	rules_mode(&r, MODE_GREEN, NULL, 0);
+	rules_stat_shot(&r, 0, LIE_GREEN, LIE_GREEN, SHOT_HOLED, 0);
+	CHECK(a->stats.putts == 1);
+	rules_mode(&r, MODE_TOURN, NULL, 0);
+	r.tour_stage = TOUR_BREAK;
+	rules_tour_next(&r);
+	CHECK(r.stats_available && !a->stats.putts && !a->stats.drives && !a->stats.greens && !a->stats.penalties);
+}
+
 static void record_tests(void)
 {
 	Records rs, back;
@@ -1870,19 +1968,19 @@ static void record_tests(void)
 	hole_scores(&r, s1);
 	hole_scores(&r, s2);
 	/* not finished: nothing */
-	CHECK(rec_round(&rs, &r, 0) == 0 && !rec_find(&rs, "Par386 Test", 0));
+	CHECK(rec_round(&rs, &r, 0) == 0 && !rec_find(&rs, "Par386 Test", 0, SPAN_FULL));
 	hole_scores(&r, s3);
 	/* the person only, not the computer golfer, though they scored lower */
 	CHECK(rec_round(&rs, &r, 0) == 1);
-	c = rec_find(&rs, "Par386 Test", 0);
+	c = rec_find(&rs, "Par386 Test", 0, SPAN_FULL);
 	CHECK(c && c->strokes == 13 && c->to_par == 1 && c->holes == 3 && strcmp(c->name, "Player 1") == 0);
-	CHECK(!rec_find(&rs, "Par386 Test", 1) && !rec_find(&rs, "Par386 Other", 0));
+	CHECK(!rec_find(&rs, "Par386 Test", 1, SPAN_FULL) && !rec_find(&rs, "Par386 Other", 0, SPAN_FULL));
 	/* the same score again isn't a new one; a better one is */
 	CHECK(rec_round(&rs, &r, 0) == 0);
 	r.pl[0].score[0] = 4;
-	CHECK(rec_round(&rs, &r, 0) == 1 && rec_find(&rs, "Par386 Test", 0)->strokes == 12);
+	CHECK(rec_round(&rs, &r, 0) == 1 && rec_find(&rs, "Par386 Test", 0, SPAN_FULL)->strokes == 12);
 	r.pl[0].score[0] = 6;
-	CHECK(rec_round(&rs, &r, 0) == 0 && rec_find(&rs, "Par386 Test", 0)->strokes == 12);
+	CHECK(rec_round(&rs, &r, 0) == 0 && rec_find(&rs, "Par386 Test", 0, SPAN_FULL)->strokes == 12);
 	/* another tee keeps its own */
 	CHECK(rec_round(&rs, &r, 1) == 1 && rs.n == 2);
 	/* practice sets none */
@@ -1895,12 +1993,12 @@ static void record_tests(void)
 		snprintf(r.course, sizeof r.course, "Par386 C%d", k);
 		rec_round(&rs, &r, 0);
 	}
-	CHECK(rs.n == REC_MAX && !rec_find(&rs, "Par386 Test", 0) && !rec_find(&rs, "Par386 C1", 0) && rec_find(&rs, "Par386 C2", 0) && rec_find(&rs, "Par386 C13", 0) && rec_find(&rs, "Par386 C12", 0));
+	CHECK(rs.n == REC_MAX && !rec_find(&rs, "Par386 Test", 0, SPAN_FULL) && !rec_find(&rs, "Par386 C1", 0, SPAN_FULL) && rec_find(&rs, "Par386 C2", 0, SPAN_FULL) && rec_find(&rs, "Par386 C13", 0, SPAN_FULL) && rec_find(&rs, "Par386 C12", 0, SPAN_FULL));
 	len = rec_pack(&rs, buf);
-	CHECK(len == 3 + REC_MAX * REC_ITEM && len <= REC_SAVE_MAX);
+	CHECK(len == 4 + REC_MAX * REC_ITEM && len <= REC_SAVE_MAX);
 	CHECK(rec_unpack(&back, buf, len) == 0 && memcmp(&back, &rs, sizeof rs) == 0);
 	CHECK(rec_unpack(&back, buf, len - 1) == -1 && back.n == 0);
-	buf[1] = 2;
+	buf[1] = REC_VERSION + 1;
 	CHECK(rec_unpack(&back, buf, len) == -1);
 	buf[1] = REC_VERSION;
 	buf[3 + RULES_COURSE_MAX] = 'x';
@@ -1909,15 +2007,143 @@ static void record_tests(void)
 	CHECK(rec_unpack(&back, buf, rec_pack(&rs, buf)) == 0 && back.n == 0);
 }
 
+static void event_tests(void)
+{
+	static const uint8_t pars[3] = { 4, 3, 5 };
+	static const uint8_t sc[2] = { 1, 1 };
+	Records rs, back;
+	Round r, saved;
+	uint8_t buf[REC_SAVE_MAX], round[RULES_SAVE_MAX], h;
+	uint16_t len;
+
+	CHECK(strcmp(rec_event_name("Auld Kirk"), "Kirk Open") == 0);
+	CHECK(strcmp(rec_event_name("Par386 Falesia Grove"), "Falesia Cup") == 0);
+	CHECK(strcmp(rec_event_name("Par386 Add-on"), "Club Open") == 0);
+	rec_init(&rs);
+	rules_init(&r, "Par386 Auld Kirk", 2, 3, pars, 1);
+	rules_mode(&r, MODE_TOURN, NULL, 0);
+	for (h = 0; h < r.holes; h++) hole_scores(&r, sc);
+	CHECK(r.tour_stage == TOUR_BREAK && !rec_event(&rs, &r));
+	rules_tour_next(&r);
+	hole_scores(&r, sc);
+	CHECK(!rec_event(&rs, &r));
+	len = rules_pack(&r, round);
+	CHECK(rules_unpack(&saved, round, len) == 0);
+	for (h = 1; h < saved.holes; h++) hole_scores(&saved, sc);
+	CHECK(rec_event(&rs, &saved) && rec_best_finish(&rs, saved.course) == (EVENT_TIED | 1));
+	CHECK(!rec_event(&rs, &saved));
+	saved.tour_stage = TOUR_SINGLE;
+	CHECK(!rec_event(&rs, &saved));
+	saved.tour_stage = TOUR_SECOND;
+	saved.pl[1].score[0]++;
+	CHECK(rec_event(&rs, &saved) && rec_best_finish(&rs, saved.course) == 1);
+	CHECK(!rec_event(&rs, &saved));
+	CHECK(rec_best_finish(&rs, "Par386 Carrig Head") == 0);
+	CHECK(rec_round(&rs, &saved, 0) > 0 && rs.events == 1);
+	len = rec_pack(&rs, buf);
+	CHECK(rec_unpack(&back, buf, len) == 0 && memcmp(&rs, &back, sizeof rs) == 0);
+	buf[len - 1] = EVENT_TIED;
+	CHECK(rec_unpack(&back, buf, len) == -1);
+	buf[1] = 2;
+	CHECK(rec_unpack(&back, buf, 3 + rs.n * REC_ITEM) == 0 && back.n == rs.n && !back.events);
+}
+
+static void nine_tests(void)
+{
+	static const uint8_t pars[18] = { 4, 3, 5, 4, 3, 5, 4, 4, 4, 5, 4, 3, 5, 4, 3, 4, 4, 4 };
+	Round r, q;
+	Course c = {0};
+	Records rs, saved;
+	uint8_t buf[REC_SAVE_MAX], span, mode, h, i;
+	uint16_t len;
+	Surface s;
+	const CourseRecord *record;
+
+	c.hole_count = 18;
+	memcpy(c.par, pars, sizeof pars);
+	rec_init(&rs);
+	for (span = SPAN_FULL; span < SPAN_COUNT; span++) {
+		rules_init(&r, "Par386 Example", 1, c.hole_count, c.par, 1);
+		rules_span(&r, span);
+		for (h = 0; h < r.holes; h++) {
+			rules_hole_out(&r, 0, r.pars[h]);
+			rules_advance(&r);
+		}
+		CHECK(rec_round(&rs, &r, 0) == 1);
+	}
+	CHECK(rs.n == 3);
+	record = rec_find(&rs, "Par386 Example", 0, SPAN_FULL);
+	CHECK(record && record->holes == 18);
+	record = rec_find(&rs, "Par386 Example", 0, SPAN_FRONT);
+	CHECK(record && record->holes == 9);
+	record = rec_find(&rs, "Par386 Example", 0, SPAN_BACK);
+	CHECK(record && record->holes == 9);
+	CHECK(!rec_find(&rs, "Par386 Example", 1, SPAN_BACK));
+	len = rec_pack(&rs, buf);
+	CHECK(rec_unpack(&saved, buf, len) == 0 && memcmp(&rs, &saved, sizeof rs) == 0);
+	buf[1] = 1;
+	buf[2] = 1;
+	CHECK(rec_unpack(&saved, buf, (uint32_t)(3 + REC_ITEM - 1)) == 0 && saved.n == 1 &&
+	      saved.rec[0].span == SPAN_FULL && saved.rec[0].holes == 18);
+
+	/* Scores stay round-relative and the back nine starts on physical hole 10. */
+	for (mode = MODE_STROKE; mode <= MODE_BEST; mode++) {
+		for (span = SPAN_FRONT; span < SPAN_COUNT; span++) {
+			uint8_t first = (uint8_t)(span == SPAN_BACK ? 9 : 0);
+			rules_init(&r, "Par386 Example", mode == MODE_BEST ? 4 : 2, c.hole_count, c.par, 1);
+			rules_mode(&r, mode, NULL, 0);
+			rules_span(&r, span);
+			CHECK(r.hole == 0 && r.holes == 9 && r.span == span && rules_course_matches(&r, &c));
+			CHECK(rules_hole_number(&r, r.hole) == first + 1);
+			for (h = 0; h < r.holes; h++) {
+				CHECK(!r.over && r.hole == h && rules_hole_number(&r, h) == first + h + 1);
+				for (i = 0; i < r.players; i++) rules_hole_out(&r, i, r.pars[h]);
+				rules_advance(&r);
+				if (h == 3) {
+					len = rules_pack(&r, buf);
+					CHECK(rules_unpack(&q, buf, len) == 0 && memcmp(&q, &r, sizeof r) == 0);
+					CHECK(rules_hole_number(&q, q.hole) == first + 5 && rules_course_matches(&q, &c));
+					c.par[first]++;
+					CHECK(!rules_course_matches(&q, &c));
+					c.par[first]--;
+					buf[len - 1] = SPAN_COUNT;
+					CHECK(rules_unpack(&q, buf, len) == -1);
+				}
+			}
+			CHECK(r.over && rules_played(&r, 0, 0, r.holes) == 9 && rules_to_par(&r, 0) == 0);
+		}
+	}
+	for (i = 1; i <= 2; i++) {
+		surface(&s, i);
+		card_draw(&s, &r, CARD_FINAL, 0, 0);
+		save(&s, "back-nine-card");
+		free(s.bits);
+	}
+	rules_init(&r, "Par386 Example", 1, c.hole_count, c.par, 1);
+	rules_mode(&r, MODE_TOURN, NULL, 0);
+	rules_span(&r, SPAN_FRONT);
+	CHECK(r.span == SPAN_FULL && r.holes == 18);
+	rules_init(&r, "Par386 Nine", 1, 9, c.par, 1);
+	rules_span(&r, SPAN_BACK);
+	CHECK(r.span == SPAN_FULL && r.holes == 9 && rules_hole_number(&r, 0) == 1);
+	memcpy(c.par + 18, pars, sizeof pars);
+	rules_init(&r, "Par386 Long", 1, 36, c.par, 1);
+	rules_span(&r, SPAN_FRONT);
+	CHECK(r.span == SPAN_FULL && r.holes == 36);
+}
+
 static void mode_tests(const Course *c)
 {
 	match_tests();
 	skins_tests();
 	tournament_tests();
 	record_tests();
+	event_tests();
+	nine_tests();
 	panel_tests(c);
 	practice_tests(c);
 	gimme_tests(c);
+	stats_tests(c);
 	cpu_start_save_test(c);
 	cpu_tests(c);
 }
@@ -1927,7 +2153,7 @@ static void mode_tests(const Course *c)
 static void draw_front(Surface *s, const Front *f)
 {
 	char name[64];
-	uint16_t id = front_picture(f), k;
+	uint16_t id = front_picture(f, s), k;
 
 	gfx_fill(s, 0, 0, s->w, s->h, UIC_BLACK);
 	for (k = 0; ; k++) {
@@ -1935,7 +2161,7 @@ static void draw_front(Surface *s, const Front *f)
 		uint8_t *d;
 		snprintf(name, sizeof name, "Pic%d-%d.bin", s->depth, id + k);
 		if (!(d = load_art(name, &len))) break;
-		CHECK(gfx_pic_band(s, d, len) == 0);
+		CHECK(front_picture_band(s, id, d, len) == 0);
 		free(d);
 	}
 	CHECK(k > 0);
@@ -1959,6 +2185,25 @@ static void front_tests(void)
 	uint8_t scale;
 	static const char *names[2] = { "Auldkirk", "Test" };
 	static const uint8_t scenery[2] = { 1, 0 };
+
+	/* Tournament setup shows the event and the saved placing below the list. */
+	{
+		static const char *courses[] = { "Auld Kirk" };
+		front_init(&f);
+		front_courses(&f, courses, NULL, 1, 0);
+		f.event_best[0] = EVENT_TIED | 2;
+		front_clubhouse(&f, 0);
+		CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_GAMES);
+		f.menu.sel = MODE_TOURN;
+		CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_PLAYERS);
+		CHECK(f.menu.y + f.menu.count * f.menu.lineH <= 125);
+		for (scale = 1; scale <= 2; scale++) {
+			surface(&s, scale);
+			draw_front(&s, &f);
+			save(&s, "event-setup");
+			free(s.bits);
+		}
+	}
 
 	/* no save: Play a round goes to the games, then the players */
 	front_init(&f);
@@ -2097,19 +2342,19 @@ static void front_tests(void)
 	/* course records under the preview */
 	front_courses(&f, names, scenery, 2, 0);
 	f.tee = 0;
-	front_record(&f, 0, 0, 71, -1);
-	front_record(&f, 1, 0, 0, 0);
+	front_record(&f, 0, 0, SPAN_FULL, 71, -1);
+	front_record(&f, 1, 0, SPAN_FULL, 0, 0);
 	front_record_line(&f, 0, line);
 	CHECK(strcmp(line, "Record 71 (-1)") == 0);
 	front_record_line(&f, 1, line);
 	CHECK(line[0] == 0);
-	front_record(&f, 1, 0, 13, 1);
+	front_record(&f, 1, 0, SPAN_FULL, 13, 1);
 	front_record_line(&f, 1, line);
 	CHECK(strcmp(line, "Record 13 (+1)") == 0);
-	front_record(&f, 1, 0, 12, 0);
+	front_record(&f, 1, 0, SPAN_FULL, 12, 0);
 	front_record_line(&f, 1, line);
 	CHECK(strcmp(line, "Record 12 (E)") == 0);
-	front_record(&f, 1, 0, 0, 0);
+	front_record(&f, 1, 0, SPAN_FULL, 0, 0);
 	/* with the course's tee sets known: the picked set's record under its name */
 	{
 		Course tc;
@@ -2119,7 +2364,7 @@ static void front_tests(void)
 		strcpy(tc.tee_names[1], "Club");
 		strcpy(tc.tee_names[2], "Forwardmost");
 		front_course_tees(&f, 0, &tc);
-		front_record(&f, 0, 2, 101, 29);
+		front_record(&f, 0, 2, SPAN_FULL, 101, 29);
 		front_record_line(&f, 0, line);
 		CHECK(strcmp(line, "Medal 71 (-1)") == 0);
 		f.tee = 1;
@@ -2176,6 +2421,39 @@ static void front_tests(void)
 		save(&s, "m12-settings");
 		free(s.bits);
 	}
+
+	/* Known 18-hole courses offer both nines before Tee off. */
+	{
+		Course tc = {0};
+		tc.tee_count = 1;
+		tc.hole_count = 18;
+		strcpy(tc.tee_names[0], "Medal");
+		front_course_tees(&f, 0, &tc);
+		front_record(&f, 0, 0, SPAN_BACK, 38, 2);
+		for (scale = 1; scale <= 2; scale++) {
+			f.course = 0;
+			f.span = SPAN_FULL;
+			f.mode = MODE_STROKE;
+			front_clubhouse(&f, 0);
+			f.menu.sel = MAIN_PLAY;
+			CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_GAMES);
+			CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_PLAYERS && f.menu.sel == 6);
+			CHECK(front_tap(&f, 80, (int16_t)(f.menu.y + 5 * f.menu.lineH + 4)) == (FR_REDRAW | FR_LINES));
+			CHECK(f.span == SPAN_FRONT && f.menu.sel == 5);
+			CHECK(front_key(&f, KEY_RIGHT) == (FR_REDRAW | FR_LINES) && f.span == SPAN_BACK);
+			front_record_line(&f, 0, line);
+			CHECK(strcmp(line, "Back 9 38 (+2)") == 0);
+			surface(&s, scale);
+			draw_front(&s, &f);
+			save(&s, "back-nine-setup");
+			free(s.bits);
+			front_key(&f, KEY_DOWN);
+			CHECK(front_key(&f, KEY_SELECT) == FR_PLAY && f.span == SPAN_BACK);
+			CHECK(front_key(&f, KEY_BACK) == FR_REDRAW && f.screen == SCR_GAMES);
+			f.menu.sel = MODE_TOURN;
+			CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.menu.sel == 5 && !strstr(f.players_list, "Holes:"));
+		}
+	}
 }
 
 /* Hole 1 of the test course alone with the wind of PLAY_SEED=3, as
@@ -2191,7 +2469,8 @@ static void sound_tests(void)
 	int shots = 0;
 	static const char *const names[SND_COUNT] = {
 		"none", "swing", "click", "wood", "iron", "putt", "land-fairway", "land-rough", "land-sand",
-		"splash", "cup", "oob", "holed", "birdie", "bogey", "menu-move", "menu-select"
+		"splash", "cup", "oob", "holed", "birdie", "bogey", "menu-move", "menu-select",
+		"land-path", "lip", "mishit", "club-change", "ace"
 	};
 
 	surface(&s, 1);
@@ -2218,9 +2497,10 @@ static void sound_tests(void)
 		case SND_CLICK: clicks++; break;
 		case SND_HIT_WOOD: case SND_HIT_IRON: hits++; break;
 		case SND_HIT_PUTT: hits++; putts++; break;
-		case SND_LAND_FAIRWAY: case SND_LAND_ROUGH: case SND_LAND_SAND: case SND_SPLASH: lands++; break;
+		case SND_LAND_FAIRWAY: case SND_LAND_ROUGH: case SND_LAND_SAND: case SND_LAND_PATH:
+		case SND_SPLASH: lands++; break;
 		case SND_CUP: cups++; break;
-		case SND_HOLED: case SND_BIRDIE: case SND_BOGEY: tunes++; break;
+		case SND_HOLED: case SND_BIRDIE: case SND_BOGEY: case SND_ACE: tunes++; break;
 		}
 		/* a putt has no power click before it, a swing does */
 		if (v == SND_HIT_PUTT) CHECK(k > 0 && snd_log[k - 1] == SND_SWING);
@@ -2236,6 +2516,18 @@ static void sound_tests(void)
 	k = 0;
 	while (snd_take() != SND_NONE) k++;
 	CHECK(k == SND_QUEUE || k == snd_log_n);
+
+	/* Change the club and shot shape, then let the snap marker run out. */
+	play_init(&p, &holes[0].h, &holes[0].g, 3);
+	snd_log_n = 0;
+	play_key(&p, KEY_DOWN, t);
+	play_key(&p, KEY_SHAPE, t);
+	CHECK(snd_log_n == 2 && snd_log[0] == SND_CLUB_CHANGE && snd_log[1] == SND_CLUB_CHANGE);
+	play_key(&p, KEY_SELECT, t);
+	play_key(&p, KEY_SELECT, t + MTR_UP_MS / 2);
+	t += MTR_UP_MS + MTR_DOWN_MS;
+	play_frame(&p, &s, &bg, t);
+	CHECK(p.state == PS_FLY && p.mishit && snd_log[snd_log_n - 1] == SND_MISHIT);
 
 	/* putts from 7 yd at a range of powers until one drops: the cup, then the
 	 * birdie tune (2 on a par 4), with no landing sound for the putter */
@@ -2269,6 +2561,27 @@ static void sound_tests(void)
 		}
 		printf("sound: holed a 7 yd putt aimed %d degrees left at %u ms\n", left - 1, (unsigned)(ms - 10));
 		CHECK(holed);
+		if (holed) {
+			/* Play the same stroke as the first shot and advance during the cup sound. */
+			vec2 pin = holes[0].h.pins[0];
+			rules_init(&r, "Par386 Test", 1, 3, pars, 3);
+			r.pl[0].taken = 1;
+			r.pl[0].ball = vec2_make(pin.x - (2L << 16), pin.y - (7L << 16));
+			r.pl[0].lie = LIE_GREEN;
+			play_start(&p, &holes[0].h, &holes[0].g, &r);
+			p.stroke = 1;
+			snd_log_n = 0;
+			t += 1000;
+			for (k = 1; k < left; k++) play_key(&p, KEY_LEFT, t);
+			play_key(&p, KEY_SELECT, t);
+			t += ms - 10;
+			play_tap(&p, 80, 60, t);
+			run(&p, &s, &bg, &t, PS_FLY);
+			play_key(&p, KEY_SELECT, t);
+			play_frame(&p, &s, &bg, t);
+			CHECK(p.state == PS_DONE && p.score == 1);
+			CHECK(snd_log_n == 4 && snd_log[2] == SND_CUP && snd_log[3] == SND_ACE);
+		}
 		while (snd_take() != SND_NONE) {}
 	}
 
@@ -2475,6 +2788,7 @@ int main(int argc, char **argv)
 	save_tests();
 	card_tests();
 	front_tests();
+	book_edge_test();
 	round_tests(argv[1]);
 	sound_tests();
 	printf("next scene drawn ahead: %d of %d matched, %d scenes not drawn ahead, %d known in flight\n", ahead_ok, ahead_n, ahead_none, ahead_fly);

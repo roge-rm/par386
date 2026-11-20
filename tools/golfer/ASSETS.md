@@ -7,7 +7,10 @@ Nothing here is committed: the downloads live in `build/golfer-assets/` and can 
 | MPFB 2.0.18 (Blender extension, makes the human, rig and fits clothes) | https://extensions.blender.org/add-ons/mpfb/ | GPLv3 (code, used as a tool only) |
 | MakeHuman base mesh, targets, `cmu_mb` rig and weights (inside MPFB) | same | CC0 |
 | MakeHuman system assets: `male_casualsuit06`, `female_casualsuit01`, `shoes02`, `short02` and `ponytail01` hair, `young_caucasian_male` and `young_caucasian_female` skin | http://files.makehumancommunity.org/asset_packs/makehuman_system_assets/makehuman_system_assets_cc0.zip | CC0 |
-| CMU motion capture, subject 64, trial 01 (golf swing), `64.asf` + `64_01.amc` | http://mocap.cs.cmu.edu/subjects/64/ | Free to use, including in commercial products, per the CMU site (check the wording there before release); credit mocap.cs.cmu.edu, NSF EIA-0196217 |
+| CMU motion capture, subject 64, trial 01 (golf swing), `64.asf` + `64_01.amc` | https://mocap.cs.cmu.edu/subjects/64/ | CMU allows use in products and prohibits direct resale of the data, including converted copies. See the [CMU motion capture database](https://mocap.cs.cmu.edu/). |
+
+The data used in this project was obtained from mocap.cs.cmu.edu.
+The database was created with funding from NSF EIA-0196217.
 
 The cap and club are modelled in `build_scene.py`.
 

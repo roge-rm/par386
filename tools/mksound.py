@@ -3,8 +3,8 @@
 
 Every sound is synthesised here, so there are no recordings to license: club
 hits (a sharp transient and a short resonant ring, different for a wood, an
-iron and the putter), the ball coming down on grass, rough and sand, a water
-splash, the ball rattling into the cup, bird chirps for the tee and applause.
+iron and the putter), a mis-hit, landings on grass, rough, sand and paths,
+a water splash, the cup drop and lip-out, bird chirps and applause.
 They're cut to 8 bits at 11 kHz with no dither, like digitized sound of the
 early 90s. Writes:
   OUT/Snd8-ID.bin   the raw samples, one resource each (IDs in src/palm/audio.c)
@@ -95,22 +95,50 @@ def putt():
     return norm(club(0.14, 2, (1200, 4500), [(860, 1.0), (1720, 0.4), (2600, 0.15)], 0.02), 0.6)
 
 
-def land(seconds, low, rustle, level):
-    t = t_of(seconds)
-    x = low * np.sin(2 * np.pi * 95 * t) * np.exp(-t / 0.025)
-    x += band(noise(seconds), 0, 700) * np.exp(-t / 0.02)
-    x += rustle * band(noise(seconds), 1500, 4500) * np.exp(-t / 0.05)
-    return norm(x, level)
+def fairway():
+    t = t_of(0.14)
+    x = band(noise(0.14), 380, 1200) * np.exp(-t / 0.014)
+    x += 0.7 * band(noise(0.14), 1200, 3500) * np.exp(-t / 0.003)
+    x += 0.3 * np.sin(2 * np.pi * 480 * t) * np.exp(-t / 0.011)
+    return norm(x, 0.46)
+
+
+def rough():
+    t = t_of(0.18)
+    x = 0.45 * band(noise(0.18), 300, 1200) * np.exp(-t / 0.02)
+    brush = band(noise(0.18), 1000, 2700) * np.minimum(1, t / 0.012)
+    x += brush * np.exp(-t / 0.033)
+    return norm(x, 0.38)
 
 
 def sand():
     t = t_of(0.34)
-    x = 0.8 * np.sin(2 * np.pi * 80 * t) * np.exp(-t / 0.03)
-    x += band(noise(0.34), 0, 500) * np.exp(-t / 0.03)
+    x = 0.35 * band(noise(0.34), 420, 1150) * np.exp(-t / 0.014)
     # the grains: a gritty hiss that falls away
-    g = band(noise(0.34), 1200, 4000) * (rng.uniform(0, 1, len(t)) > 0.6)
-    x += 0.5 * g * np.exp(-t / 0.09)
-    return norm(x, 0.8)
+    g = band(noise(0.34), 2000, 4900) * (rng.uniform(0, 1, len(t)) > 0.55)
+    x += g * np.exp(-t / 0.045)
+    return norm(x, 0.52)
+
+
+def path():
+    t = t_of(0.12)
+    x = ring(t, [(940, 0.5), (1980, 0.8), (3350, 0.6)], 0.008)
+    x += band(noise(0.12), 1700, 5000) * np.exp(-t / 0.003)
+    return norm(x, 0.55)
+
+
+def lip():
+    t = t_of(0.08)
+    x = ring(t, [(2050, 0.7), (3400, 0.6), (4510, 0.5)], 0.006)
+    return norm(x, 0.42)
+
+
+def mishit():
+    t = t_of(0.2)
+    x = 0.55 * ring(t, [(370, 0.8), (740, 0.6)], 0.018)
+    x += band(noise(0.2), 140, 1600) * np.exp(-t / 0.026)
+    x += 0.2 * band(noise(0.2), 900, 3000) * np.exp(-((t - 0.032) / 0.016) ** 2)
+    return norm(x, 0.68)
 
 
 def splash():
@@ -183,23 +211,21 @@ def birds2():
 
 
 def applause():
-    s = 1.8
+    s = 1.0
     n = int(s * RATE)
     t = t_of(s)
     x = np.zeros(n)
-    # rate of claps: swells in 0.35 s, holds, fades out from 1.0 s
-    swell = np.minimum(1, t / 0.35) * np.where(t < 1.0, 1, np.exp(-(t - 1.0) / 0.25))
-    k = 0
+    # The crowd comes in quickly and winds down from 0.48 s.
+    swell = np.minimum(1, t / 0.15) * np.where(t < 0.48, 1, np.exp(-(t - 0.48) / 0.15))
     for i in range(0, n, 40):
         for _ in range(rng.poisson(110 * swell[i] * 40 / RATE)):
             d = rng.uniform(0.006, 0.014)
             c = noise(d) * np.exp(-np.arange(int(d * RATE)) / (d * RATE / 4))
             at(x, c * rng.uniform(0.3, 1.0), i + rng.uniform(0, 40))
-            k += 1
     x = band(x, 600, 3800)
     # a room under it
     x += 0.15 * band(noise(s), 200, 2500) * swell
-    return norm(x, 0.85)
+    return norm(x * np.minimum(1, (s - t) / 0.08), 0.62)
 
 
 # resource IDs, as in src/palm/audio.c
@@ -207,14 +233,17 @@ SOUNDS = [
     (2001, 'wood', wood),
     (2002, 'iron', iron),
     (2003, 'putt', putt),
-    (2004, 'land-fairway', lambda: land(0.14, 0.7, 0.15, 0.55)),
-    (2005, 'land-rough', lambda: land(0.18, 0.5, 0.6, 0.5)),
+    (2004, 'land-fairway', fairway),
+    (2005, 'land-rough', rough),
     (2006, 'sand', sand),
     (2007, 'splash', splash),
     (2008, 'cup', cup),
     (2009, 'birds1', birds1),
     (2010, 'birds2', birds2),
     (2011, 'applause', applause),
+    (2012, 'land-path', path),
+    (2013, 'lip-out', lip),
+    (2014, 'mishit', mishit),
 ]
 
 

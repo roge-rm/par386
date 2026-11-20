@@ -587,6 +587,7 @@ static void putt_tests(void)
 	s = putt(128, 26, 12, 95);
 	printf("hit 6 yd past, off the edge: %s, lip %d, stopped %.2f yd aside\n", s->result == SHOT_HOLED ? "holed" : "missed", s->lip, fabs(TOYD(s->stop.x) - 128));
 	CHECK(s->result == SHOT_OK && s->lip);
+	CHECK(s->land_pt == 0 && s->lip_pt > 0 && s->lip_pt < s->n);
 	CHECK(fabs(TOYD(s->stop.x) - 128) > 0.5);
 	s = putt(128, 26, 30, 0);
 	CHECK(s->result == SHOT_OK && s->lip);
@@ -1063,6 +1064,7 @@ static uint32_t drive_run(const Hole *h, const SurfaceGrid *g, uint8_t mapview, 
 	CHECK(p.state == PS_FLY && p.power == FIX_ONE && p.club == CLUB_DR);
 	*ns = 0;
 	*tmap = 0;
+	CHECK(p.shot.land_pt > 0 && p.shot.land_pt < p.shot.fly_n);
 	for (t = 2760; t < 60000; t += 30) {
 		f = play_frame(&p, &s, &bg, t);
 		/* prows < 0: the map only starts once the ball is down, too late */
@@ -1091,6 +1093,10 @@ static uint32_t drive_run(const Hole *h, const SurfaceGrid *g, uint8_t mapview, 
 		/* nothing to do with a key or tap while it flies on the map */
 		if (p.onmap && p.state == PS_FLY) CHECK(play_key(&p, KEY_SELECT, t) == 0 && play_tap(&p, 80, 60, t) == 0);
 		for (; logged < snd_log_n && *ns < 64; logged++) {
+			if (snd_log[logged] >= SND_LAND_FAIRWAY && snd_log[logged] <= SND_SPLASH) {
+				uint32_t contact = p.tf + 42 * (uint32_t)p.shot.land_pt;
+				CHECK(t >= contact && t < contact + 30);
+			}
 			st[*ns] = t;
 			sid[(*ns)++] = snd_log[logged];
 		}

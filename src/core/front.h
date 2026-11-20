@@ -11,6 +11,12 @@
 /* Background pictures. */
 #define PIC_TITLE 1000
 #define PIC_MENU  1100
+/* Above the course preview range, including custom scenery numbers. */
+#define PIC_TALL_TITLE 4000
+#define PIC_TALL_MENU  4010
+#define PIC_WIDE_TITLE 4020
+#define PIC_WIDE_MENU  4030
+#define PIC_EXTEND_PX 80     /* from the artwork's edge to the centred square */
 /* Course previews, one picture per scenery number: PIC_PREVIEW + 10 * scenery
  * (tools/mkpreview.py), shown on the courses screen in the box below. */
 #define PIC_PREVIEW 1200
@@ -92,12 +98,15 @@ typedef struct {
 	char player_list[64];
 	char player_name[PLAYER_NAME_MAX + 1]; /* draft name until Done */
 	uint8_t name_key;                     /* selected key on the name screen */
-	char players_list[RULES_PLAYERS * 13 + 16 + 14];   /* "P1  Human|P2  CPU Fair|Tees: Medal|Tee off|Back" */
+	char players_list[RULES_PLAYERS * 13 + 16 + 15 + 14];
 	uint8_t tee;             /* the tee set picked on the players screen, 0 the longest */
+	uint8_t span;            /* SPAN_* picked for 18-hole courses */
 	uint8_t tee_count[FRONT_COURSES];       /* each course's tee sets, 0 if not known (a card course) */
+	uint8_t hole_count[FRONT_COURSES];      /* 0 if not known */
 	char tee_names[FRONT_COURSES][COURSE_MAX_TEES][TEE_NAME_MAX + 1];
-	uint16_t rec_strokes[FRONT_COURSES][COURSE_MAX_TEES];   /* each course's record per tee set, 0 for none */
-	int16_t rec_par[FRONT_COURSES][COURSE_MAX_TEES];
+	uint16_t rec_strokes[FRONT_COURSES][COURSE_MAX_TEES][SPAN_COUNT]; /* 0 for none */
+	int16_t rec_par[FRONT_COURSES][COURSE_MAX_TEES][SPAN_COUNT];
+	uint8_t event_best[FRONT_COURSES];     /* best tournament finish, 0 for none */
 	char course_names[FRONT_COURSES][24];
 	char course_list[FRONT_COURSE_LIST];    /* the page's names, More and Back: "A|B|More|Back" */
 	uint8_t page;            /* the courses screen's page */
@@ -107,7 +116,8 @@ typedef struct {
 } Front;
 
 void SEC_MENU front_init(Front *f);
-uint16_t SEC_MENU front_picture(const Front *f);
+uint16_t SEC_MENU front_picture(const Front *f, const Surface *s);
+int SEC_MENU front_picture_band(Surface *s, uint16_t id, const uint8_t *d, uint32_t len);
 void SEC_MENU front_draw(const Front *f, Surface *s);
 int SEC_MENU front_key(Front *f, uint8_t key);
 int SEC_MENU front_tap(Front *f, int16_t x, int16_t y);
@@ -124,12 +134,12 @@ void SEC_MENU front_courses(Front *f, const char *const *names, const uint8_t *s
 uint16_t SEC_MENU front_preview(const Front *f);
 /* Draws one band of the preview picture into its box; -1 if it doesn't fit. */
 int SEC_MENU front_preview_band(Surface *s, const uint8_t *d, uint32_t len);
-/* Course i's tee set names, from its header, or NULL if it isn't known. */
+/* Course i's hole count and tee set names, from its header, or NULL if it isn't known. */
 void SEC_MENU front_course_tees(Front *f, uint8_t i, const Course *c);
-/* Course i's record from tee set tee for the courses screen: strokes
+/* Course i's record from tee set tee and span for the courses screen: strokes
  * against to_par; strokes 0 for none yet. */
-void SEC_MENU front_record(Front *f, uint8_t i, uint8_t tee, uint16_t strokes, int16_t to_par);
-/* The courses screen's record line for course i from the picked tee set,
+void SEC_MENU front_record(Front *f, uint8_t i, uint8_t tee, uint8_t span, uint16_t strokes, int16_t to_par);
+/* The courses screen's record line for course i from the picked tee and span,
  * "Medal 71 (-1)", or empty for none. t takes 20 characters. */
 void SEC_MENU front_record_line(const Front *f, uint8_t i, char *t);
 /* How many tee sets the picked course has and the name of set t. */

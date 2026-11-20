@@ -336,3 +336,35 @@ uint8_t surface_at(const SurfaceGrid *g, fixed x, fixed y)
 	if (off && s != SURF_WATER) return SURF_OOB;
 	return s;
 }
+
+uint8_t hole_hazards(const Hole *h, const SurfaceGrid *g, vec2 ball, angle aim, HazardCarry *out, uint8_t cap)
+{
+	vec2 step = vec2_dir(aim);
+	fixed xmax = (fixed)h->width << 16, ymax = (fixed)h->length << 16;
+	uint16_t yards = 0, first = 0;
+	uint8_t count = 0, prev = SURF_ROUGH;
+
+	if (!g || !g->cells) return 0;
+	while (count < cap && ball.x >= 0 && ball.x < xmax && ball.y >= 0 && ball.y < ymax) {
+		uint8_t s = surface_at(g, ball.x, ball.y);
+		if (s != SURF_WATER && s != SURF_BUNKER && s != SURF_OOB) s = SURF_ROUGH;
+		if (s != prev) {
+			if (prev != SURF_ROUGH && yards - first >= 2) {
+				out[count].entry = first;
+				out[count].clear = yards;
+				out[count++].surface = prev;
+			}
+			first = yards;
+			prev = s;
+		}
+		ball.x += step.x;
+		ball.y += step.y;
+		yards++;
+	}
+	if (count < cap && prev != SURF_ROUGH) {
+		out[count].entry = first;
+		out[count].clear = 0;
+		out[count++].surface = prev;
+	}
+	return count;
+}

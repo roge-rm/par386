@@ -24,7 +24,7 @@ Points in records are in quarter yards (u16), and must lie on the hole (0 to wid
 | name | course name, 1 to 31 characters |
 | name × tee sets | tee set names, 1 to 15 characters each |
 | per hole: u8, u16 | par, yards from the longest tee |
-| u8 | version 2 and up: scenery, the sky, backdrop and object art (0 parkland, 1 links, 2 Irish clifftop, 3 Japanese seaside, 4 Australian sandbelt, 5 South African bush, 6 Canadian Rockies) |
+| u8 | version 2 and up: scenery and object art (0 parkland, 1 links, 2 Irish clifftop, 3 Japanese seaside, 4 Australian sandbelt, 5 South African bush, 6 Canadian Rockies, 7 English heathland, 8 Gulf desert, 9 Algarve hillside) |
 | u8 × holes | version 2 and up: each hole's map turned against the course, 256 a turn, which moves the backdrop |
 | u8 | version 3 and up: the average wind in mph, 0 to 40, 0 for the usual 10. Each hole's wind is 0 to twice that |
 | u8 | version 4 only: green speed, 6 to 14, 0 for the usual 10. The green's roll slows by the usual amount times 10 over it, so 13 rolls about a third further |
@@ -62,7 +62,7 @@ Surface types: 0 rough, 1 first cut, 2 fairway, 3 deep rough, 4 green, 5 fringe,
 
 Object types: 1 tree, 2 pine, 3 palm, 4 bush, 5 rock, 6 house, 7 stand (a grandstand), 8 wall (a dry-stone section 6 yd long at scale 64), 9 gorse, 10 grass (dune grass), 11 landmark (16 yd high: the course's kirk, lighthouse, pagoda, windmill, baobab or hotel), 12 animal (1.5 yd: sheep, kangaroo, crane, crocodile, hippo or elk). Other numbers load and are left for later.
 
-Each scenery number has its own sprites for some types (tools/mkstyle.py lists them), in variant 0 and sometimes 1, such as the cherry and the maple for Sakura Bay trees; types it has none for use the shared art, and a variant it has no art for draws as variant 0. Scenery 1 to 6 each have their own backdrop.
+Each scenery number has its own sprites for some types (tools/mkstyle.py lists them), in variant 0 and sometimes 1, such as the cherry and the maple for Sakura Bay trees; types it has none for use the shared art, and a variant it has no art for draws as variant 0. Scenery 1 to 9 each have their own backdrop.
 
 ## Surface grid
 
@@ -106,5 +106,7 @@ object pine 16 60 [variant] [scale]
 Surface names: rough, first-cut, fairway, deep-rough, green, fringe, bunker, water, path, oob, tee. Object names: tree, pine, palm, bush, rock, house, stand, wall, gorse, grass, landmark, animal, or a number.
 
 Auld Kirk (`courses/auldkirk/`) is made by `tools/mkauldkirk.py` (`make auldkirk`), which writes the hole files and heightmaps from a table of centre lines, greens and features. Carrig Head, Sakura Bay, Banksia Heath, Crocodile Bend and Cascade Springs are made the same way by `tools/mkcarrig.py`, `tools/mksakura.py`, `tools/mkbanksia.py`, `tools/mkcroc.py` and `tools/mkcascade.py`.
+
+Run `python3 tools/mkexpansion.py` for Bracken Mere, Saffron Dunes and Falesia Grove. Pass a folder name such as `saffrondunes` to regenerate just that course.
 
 The heightmap's top row is the far end of the hole, so the PNG looks like a course map.

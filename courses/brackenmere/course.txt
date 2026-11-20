@@ -1,0 +1,8 @@
+name Bracken Mere
+tee Medal
+tee Club
+tee Forward
+holes 18
+scenery 7
+wind 11
+green 10

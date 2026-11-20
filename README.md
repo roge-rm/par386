@@ -1,18 +1,52 @@
 # Par 386
 
-A golf game for Palm OS in the style of early 90s PC golf games. Runs on the Palm IIIx and up. See PLAN.md.
+Par 386 is a golf game for Palm OS in the style of early ’90s PC golf games. Pick a club, aim down the fairway and time a three-click swing. Follow the ball on the overhead map, then read the slope on the green and putt out.
 
-## Installing
+Play nine courses, take turns with up to four players on one Palm, or play against computer golfers. There are two-round tournaments, a driving range and a practice green. Leave a round and pick it up again from the clubhouse.
 
-Install `Par386.prc` and the course files (`Par386-*.pdb`) you want. Courses can go in RAM or on an SD card, in `/PALM/Programs/Par386/`, `/PALM/Launcher/` or the root of the card. A card course is copied into RAM while you play it, so you need about 70 KB free.
+Enjoy,<br>
+Dan
 
-## Player
+<p align="center"><img src="doc/images/gameplay.gif" width="320" alt="Par 386 on a Tungsten TX, from the title and clubhouse to a three-click drive, its overhead flight and a practice putt" /></p>
 
-Open Player in the clubhouse to set your name, golfer, skin colour and handedness. Your name can have up to eight characters. The choices are saved and used for the first human player, including when you continue a round. The left-handed golfer swings on the other side of the ball. Skin shades use the same silhouette on screens with one or two bits per pixel.
+## Screenshots
 
-## Games
+<table>
+  <tr>
+    <td align="center"><img src="doc/images/tx-title.png" width="200" alt="The Par 386 title over a golfer and a fairway" /><br>Title</td>
+    <td align="center"><img src="doc/images/tx-tee.png" width="200" alt="A golfer at the tee with the fairway and aim marker ahead" /><br>On the tee</td>
+  </tr>
+  <tr>
+    <td align="center"><img src="doc/images/tx-flight.png" width="200" alt="An overhead map with a ball trail and a live carry distance" /><br>Ball flight</td>
+    <td align="center"><img src="doc/images/tx-green.png" width="200" alt="A low view of the practice green with an aim line toward the cup" /><br>Practice green</td>
+  </tr>
+</table>
 
-Play a round, pick the game, then set each of the four player slots to Human, a computer golfer (CPU Easy, Fair, Good or Pro) or Off, and Tee off.
+Captured on a Tungsten TX in the [Frond emulator](https://github.com/roge-rm/frond).
+
+## Devices
+
+One build runs on Palm OS 3.1 and up, from a Palm IIIx in greys to a Tungsten TX in colour. The title and menus fill the available display on supported tall and landscape colour screens. Older Palms play tones. Palm OS 5 devices with sound streams also play sampled strikes, landings, splashes and cup sounds. Settings offers On, Effects and Off.
+
+The main checks so far have been in Frond, including the IIIx, TX, Zire 72 and Sony Clié models. Listening on physical Palms and checking rotation and input-area changes are still on the [pre-release list](HANDOFF.md#before-the-next-release).
+
+## Install
+
+Download the ZIP from the [releases page](https://github.com/roge-rm/par386/releases). Install `Par386.prc` and at least one course file (`Par386-*.pdb`) with HotSync. You can also copy course files to an SD card in `/PALM/Programs/Par386/`, `/PALM/Launcher/` or the root of the card. A card course is copied into Palm memory while you play it, so leave about 70 KB free.
+
+The nine courses are Auld Kirk, Banksia Heath, Bracken Mere, Carrig Head, Cascade Springs, Crocodile Bend, Falesia Grove, Saffron Dunes and Sakura Bay. You can have up to 12 courses in the picker.
+
+## Playing
+
+Pick a course under **Courses**, then choose **Play a round**. Pick a game, set the player slots and choose **Tee off**. Par 386 picks a club for the distance. Tap the club to change it, tap the view to aim, or open **Map** and tap a target to check its yardage. **Book** shows approximate distances to hazards along that line.
+
+Tap **Swing** to start the meter. Tap again to set power, then tap as the marker comes back to the snap line. An early or late snap sends the shot off line. On the green, tap **Putt** to start and tap once more to set power. The cup mark on the meter allows for green speed and slope.
+
+Leaving the round saves it. Choose **Continue round** in the clubhouse to carry on. Under **Player**, you can set the first human player’s name (up to eight characters), golfer, skin colour and handedness.
+
+## Games and practice
+
+Set each player slot to Human, a computer golfer (Easy, Fair, Good or Pro), or Off. On an 18-hole course, **Holes** lets you play All 18, Front 9 or Back 9. Each set has its own record for each tee. Tournaments use the full course.
 
 | Game | Players | How it's scored |
 |---|---|---|
@@ -20,7 +54,7 @@ Play a round, pick the game, then set each of the four player slots to Human, a 
 | Match play | 2 | Each hole won, lost or halved; the match ends once one side is more holes up than there are left, as "3 & 2" |
 | Skins | 2 to 4 | The lowest score alone wins the hole's skin; a tie carries it to the next hole |
 | Best ball | 4 | P1 and P2 against P3 and P4, a match on each side's better score |
-| Tournament | 1 to 4 | Two rounds of stroke play against eight computer golfers. The leaderboard shows the running total after each hole and from the card. |
+| Tournament | 1 to 4 | Two rounds of stroke play against eight computer golfers. The leaderboard shows the running total after each hole and from the card. The event setup shows your best finish on that course once you've played both rounds. |
 
 The panel's middle box shows how you stand: holes up or down in match play and best ball, the skins carried over in skins, and your score to par otherwise.
 
@@ -28,11 +62,11 @@ Computer golfers aim, pick a club and shot shape and swing through the same phys
 
 In Settings, Gimmies: 2 ft gives short putts and counts the stroke. Choose Hole out to play them. The setting applies when you start a new round.
 
-The cup mark on the putting meter allows for green speed and the rise or fall to the cup.
-
 Practice has a driving range (the first par 5, each ball from the tee) and a putting green (a ball somewhere on the first green each time you hole out). On the practice green, tick Repeat to putt from the same spot each time. Tap it again to return to new spots. The Scorecard button also toggles Repeat.
 
-Your best score on each course shows under its picture on the Courses board. Only rounds played through by a person count.
+Your best score on each course shows under its picture on the Courses board. Only rounds played through by a person count. The game keeps up to 36 course, tee and hole-set records. Once the list is full, a new record replaces the oldest entry.
+
+On the final card, tap Stats or press Scorecard to see fairways hit, greens in regulation, putts and penalties. Use Next to see the other players' stats. Gimmies count as putts.
 
 ## Controls
 
@@ -60,7 +94,7 @@ Palm IIIx and other Palms with app buttons:
 | Centre | Swing: start, power, snap |
 | App buttons | As on the IIIx: 2nd map, 3rd scorecard, 4th shot shape |
 
-On the map, left and right move the target in 5° steps. The wind arrow points the way the wind blows across the map. Centre or the Map button goes back to the scene.
+On the map, left and right move the target in 5° steps. Up opens the yardage book. The wind arrow points the way the wind blows across the map. Centre or the Map button goes back to the scene.
 
 Clie Jog Dial:
 
@@ -80,19 +114,24 @@ Pen, on any device:
 | The club on the panel | Open the club picker. On the green, only the putter is available |
 | Shape on the panel | Next shot shape |
 | Map on the panel | Tap a spot to aim there and see its yardage. Back returns to the scene with the target marked |
+| Book on the map's panel | Approximate near and far yardages from the ball to hazards along your aim. A `+` means no far edge is shown |
 | Card on the map's panel | Scorecard |
 
 With a keyboard, C or S opens the scorecard, backspace goes back to the clubhouse and other letters open the map.
 
-## Build
+## Building
 
-You need prc-tools-remix, PilRC and the Palm OS SDK 5r3 (at `../palm-os-sdk/sdk-5r3`).
+You need prc-tools-remix, `arm-palmos-gcc`, PilRC, the Palm OS SDK 5r3 at `../palm-os-sdk/sdk-5r3`, and Python 3 with Pillow and NumPy.
 
-- `make` builds a debug `build/Par386.prc`
-- `make release` builds the release one
-- `make host-test` builds the game core with the host gcc (ASan and UBSan) and runs its tests, course-test included
-- `make courses` compiles the courses in `courses/` into `build/courses/` (needs Python 3 and Pillow), see doc/course-format.md
+- `make` builds a debug `build/Par386.prc` and the course files.
+- `make release` builds the release PRC and the course files.
+- `make host-test` builds and tests the game core with GCC, ASan and UBSan.
+- `make courses` compiles the courses into `build/courses/`. See the [course format](doc/course-format.md) to make your own.
+
+See the [plan](PLAN.md) for development milestones.
 
 ## Licence
 
-GPLv3, see LICENSE.
+[GPLv3](LICENSE).
+
+The golfer’s swing uses data from the [CMU Motion Capture Database](https://mocap.cs.cmu.edu/), funded by NSF EIA-0196217. See the [golfer asset credits](tools/golfer/ASSETS.md).

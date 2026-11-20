@@ -178,6 +178,9 @@ build/courses/Par386-Sakurabay.pdb: $(wildcard courses/sakurabay/*)
 build/courses/Par386-Banksiaheath.pdb: $(wildcard courses/banksiaheath/*)
 build/courses/Par386-Crocodilebend.pdb: $(wildcard courses/crocodilebend/*)
 build/courses/Par386-Cascadesprings.pdb: $(wildcard courses/cascadesprings/*)
+build/courses/Par386-Brackenmere.pdb: $(wildcard courses/brackenmere/*)
+build/courses/Par386-Saffrondunes.pdb: $(wildcard courses/saffrondunes/*)
+build/courses/Par386-Falesiagrove.pdb: $(wildcard courses/falesiagrove/*)
 
 # The Auld Kirk sources are made by a script; run it after editing it.
 auldkirk:

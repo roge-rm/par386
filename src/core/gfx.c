@@ -235,11 +235,12 @@ static void SEC_UI pic_row(Surface *s, int16_t y, const uint8_t *src, uint16_t r
 	}
 }
 
-int gfx_pic_band(Surface *s, const uint8_t *d, uint32_t len)
+static int SEC_UI pic_band(Surface *s, const uint8_t *d, uint32_t len, uint8_t crop)
 {
 	uint16_t y0, rows, rb, col = 0, row = 0, ob;
+	int16_t left = 0, width = 0;
 	uint32_t i = 8;
-	uint8_t *p, conv, bd, dbl, buf[320];
+	uint8_t *p, conv, bd, dbl, buf[480];
 
 	if (len < 8) return -1;
 	y0 = (uint16_t)((d[0] << 8) | d[1]);
@@ -251,17 +252,26 @@ int gfx_pic_band(Surface *s, const uint8_t *d, uint32_t len)
 	 * and doubled at scale 2 (dbl), and 8 bits at 320 to 8 bits at 160 */
 	dbl = (uint8_t)(bd == 2 && s->scale == 2);
 	conv = bd != s->depth || dbl || (bd == 8 && s->scale == 1 && rb > (uint16_t)s->w);
-	if (conv && !(bd == 2 && s->depth != 16) && !(bd == 8 && s->depth == 8 && s->scale == 1 && rb <= sizeof(buf)))
+	if (conv && !(bd == 2 && s->depth != 16) && !(bd == 8 && s->depth == 8 && s->scale == 1 && rb <= 320))
 		return -1;
-	if (bd == 8 && conv) {
+	if (crop) {
+		int16_t right = s->w - s->ox;
+		int32_t top = (int32_t)y0 + s->oy, bottom = top + rows;
+		if (bd != 8 || s->depth != 8 || conv || !rb || rb > sizeof(buf)) return -1;
+		left = s->ox < 0 ? -s->ox : 0;
+		if (right > (int16_t)rb) right = (int16_t)rb;
+		width = right - left;
+		if (width <= 0 || top >= s->h || bottom <= 0) return 0;
+		if (!left && width == (int16_t)rb && top >= 0 && bottom <= s->h) crop = 0;
+	} else if (bd == 8 && conv) {
 		y0 >>= 1;
 		if (y0 + ((rows + 1) >> 1) + s->oy > s->h) return -1;
 	} else if (conv) {
-		if (rb > sizeof(buf) || ((y0 + rows) << dbl) + s->oy > s->h) return -1;
+		if (rb > 320 || ((y0 + rows) << dbl) + s->oy > s->h) return -1;
 	} else if (rb + ob > s->rowBytes || y0 + rows + s->oy > s->h) {
 		return -1;
 	}
-	p = conv ? buf : rowp(s, (int16_t)(y0 + s->oy)) + ob;
+	p = conv || crop ? buf : rowp(s, (int16_t)(y0 + s->oy)) + ob;
 	while (row < rows) {
 		int8_t n;
 		uint16_t cnt, run;
@@ -289,7 +299,14 @@ int gfx_pic_band(Surface *s, const uint8_t *d, uint32_t len)
 			}
 			if (col == rb) {
 				col = 0;
-				if (!conv) p += s->rowBytes;
+				if (crop) {
+					int32_t y = (int32_t)y0 + row + s->oy;
+					if (y >= 0 && y < s->h) {
+						int16_t x;
+						q = rowp(s, (int16_t)y) + (s->ox + left);
+						for (x = 0; x < width; x++) q[x] = buf[left + x];
+					}
+				} else if (!conv) p += s->rowBytes;
 				else if (bd == 2) pic_row(s, (int16_t)(((y0 + row) << dbl) + s->oy), buf, rb, bd);
 				else if (!(row & 1)) pic_row(s, (int16_t)(y0 + (row >> 1) + s->oy), buf, rb, bd);
 				row++;
@@ -297,6 +314,16 @@ int gfx_pic_band(Surface *s, const uint8_t *d, uint32_t len)
 		}
 	}
 	return 0;
+}
+
+int gfx_pic_band(Surface *s, const uint8_t *d, uint32_t len)
+{
+	return pic_band(s, d, len, 0);
+}
+
+int gfx_pic_band_crop8(Surface *s, const uint8_t *d, uint32_t len)
+{
+	return pic_band(s, d, len, 1);
 }
 
 /* 4x4 ordered dither values, row by row. */

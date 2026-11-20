@@ -398,6 +398,7 @@ void ball_shot(const ShotIn *in, Shot *o)
 	o->steps = 0;
 	o->land_surf = s;
 	o->lip = 0;
+	o->land_pt = o->lip_pt = 0;
 
 	/* launch; the putter at the speed that rolls power times the range on a flat green */
 	if (c->launch == 0) {
@@ -488,6 +489,7 @@ void ball_shot(const ShotIn *in, Shot *o)
 			rec(o, x, y, z);
 			if (!landed) {
 				landed = 1;
+				o->land_pt = o->n - 1;
 				o->land = vec2_make(x, y);
 				o->land_surf = s;
 				o->carry = vec2_len(vec2_sub(o->land, o->start));
@@ -588,6 +590,7 @@ void ball_shot(const ShotIn *in, Shot *o)
 						vy = fix_mulq14(vx, sa) + fix_mulq14(vy, ca);
 						vx = mul(nx, k);
 						vy = mul(vy, k);
+						if (!o->lip) o->lip_pt = o->n < BALL_PATH_MAX ? o->n : BALL_PATH_MAX - 1;
 						o->lip = 1;
 						cool = 8;
 					}
@@ -608,6 +611,7 @@ void ball_shot(const ShotIn *in, Shot *o)
 		s = surf(in, x, y);
 	}
 	rec(o, x, y, z);
+	if (o->lip_pt >= o->n) o->lip_pt = o->n - 1;
 	if (!landed) {
 		o->land = vec2_make(x, y);
 		o->land_surf = s;

@@ -5,7 +5,7 @@ Draws both screens with the mockup scripts (tools/mockup/mock1b2.py) over the
 rendered course scene (tools/mockup/r/scene_bg_960.png, from render.py) and
 the address frame of the golfer, then writes:
   OUT/Pic2-ID.bin   160x160, 4 greys: flat greys by region, ordered dither between
-  OUT/Pic8-ID.bin   320x320, 8 bits, Floyd-Steinberg on the master palette
+  OUT/Pic8-ID.bin   8 bits on the master palette
   OUT/Pal8-1000.bin the master palette (tools/mkpal.py), RGB
   OUT/art.rcp       PilRC DATA lines for all of them
 and pictures of each to PREVIEW if given. Each picture is split into bands of
@@ -23,7 +23,7 @@ import struct
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import mkpal   # noqa: E402
@@ -35,6 +35,7 @@ SCENE = MOCK / 'r/scene_bg_960.png'
 # the finish of the swing, from tools/golfer/: 40 px for 160 screens, 80 for 320
 GOLFER = {1: ROOT / 'art/golfer/f13-40.png', 2: ROOT / 'art/golfer/f13-80.png'}
 PIC_TITLE, PIC_MENU, PIC_PREVIEW = 1000, 1100, 1200
+FULL_SCREENS = ((320, 480, 4000, 4010), (480, 320, 4020, 4030))
 BAND_ROWS = {2: 160, 8: 64}
 
 
@@ -53,9 +54,10 @@ def ui_colours():
     return [tuple(int(v) for v in m) for m in re.findall(r'X\(UIC_\w+,\s*(\d+),\s*(\d+),\s*(\d+),\s*\d+\)', text)]
 
 
-def title(m, S):
+def title(m, S, scene=None):
     c = m['C'](S)
-    scene = Image.open(SCENE).convert('RGB').resize((c.N, c.N), Image.LANCZOS)
+    if scene is None:
+        scene = Image.open(SCENE).convert('RGB').resize((c.N, c.N), Image.LANCZOS)
     c.img.paste(scene)
     # The golfer at the finish, on the tee at the bottom centre, with a soft shadow.
     g = Image.open(GOLFER[S]).convert('RGBA')
@@ -72,10 +74,8 @@ def title(m, S):
     return c
 
 
-def menu(m, S):
-    """The clubhouse board on the dimmed title: wood frame, felt, a blank brass plate."""
-    c = title(m, S)
-    m['dim'](c)
+def menu_board(m, c):
+    """The clubhouse board: wood frame, felt and a blank brass plate."""
     x, y, w, h = 6, 12, 148, 140
     c.rect(x + 3, y + 3, w, h, (0, 0, 0))
     m['wood'](c, x, y, w, 7, False)
@@ -86,7 +86,32 @@ def menu(m, S):
     m['bevel'](c, x + 6, y + 6, w - 12, h - 12, (40, 18, 6), (180, 120, 64))
     m['felt'](c, x + 7, y + 7, w - 14, h - 14)
     m['plaque'](c, 38, 5, 84, 13, '')
+
+
+def menu(m, S):
+    c = title(m, S)
+    m['dim'](c)
+    menu_board(m, c)
     return c
+
+
+def full_screen(m, width, height):
+    """Fill the display with the course and keep the foreground in the centre square."""
+    portrait = height > width
+    source = Image.open(SCENE).convert('RGB')
+    scene = ImageOps.fit(source, (width, height), Image.LANCZOS, centering=(0.5, 0.5 if portrait else 0.75))
+    x, y = (width - 320) // 2, (height - 320) // 2
+    centre = (x, y, x + 320, y + 320)
+
+    splash = scene.copy()
+    splash.paste(title(m, 2, scene.crop(centre)).img, (x, y))
+
+    board = m['C'](2)
+    backdrop = ImageEnhance.Brightness(scene).enhance(0.38)
+    board.img.paste(backdrop.crop(centre))
+    menu_board(m, board)
+    backdrop.paste(board.img, (x, y))
+    return splash, backdrop
 
 
 BAYER = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]]
@@ -268,6 +293,21 @@ def bands(rows, depth):
     return res
 
 
+def write_bands(out, rcp, pid, depth, rows):
+    total = 0
+    for k, data in enumerate(bands(rows, depth)):
+        name = f'Pic{depth}-{pid + k}.bin'
+        (out / name).write_bytes(data)
+        rcp.append(f'DATA "Pic{depth}" ID {pid + k} "{out / name}"')
+        total += len(data)
+    return total
+
+
+def rows8(img):
+    raw = img.tobytes()
+    return [raw[i:i + img.width] for i in range(0, len(raw), img.width)]
+
+
 def palette():
     """The master palette from tools/mkpal.py, 768 RGB bytes."""
     rgb, _, _, _ = mkpal.build()
@@ -325,19 +365,20 @@ def main():
     for pid in (PIC_TITLE, PIC_MENU):
         g = grey[pid]
         q = to8(hi[pid], pal)
-        rows8 = [bytes(q.tobytes()[y * 320:(y + 1) * 320]) for y in range(320)]
-        for depth, rows in ((2, pack_rows(g, 2)), (8, rows8)):
-            for k, b in enumerate(bands(rows, depth)):
-                name = f'Pic{depth}-{pid + k}.bin'
-                (out / name).write_bytes(b)
-                rcp.append(f'DATA "Pic{depth}" ID {pid + k} "{out / name}"')
-                total += len(b)
+        total += write_bands(out, rcp, pid, 2, pack_rows(g, 2))
+        total += write_bands(out, rcp, pid, 8, rows8(q))
         if prev:
             prev.mkdir(parents=True, exist_ok=True)
             gi = Image.new('L', (160, 160))
             gi.putdata([(3 - v) * 85 for row in g for v in row])
             gi.resize((480, 480), Image.NEAREST).save(prev / f'art-{pid}-160-grey.png')
             q.convert('RGB').save(prev / f'art-{pid}-320.png')
+    for w, h, title_id, menu_id in FULL_SCREENS:
+        for pid, img in zip((title_id, menu_id), full_screen(m, w, h)):
+            q = to8(img, pal, Image.Dither.NONE)
+            total += write_bands(out, rcp, pid, 8, rows8(q))
+            if prev:
+                q.convert('RGB').save(prev / f'art-{pid}-{w}x{h}.png')
     # course select previews, by scenery number (tools/mkpreview.py)
     import mkpreview
     for sc, (img, lab) in mkpreview.make().items():
@@ -346,13 +387,8 @@ def main():
         g = preview_grey(small, lab[1::2, ::2])
         # no dither: the painted grain is enough, and runs pack smaller
         q = to8(img, pal, Image.Dither.NONE)
-        rows8 = [bytes(q.tobytes()[y * img.width:(y + 1) * img.width]) for y in range(img.height)]
-        for depth, rows in ((2, pack_rows(g, 2)), (8, rows8)):
-            for k, b in enumerate(bands(rows, depth)):
-                name = f'Pic{depth}-{pid + k}.bin'
-                (out / name).write_bytes(b)
-                rcp.append(f'DATA "Pic{depth}" ID {pid + k} "{out / name}"')
-                total += len(b)
+        total += write_bands(out, rcp, pid, 2, pack_rows(g, 2))
+        total += write_bands(out, rcp, pid, 8, rows8(q))
         if prev:
             gi = Image.new('L', (small.width, small.height))
             gi.putdata([(3 - v) * 85 for row in g for v in row])

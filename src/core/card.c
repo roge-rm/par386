@@ -1,4 +1,5 @@
 #include "card.h"
+#include "records.h"
 
 /* As in ui.c's dialog. */
 #define TITLE_H 12
@@ -35,19 +36,20 @@ static uint8_t SEC_MENU sums(const Round *r)
  * the next nine past that, then in a tournament the leaderboard. */
 static const char *SEC_MENU buttons(const Round *r, uint8_t mode, uint8_t page)
 {
+	if (mode == CARD_STATS) return r->stats_available && r->players > 1 ? "Back|Next" : "Back";
 	if (mode == CARD_FINAL && r->tour_stage == TOUR_BREAK) {
-		if (r->holes <= 9) return "Round 2";
-		if (r->holes > 18) return "Round 2|Next 9";
-		return page ? "Round 2|Front 9" : "Round 2|Back 9";
+		if (r->holes <= 9) return "Round 2|Stats";
+		if (r->holes > 18) return "Rd 2|Next 9|Stats";
+		return page ? "Rd 2|Front|Stats" : "Rd 2|Back 9|Stats";
 	}
 	if (r->mode == MODE_TOURN && mode == CARD_VIEW) {
 		if (r->holes <= 9) return "OK|Board";
 		if (r->holes > 18) return "OK|Next 9|Board";
 		return page ? "OK|Front 9|Board" : "OK|Back 9|Board";
 	}
-	if (r->holes <= 9) return mode == CARD_FINAL ? "Done" : mode == CARD_HOLE ? "Next hole" : "OK";
-	if (r->holes > 18) return mode == CARD_FINAL ? "Done|Next 9" : mode == CARD_HOLE ? "Next hole|Next 9" : "OK|Next 9";
-	if (mode == CARD_FINAL) return page ? "Done|Front 9" : "Done|Back 9";
+	if (r->holes <= 9) return mode == CARD_FINAL ? "Done|Stats" : mode == CARD_HOLE ? "Next hole" : "OK";
+	if (r->holes > 18) return mode == CARD_FINAL ? "Done|Next 9|Stats" : mode == CARD_HOLE ? "Next hole|Next 9" : "OK|Next 9";
+	if (mode == CARD_FINAL) return page ? "Done|Front|Stats" : "Done|Back 9|Stats";
 	if (mode == CARD_HOLE) return page ? "Next hole|Front 9" : "Next hole|Back 9";
 	return page ? "OK|Front 9" : "OK|Back 9";
 }
@@ -60,6 +62,11 @@ uint8_t card_buttons(const Round *r, uint8_t mode)
 uint8_t card_board_button(const Round *r, uint8_t mode)
 {
 	return (uint8_t)(r->mode == MODE_TOURN && mode == CARD_VIEW ? card_buttons(r, mode) - 1 : 0xFF);
+}
+
+uint8_t card_stats_button(const Round *r, uint8_t mode)
+{
+	return mode == CARD_FINAL ? (uint8_t)(card_buttons(r, mode) - 1) : 0xFF;
 }
 
 static void SEC_MENU add(char *t, uint8_t *n, const char *s)
@@ -154,6 +161,12 @@ void card_layout(UiDialog *d, const Round *r, uint8_t mode, uint8_t page)
 	uint8_t from, to, i;
 	int16_t w, bw = 0, x, n;
 
+	if (mode == CARD_STATS) {
+		/* Size the dialog for the longest row and keep it stable between players. */
+		ui_dialog_init(d, "Round stats", r->stats_available ? "\n\nGreens in reg 36/36\n\n" :
+		               "Stats unavailable\nfor this round", buttons(r, mode, 0));
+		return;
+	}
 	page_holes(r, page, &from, &to);
 	d->title = card_title(r, mode);
 	d->text = "";
@@ -215,6 +228,19 @@ static void SEC_MENU rtext(Surface *s, int16_t x, int16_t y, const char *t, int1
 	ui_text(s, (int16_t)(x - n * UI_CHAR), y, t, n, UIC_INK, -1);
 }
 
+/* Append a row to the stats dialog. A nonnegative total makes a fraction. */
+static char *SEC_MENU stat_row(char *t, const char *label, uint16_t value, int16_t total)
+{
+	*t++ = '\n';
+	while (*label) *t++ = *label++;
+	t += num(t, (int16_t)value, 0);
+	if (total >= 0) {
+		*t++ = '/';
+		t += num(t, total, 0);
+	}
+	return t;
+}
+
 void card_draw(Surface *s, const Round *r, uint8_t mode, uint8_t page, uint8_t sel)
 {
 	UiDialog d;
@@ -225,6 +251,22 @@ void card_draw(Surface *s, const Round *r, uint8_t mode, uint8_t page, uint8_t s
 
 	card_layout(&d, r, mode, page);
 	d.sel = (uint8_t)(sel < d.count ? sel : 0);
+	if (mode == CARD_STATS) {
+		char rows[80], *at = rows;
+		if (r->stats_available) {
+			const RoundPlayer *p = &r->pl[page];
+			const RoundStats *st = &p->stats;
+			const char *name = p->name;
+			while (*name) *at++ = *name++;
+			at = stat_row(at, "Fairways ", st->fairways, st->drives);
+			at = stat_row(at, "Greens in reg ", st->greens, rules_played(r, page, 0, r->holes));
+			at = stat_row(at, "Putts ", st->putts, -1);
+			stat_row(at, "Penalties ", st->penalties, -1);
+			d.text = rows;
+		}
+		ui_dialog_draw(s, &d);
+		return;
+	}
 	page_holes(r, page, &from, &to);
 	b = &d.box;
 	ui_dialog_draw(s, &d);
@@ -250,7 +292,7 @@ void card_draw(Surface *s, const Round *r, uint8_t mode, uint8_t page, uint8_t s
 		/* the hole being played on a light bar */
 		if (h == r->hole && !r->over && mode == CARD_VIEW)
 			ui_fill(s, tx - 1, y - 1, line - tx + 2, CARD_ROW, UIC_PAPER_DK);
-		n = num(t, (int16_t)(h + 1), 0);
+		n = num(t, rules_hole_number(r, h), 0);
 		ui_text(s, tx, y, t, n, UIC_INK, -1);
 		n = num(t, r->pars[h], 0);
 		rtext(s, tx + PAR_R, y, t, n);
@@ -326,8 +368,8 @@ void board_layout(UiDialog *d, const Round *r, uint8_t mode, uint8_t lines)
 			addn(title, &n, done);
 		}
 	}
-	d->title = title;
-	d->text = "";
+	d->title = rec_event_name(r->course);
+	d->text = title;
 	d->buttons = mode == CARD_FINAL ? (r->tour_stage == TOUR_BREAK ? "Round 2|Card" : "Done|Card") :
 		mode == CARD_HOLE ? "Next hole|Card" : "OK|Card";
 	d->count = ui_parts(d->buttons, '|');
@@ -342,7 +384,7 @@ void board_layout(UiDialog *d, const Round *r, uint8_t mode, uint8_t lines)
 	if (w < bw + 8) w = (int16_t)(bw + 8);
 	if (w < n * UI_CHAR + 8) w = (int16_t)(n * UI_CHAR + 8);
 	d->box.w = w;
-	d->box.h = (int16_t)(1 + TITLE_H + GAP + lines * CARD_ROW + GAP + BTN_H + GAP + 1);
+	d->box.h = (int16_t)(1 + TITLE_H + GAP + 12 + lines * CARD_ROW + GAP + BTN_H + GAP + 1);
 	d->box.x = (int16_t)((160 - w) / 2);
 	/* above the play panel (26 high) when it fits, so the hole's line stays in sight */
 	d->box.y = (int16_t)(d->box.h <= 134 ? (134 - d->box.h) / 2 : (160 - d->box.h) / 2);
@@ -368,7 +410,7 @@ void board_draw(Surface *s, const Round *r, uint8_t mode, uint8_t sel)
 	d.sel = (uint8_t)(sel < d.count ? sel : 0);
 	ui_dialog_draw(s, &d);
 	x = (int16_t)(d.box.x + (d.box.w - (POS_W + NAME_W + PAR_W)) / 2);
-	y = (int16_t)(d.box.y + 1 + TITLE_H + GAP);
+	y = (int16_t)(d.box.y + 1 + TITLE_H + GAP + 12);
 	for (i = 0; i < n; i++, y += CARD_ROW) {
 		const char *nm = b[i].who < RULES_PLAYERS ? r->pl[b[i].who].name : rules_field_name((uint8_t)(b[i].who - RULES_PLAYERS));
 		/* the round's players on a light bar */

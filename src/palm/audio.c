@@ -17,9 +17,10 @@
 #define kCreator    'P386'
 #define kSoundPref  2           /* app preference: the setting, one byte */
 #define kSmpType    'Snd8'
-#define kSmpFirst   2001        /* Snd8 2001 to 2011, as tools/mksound.py makes them */
-#define kSmpCount   11
+#define kSmpFirst   2001        /* Snd8 2001 to 2014, as tools/mksound.py makes them */
+#define kSmpCount   14
 #define kSmpBirds   2009        /* 2009 and 2010 */
+#define kSmpCup     2008
 #define kSmpApplause 2011
 #define kRate       11025
 #define kFrames     512         /* the stream's buffer: about 46 ms */
@@ -34,35 +35,42 @@ typedef struct {
 static const Tone kTones[] = {
 	/* 0 SND_SWING */        { 900, 14, 32 },
 	/* 1 SND_CLICK */        { 1600, 6, 40 },
-	/* 2 SND_HIT_WOOD */     { 2400, 4, 64 }, { 500, 12, 64 }, { 300, 20, 48 },
-	/* 5 SND_HIT_IRON */     { 3600, 4, 64 }, { 1800, 10, 56 }, { 2200, 10, 40 },
-	/* 8 SND_HIT_PUTT */     { 1300, 8, 40 },
-	/* 9 SND_LAND_FAIRWAY */ { 160, 20, 40 },
-	/* 10 SND_LAND_ROUGH */  { 120, 20, 28 },
-	/* 11 SND_LAND_SAND */   { 90, 30, 40 }, { 70, 30, 24 },
-	/* 13 SND_SPLASH */      { 1700, 12, 48 }, { 1100, 12, 48 }, { 2100, 12, 40 }, { 900, 12, 40 },
+	/* 2 SND_HIT_WOOD */     { 2100, 4, 56 }, { 520, 12, 64 },
+	/* 4 SND_HIT_IRON */     { 3600, 4, 64 }, { 1800, 10, 56 }, { 2200, 10, 40 },
+	/* 7 SND_HIT_PUTT */     { 1300, 8, 40 },
+	/* 8 SND_LAND_FAIRWAY */ { 540, 12, 30 },
+	/* 9 SND_LAND_ROUGH */   { 720, 6, 20 }, { 0, 10, 0 }, { 470, 14, 17 },
+	/* 12 SND_LAND_SAND */   { 1050, 8, 29 }, { 760, 8, 24 }, { 480, 8, 16 },
+	/* 15 SND_SPLASH */      { 1700, 12, 48 }, { 1100, 12, 48 }, { 2100, 12, 40 }, { 900, 12, 40 },
 	                         { 1500, 12, 32 }, { 700, 20, 32 }, { 450, 30, 24 },
-	/* 20 SND_CUP */         { 2300, 6, 48 }, { 0, 40, 0 }, { 2500, 6, 40 }, { 0, 26, 0 }, { 2200, 6, 32 },
+	/* 22 SND_CUP */         { 2300, 6, 48 }, { 0, 40, 0 }, { 2500, 6, 40 }, { 0, 26, 0 }, { 2200, 6, 32 },
 	                         { 0, 18, 0 }, { 2400, 6, 24 }, { 0, 12, 0 }, { 500, 30, 40 },
-	/* 29 SND_OOB */         { 300, 150, 48 }, { 0, 40, 0 }, { 220, 250, 48 },
-	/* 32 SND_HOLED */       { 523, 80, 48 }, { 0, 20, 0 }, { 659, 80, 48 }, { 0, 20, 0 }, { 784, 80, 48 },
+	/* 31 SND_OOB */         { 300, 150, 48 }, { 0, 40, 0 }, { 220, 250, 48 },
+	/* 34 SND_HOLED */       { 523, 80, 48 }, { 0, 20, 0 }, { 659, 80, 48 }, { 0, 20, 0 }, { 784, 80, 48 },
 	                         { 0, 20, 0 }, { 1047, 200, 48 },
-	/* 39 SND_BIRDIE */      { 392, 90, 48 }, { 523, 90, 48 }, { 659, 90, 48 }, { 784, 180, 48 },
+	/* 41 SND_BIRDIE */      { 392, 90, 48 }, { 523, 90, 48 }, { 659, 90, 48 }, { 784, 180, 48 },
 	                         { 659, 90, 48 }, { 784, 300, 48 },
-	/* 45 SND_BOGEY */       { 392, 180, 48 }, { 0, 30, 0 }, { 370, 180, 48 }, { 0, 30, 0 }, { 349, 450, 48 },
-	/* 50 SND_MENU_MOVE */   { 2000, 4, 24 },
-	/* 51 SND_MENU_SELECT */ { 1500, 12, 32 },
-	/* 52 end */             { 0, 0, 0 }
+	/* 47 SND_BOGEY */       { 392, 180, 48 }, { 0, 30, 0 }, { 370, 180, 48 }, { 0, 30, 0 }, { 349, 450, 48 },
+	/* 52 SND_MENU_MOVE */   { 2000, 4, 24 },
+	/* 53 SND_MENU_SELECT */ { 1500, 12, 32 },
+	/* 54 SND_LAND_PATH */   { 1500, 9, 34 },
+	/* 55 SND_LIP */         { 2600, 8, 36 }, { 1600, 8, 24 },
+	/* 57 SND_MISHIT */      { 730, 5, 44 }, { 370, 13, 40 },
+	/* 59 SND_CLUB_CHANGE */ { 1150, 6, 20 },
+	/* 60 SND_ACE */         { 784, 60, 48 }, { 0, 30, 0 }, { 784, 60, 48 }, { 1047, 110, 48 },
+	                         { 1319, 110, 48 }, { 1568, 130, 48 }, { 2093, 280, 48 },
+	/* 67 end */             { 0, 0, 0 }
 };
 
 /* Each sound's first step in kTones, by SND_* id; the next one's start ends it. */
 static const UInt8 kStart[SND_COUNT + 1] = {
-	0, 0, 1, 2, 5, 8, 9, 10, 11, 13, 20, 29, 32, 39, 45, 50, 51, 52
+	0, 0, 1, 2, 4, 7, 8, 9, 12, 15, 22, 31, 34, 41, 47, 52, 53, 54, 55, 57, 59, 60, 67
 };
 
 /* The sample for each SND_* id on stream devices, 0 for tones only. */
 static const UInt16 kSample[SND_COUNT] = {
-	0, 0, 0, 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 0, 0, 0, 0, 0, 0
+	0, 0, 0, 2001, 2002, 2003, 2004, 2005, 2006, 2007, kSmpCup, 0, 0, 0, 0, 0, 0,
+	2012, 2013, 2014, 0, 0
 };
 
 /* The callback's block. Voice 0 plays effects, voice 1 the birds, a
@@ -71,9 +79,11 @@ static const UInt16 kSample[SND_COUNT] = {
  * last saw (ack), so the two never write the same field. */
 typedef struct {
 	const UInt8 *ptr[2];        /* callback's: what each voice plays */
-	UInt32 len[2], pos[2];
-	UInt16 ack[2];
+	volatile UInt32 len[2], pos[2];
+	volatile UInt16 ack[2];
 	volatile UInt16 seq[2];     /* main thread's */
+	volatile Boolean birds;    /* main thread's: let the current call play */
+	UInt16 birdGain;            /* callback's: 128 is the usual quarter level */
 	const UInt8 *rptr[2][4];
 	UInt32 rlen[2][4];
 	volatile UInt32 fills;      /* callbacks so far, for the debug line */
@@ -82,7 +92,8 @@ typedef struct {
 static UInt8 gMode;             /* SOUND_* */
 static UInt16 gVolume;          /* the system game volume, 0 to sndMaxAmp */
 static UInt16 gTps;
-static UInt8 gFx = SND_NONE, gStep;
+static UInt8 gFx = SND_NONE, gStep, gFinish;
+static UInt16 gSample;
 static UInt32 gStepEnd;
 static Boolean gStream, gBirds;
 static Boolean gPaused;         /* the stream is paused (main thread's view) */
@@ -109,8 +120,9 @@ static Err AudioFill(void *user, SndStreamRef ch, void *buf, UInt32 frames)
 	UInt8 *o = (UInt8 *)buf;
 	const UInt8 *a, *b;
 	UInt32 i, na, nb;
-	UInt16 v, s;
-	Int16 x;
+	UInt16 v, s, gain;
+	Boolean fade;
+	Int16 x, y;
 
 	(void)ch;
 	for (v = 0; v < 2; v++) {
@@ -120,6 +132,7 @@ static Err AudioFill(void *user, SndStreamRef ch, void *buf, UInt32 frames)
 			m->ptr[v] = m->rptr[v][r];
 			m->len[v] = m->rlen[v][r];
 			m->pos[v] = 0;
+			if (v == 1) m->birdGain = 128;
 			m->ack[v] = s;
 		}
 	}
@@ -128,18 +141,27 @@ static Err AudioFill(void *user, SndStreamRef ch, void *buf, UInt32 frames)
 	nb = m->len[1] - m->pos[1];
 	if (na > frames) na = frames;
 	if (nb > frames) nb = frames;
-	a = m->ptr[0] + m->pos[0];
-	b = m->ptr[1] + m->pos[1];
+	fade = !m->birds;
+	gain = m->birdGain;
+	if (fade && nb > gain) nb = gain;
+	a = na ? m->ptr[0] + m->pos[0] : NULL;
+	b = nb ? m->ptr[1] + m->pos[1] : NULL;
 	m->pos[0] += na;
 	m->pos[1] += nb;
 	for (i = 0; i < frames; i++) {
 		x = 0;
 		if (i < na) x = (Int16)a[i] - 128;
-		if (i < nb) x += ((Int16)b[i] - 128) >> 2;
+		if (i < nb) {
+			y = (Int16)b[i] - 128;
+			if (fade) gain--;
+			x += gain == 128 ? y >> 2 : ((Int16)(y * (Int16)gain)) >> 9;
+		}
 		if (x > 127) x = 127;
 		if (x < -128) x = -128;
 		o[i] = (UInt8)(x + 128);
 	}
+	m->birdGain = gain;
+	if (!gain) m->pos[1] = m->len[1];
 	return errNone;
 }
 
@@ -208,17 +230,24 @@ static void StreamPause(Boolean pause)
 	gPaused = pause;
 }
 
-/* Plays resource id (kSmpFirst...) on voice v. */
-static void PlaySample(UInt8 v, UInt16 id)
+static void PostSample(UInt8 v, const UInt8 *data, UInt32 len)
 {
-	UInt16 k = id - kSmpFirst, s;
-
-	if (!gMix || k >= kSmpCount || !gSmp[k]) return;
-	StreamPause(false);
-	s = (UInt16)(gMix->seq[v] & 3);
-	gMix->rptr[v][s] = gSmp[k];
-	gMix->rlen[v][s] = gSmpLen[k];
+	UInt16 s = (UInt16)(gMix->seq[v] & 3);
+	gMix->rptr[v][s] = data;
+	gMix->rlen[v][s] = len;
 	gMix->seq[v] = (UInt16)(gMix->seq[v] + 1);
+}
+
+/* Plays resource id (kSmpFirst...) on voice v. */
+static Boolean PlaySample(UInt8 v, UInt16 id)
+{
+	UInt16 k = id - kSmpFirst;
+
+	if (!gStream || k >= kSmpCount || !gSmp[k] || !gSmpLen[k]) return false;
+	PostSample(v, gSmp[k], gSmpLen[k]);
+	if (v == 0) gSample = id;
+	StreamPause(false);
+	return true;
 }
 
 /* Is voice v still playing? */
@@ -230,32 +259,36 @@ static Boolean Busy(UInt8 v)
 /* Stops what both voices play: an empty sample in the next slot. */
 static void StreamSilence(void)
 {
-	UInt8 v;
-	UInt16 s;
-
 	if (!gMix) return;
-	for (v = 0; v < 2; v++) {
-		s = (UInt16)(gMix->seq[v] & 3);
-		gMix->rptr[v][s] = NULL;
-		gMix->rlen[v][s] = 0;
-		gMix->seq[v] = (UInt16)(gMix->seq[v] + 1);
-	}
+	PostSample(0, NULL, 0);
+	PostSample(1, NULL, 0);
+	gSample = 0;
+}
+
+static Boolean CupBusy(void)
+{
+	return gFx == SND_CUP || (gStream && gSample == kSmpCup && Busy(0));
 }
 
 static void Play(UInt8 id)
 {
 	if (id == SND_NONE || id >= SND_COUNT || gMode == SOUND_OFF || !gVolume) return;
-	if (gMode == SOUND_FX && SND_IS_TUNE(id)) return;
+	if (SND_IS_TUNE(id)) {
+		if (gMode != SOUND_ON) return;
+		/* Advancing the result can bring up the score while the cup is still playing. */
+		if (CupBusy()) {
+			gFinish = id;
+			return;
+		}
+		gFinish = SND_NONE;
+	}
 #ifdef DEBUG
 	gPlays++;
 #endif
-	if (gStream && id == SND_BIRDIE && gMode == SOUND_ON) PlaySample(0, kSmpApplause);
-	if (gStream && kSample[id]) {
-		PlaySample(0, kSample[id]);
-		return;
-	}
-	if (id == SND_HIT_WOOD || id == SND_HIT_IRON || id == SND_HIT_PUTT) {
-		/* the hit plays whole, at once (36 ms at most): the shot's physics runs next */
+	if (id == SND_BIRDIE || id == SND_ACE) PlaySample(0, kSmpApplause);
+	if (kSample[id] && PlaySample(0, kSample[id])) return;
+	if (id == SND_HIT_WOOD || id == SND_HIT_IRON || id == SND_HIT_PUTT || id == SND_MISHIT) {
+		/* The hit plays whole before the shot's physics runs. */
 		PlayNow(id);
 		return;
 	}
@@ -339,6 +372,9 @@ void AudioClose(void)
 {
 	if (gFx != SND_NONE) Quiet();
 	gFx = SND_NONE;
+	gFinish = SND_NONE;
+	gSample = 0;
+	gPaused = gPauseSet = gBirds = false;
 	StreamClose();
 }
 
@@ -347,9 +383,15 @@ void AudioSetMode(UInt8 mode)
 	if (mode >= SOUND_MODES) mode = SOUND_ON;
 	gMode = mode;
 	PrefSetAppPreferences(kCreator, kSoundPref, 1, &mode, 1, true);
-	if (mode == SOUND_OFF && gFx != SND_NONE) {
+	if (mode != SOUND_ON) gFinish = SND_NONE;
+	if (gFx != SND_NONE && (mode == SOUND_OFF || (mode == SOUND_FX && SND_IS_TUNE(gFx)))) {
 		Quiet();
 		gFx = SND_NONE;
+	}
+	if (mode != SOUND_ON && gMix) gMix->birds = false;
+	if (mode == SOUND_FX && gStream && gSample == kSmpApplause) {
+		PostSample(0, NULL, 0);
+		gSample = 0;
 	}
 	if (mode == SOUND_OFF) {
 		StreamSilence();
@@ -362,13 +404,15 @@ void AudioTick(Boolean birds, Boolean busy)
 	UInt8 id;
 	UInt32 now = TimGetTicks();
 
+	birds = birds && gStream && gMode == SOUND_ON && gVolume;
+	if (gMix) gMix->birds = birds;
 	while ((id = snd_take()) != SND_NONE) Play(id);
 	if (gFx != SND_NONE && (Int32)(now - gStepEnd) >= 0) {
 		gStep++;
 		PlayStep(now);
 	}
+	if (gFinish != SND_NONE && !CupBusy()) Play(gFinish);
 	/* birds now and then while the tee view is up: the first in 1 to 3 s, then every 3 to 9 s */
-	birds = birds && gStream && gMode == SOUND_ON && gVolume;
 	if (birds && !gBirds) gNextBird = now + gTps + (UInt32)SysRandom(0) % (2 * gTps);
 	gBirds = birds;
 	if (birds && (Int32)(now - gNextBird) >= 0) {

@@ -95,12 +95,14 @@ typedef struct {
 	uint32_t tf;
 	int16_t shown;              /* path point drawn last, -1 for none */
 	uint8_t have_shot;
+	uint8_t flight_sounds;      /* collision cues already played for this shot */
 	uint8_t result_pending;     /* the platform is preparing the next view */
 	char msg1[21], msg2[21];
 	/* the round, or 0 for a hole played alone */
 	Round *round;
 	uint8_t cur;                /* the player whose shot it is */
 	uint8_t card, page, csel;   /* the scorecard's CARD_* mode, its page and button */
+	uint8_t stat_player;
 	uint8_t card_from;          /* the view it was opened from, PLAY_SCENE or PLAY_MAP */
 	Shot shot;
 	Surface geo;                /* the surface's size and scale as last drawn, for taps */
@@ -171,7 +173,7 @@ void SEC_MENU play_status(Surface *s, const Play *p, const char *info);
  * who plays. */
 void SEC_MENU play_turn(Surface *s, const Play *p);
 /* The scorecard, leaderboard or club picker, over whatever is on s. */
-void SEC_MENU play_card(Surface *s, Play *p);
+void SEC_RENDER play_card(Surface *s, Play *p);
 /* The hole map with the aim line, target and last shot's path;
  * or, for a shot on the map, the map framed on the shot with its trail so
  * far and the ball. */

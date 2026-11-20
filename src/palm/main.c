@@ -132,7 +132,7 @@ static void FrontOrigin(Int16 *x, Int16 *y)
 static void Redraw(void)
 {
 	UInt32 type = ScreenPicType();
-	UInt16 id = front_picture(&gFront), k;
+	UInt16 id = front_picture(&gFront, &gS), k;
 	MemHandle h;
 #ifdef DEBUG
 	UInt32 t0 = TimGetTicks(), t1, t2;
@@ -142,11 +142,10 @@ static void Redraw(void)
 	if (ScreenKept() && gBgPic == id) {
 		ScreenRestoreAll();
 	} else {
-		/* the picture in a 160 unit square in the middle, black round it */
 		gfx_fill(&gS, 0, 0, gS.w, gS.h, UIC_BLACK);
 		gfx_centre(&gS, 1);
 		for (k = 0; (h = DmGetResource(type, id + k)) != NULL; k++) {
-			gfx_pic_band(&gS, MemHandleLock(h), MemHandleSize(h));
+			front_picture_band(&gS, id, MemHandleLock(h), MemHandleSize(h));
 			MemHandleUnlock(h);
 			DmReleaseResource(h);
 		}
@@ -276,7 +275,7 @@ static Boolean RedrawLines(void)
 	char t[12];
 #endif
 
-	if (!ScreenKept() || gBgPic != front_picture(&gFront)) return false;
+	if (!ScreenKept() || gBgPic != front_picture(&gFront, &gS)) return false;
 	line[0] = gFront.oldSel;
 	line[1] = gFront.menu.sel;
 	FrontOrigin(&ox, &oy);
@@ -526,6 +525,31 @@ static Boolean SEC_MENU ListVisit(const char *name, UInt16 vol, const char *path
 	return false;
 }
 
+/* Read the setup information for a card course without importing it. */
+static Boolean SEC_MENU CardDetailsVisit(const char *name, UInt16 vol, const char *path, void *ctx)
+{
+	UInt8 *scenery = ctx, i;
+	FileRef f;
+	MemHandle h = NULL;
+	Course c;
+	const void *data;
+
+	for (i = 0; i < gCourseCount && StrCompare(name, gCourseNames[i]) != 0; i++) {}
+	if (i == gCourseCount || gFront.hole_count[i] || DmFindDatabase(0, name) ||
+	    VFSFileOpen(vol, path, vfsModeRead, &f) != errNone) return false;
+	if (VFSFileDBGetRecord(f, 0, &h, NULL, NULL) == errNone && h) {
+		data = MemHandleLock(h);
+		if (data && course_parse(&c, data, MemHandleSize(h)) == HOLE_OK) {
+			front_course_tees(&gFront, i, &c);
+			scenery[i] = c.scenery;
+		}
+		if (data) MemHandleUnlock(h);
+	}
+	if (h) MemHandleFree(h);
+	VFSFileClose(f);
+	return false;
+}
+
 static void GolferFramesFree(RenderGolfer *g, MemHandle *frames)
 {
 	UInt16 k;
@@ -611,10 +635,13 @@ static void SEC_MENU RecordsShow(void)
 {
 	UInt8 k;
 	for (k = 0; k < gCourseCount; k++) {
-		UInt8 t;
+		UInt8 t, span;
+		gFront.event_best[k] = rec_best_finish(&gRecords, gCourseNames[k]);
 		for (t = 0; t < COURSE_MAX_TEES; t++) {
-			const CourseRecord *c = rec_find(&gRecords, gCourseNames[k], t);
-			front_record(&gFront, k, t, c ? c->strokes : 0, c ? c->to_par : 0);
+			for (span = 0; span < SPAN_COUNT; span++) {
+				const CourseRecord *c = rec_find(&gRecords, gCourseNames[k], t, span);
+				front_record(&gFront, k, t, span, c ? c->strokes : 0, c ? c->to_par : 0);
+			}
 		}
 	}
 }
@@ -659,8 +686,11 @@ static void SEC_MENU SaveRound(void)
 
 	if (!gPlaying) return;
 	play_settle(&gPlay);
-	if (gRound.over || gRound.tour_stage == TOUR_BREAK)
-		if (rec_round(&gRecords, &gRound, gRound.tee)) RecordsSave();
+	if (gRound.over || gRound.tour_stage == TOUR_BREAK) {
+		UInt8 changed = rec_round(&gRecords, &gRound, gRound.tee);
+		if (gRound.over) changed |= rec_event(&gRecords, &gRound);
+		if (changed) RecordsSave();
+	}
 	if (gRound.over) {
 		DeleteSave();
 		return;
@@ -720,7 +750,7 @@ static UInt8 SEC_MENU LoadSave(Round *r, Boolean full)
 	MemHandle h;
 	Course c;
 	Boolean ok = false;
-	UInt8 k, e;
+	UInt8 e;
 
 	if (!id || (db = DmOpenDatabase(0, id, dmModeReadOnly)) == 0) return LS_NONE;
 	if ((h = DmQueryRecord(db, 0)) != NULL) {
@@ -735,9 +765,7 @@ static UInt8 SEC_MENU LoadSave(Round *r, Boolean full)
 		DropImported();
 		return LS_MISSING;
 	}
-	ok = CourseHeader(db, &c) && c.hole_count == r->holes;
-	for (k = 0; ok && k < r->holes; k++)
-		if (c.par[k] != r->pars[k]) ok = false;
+	ok = CourseHeader(db, &c) && rules_course_matches(r, &c);
 	DmCloseDatabase(db);
 	if (!ok) DropImported();
 	return ok ? LS_OK : LS_CHANGED;
@@ -856,6 +884,7 @@ static Boolean SEC_MENU PlayStart(Boolean resume)
 					if (c.par[k] >= 5) { h = k; break; }
 			rules_mode(&gRound, gFront.mode, gFront.cpu, h);
 		}
+		rules_span(&gRound, gFront.hole_count[gFront.course] == 18 ? gFront.span : SPAN_FULL);
 		if (gRound.mode == MODE_TOURN) rules_tour_course(&gRound, &c);
 		/* practice from the first tee set */
 		/* a card course's tee sets are known now: the players line and the record show the set played */
@@ -870,7 +899,8 @@ static Boolean SEC_MENU PlayStart(Boolean resume)
 	if (DmCreateDatabase(0, kScratchName, kCreator, 'Tmp ', false) != errNone) return false;
 	if ((id = DmFindDatabase(0, kScratchName)) == 0) return false;
 	if ((gScratchDb = DmOpenDatabase(0, id, dmModeReadWrite)) == 0) return false;
-	if (!LoadHole(gRound.hole + 1)) return false;
+	if (!LoadHole(rules_hole_number(&gRound, gRound.hole))) return false;
+	if (!MODE_PRACTICE(gRound.mode)) gFront.span = gRound.span;
 	gProfileSlot = rules_profile(&gRound, &gFront.player);
 	gPlay.quick = gFront.quick;
 	gPlay.mapview = gFront.shotmap;
@@ -1545,7 +1575,7 @@ static void PlayAct(int f)
 		Redraw();
 	} else if (f & PL_NEXT) {
 		gAnim = false;
-		if (!LoadHole(gRound.hole + 1)) {
+		if (!LoadHole(rules_hole_number(&gRound, gRound.hole))) {
 			PlayEnd();
 			front_clubhouse(&gFront, 0);
 			front_message(&gFront, "No hole", "The course can't\nbe read.");
@@ -1558,7 +1588,7 @@ static void PlayAct(int f)
 	} else if (f & PL_CARD) {
 		/* over the kept scene; saved when it opens at the end of a hole */
 		gAnim = false;
-		if (ScreenKept() && gBgPic == PIC_SCENE) ScreenRestoreAll();
+		if (gPlay.card != CARD_BOOK && ScreenKept() && gBgPic == PIC_SCENE) ScreenRestoreAll();
 		play_card(&gS, &gPlay);
 		ScreenShowAll();
 		if (gPlay.card == CARD_HOLE || gPlay.card == CARD_FINAL) SaveRound();
@@ -1918,7 +1948,7 @@ static void SEC_MENU FindCourses(void)
 		AddCourse(name);
 	}
 	if (HaveVfs()) CardScan(ListVisit, NULL);
-	/* each one's scenery for its preview; a card course isn't read until it's played */
+	/* Get tee sets, hole counts and preview scenery from each header. */
 	for (k = 0; k < gCourseCount; k++) {
 		shown[k] = gCourseNames[k] + pre;
 		scenery[k] = SCENERY_UNKNOWN;
@@ -1931,6 +1961,7 @@ static void SEC_MENU FindCourses(void)
 			DmCloseDatabase(db);
 		}
 	}
+	if (HaveVfs()) CardScan(CardDetailsVisit, scenery);
 	front_courses(&gFront, shown, scenery, gCourseCount, 0);
 }
 

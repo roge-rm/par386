@@ -57,6 +57,19 @@ STYLES = {
                    (OBJ_PINE, 1, 36, 32, 10), (OBJ_PINE, 0, 124, 30, 8), (OBJ_PINE, 1, 84, 30, 8),
                    (OBJ_TREE, 0, 168, 39, 9), (mkstyle.OBJ_LANDMARK, 0, 148, 29, 14),
                    (mkstyle.OBJ_ANIMAL, 0, 54, 38, 5)]),
+    7: dict(sky=((87, 120, 166), (211, 214, 223)), far=('hills', (89, 112, 96), 10),
+            grass=(98, 153, 65), rough=(113, 108, 75), bunkers=[(152, 38, 16, 3)],
+            items=[(OBJ_TREE, 0, 24, 47, 29), (OBJ_TREE, 0, 183, 38, 20),
+                   (OBJ_BUSH, 0, 198, 55, 9), (OBJ_BUSH, 0, 34, 53, 9),
+                   (mkstyle.OBJ_HOUSE, 0, 66, 31, 8)]),
+    8: dict(sky=((87, 149, 215), (241, 221, 181)), far=('sandhills', (172, 151, 125), 10),
+            grass=(83, 154, 66), rough=(220, 184, 122), river=(36, 1.9),
+            items=[(mkstyle.OBJ_PALM, 0, 24, 46, 30), (mkstyle.OBJ_PALM, 0, 179, 37, 20),
+                   (mkstyle.OBJ_PALM, 0, 193, 40, 24), (OBJ_ROCK, 0, 40, 54, 8)]),
+    9: dict(sky=((54, 114, 195), (210, 226, 237)), far=('cliff', (68, 115, 158), 4),
+            grass=(100, 155, 64), rough=(124, 126, 72),
+            items=[(OBJ_TREE, 0, 22, 43, 25), (OBJ_PINE, 0, 181, 41, 24),
+                   (mkstyle.OBJ_WALL, 0, 178, 53, 8), (mkstyle.OBJ_HOUSE, 0, 141, 31, 11)]),
 }
 
 

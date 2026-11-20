@@ -67,7 +67,7 @@ static void sfree(Surface *s)
 static void draw(Surface *s, const Front *f)
 {
 	char name[64];
-	uint16_t id = front_picture(f), k;
+	uint16_t id = front_picture(f, s), k;
 	int bands = 0;
 
 	gfx_fill(s, 0, 0, s->w, s->h, UIC_BLACK);
@@ -77,7 +77,7 @@ static void draw(Surface *s, const Front *f)
 		/* the 2-bit pictures below 8 bits, the 8-bit ones above, as main.c */
 		snprintf(name, sizeof name, "Pic%d-%d.bin", s->depth >= 8 ? 8 : 2, id + k);
 		if (!(d = load(name, &len))) break;
-		CHECK(gfx_pic_band(s, d, (uint32_t)len) == 0);
+		CHECK(front_picture_band(s, id, d, (uint32_t)len) == 0);
 		free(d);
 		bands++;
 	}
@@ -150,9 +150,7 @@ static void screens(uint8_t scale)
 	sfree(&s);
 }
 
-/* The title, menu and a dialog on another screen: in a 160 unit square in
- * the middle, with the picture made for the nearest depth. Saved as
- * NAME-title and so on. */
+/* The title, menu and a dialog at other sizes and depths. */
 static void screens_at(int w, int h, uint8_t scale, uint8_t depth, const char *name)
 {
 	Surface s;
@@ -190,9 +188,10 @@ static void pic_double(uint8_t depth)
 	front_init(&f);
 	for (k = 0; k < 2; k++) {
 		char name[64];
-		uint16_t id = front_picture(&f), i;
+		uint16_t id, i;
 		surface_wh(&a, 160, 160, 1, depth);
 		surface_wh(&b, 320, 320, 2, depth);
+		id = front_picture(&f, &a);
 		for (i = 0; ; i++) {
 			long len;
 			uint8_t *d;
@@ -347,6 +346,32 @@ static void bad_bands(void)
 	CHECK(gfx_pic_band(&s, band, 10) == -1);           /* 127 bytes of 800 */
 	band[6] = 8;
 	CHECK(gfx_pic_band(&s, band, 10) == -1);           /* wrong depth */
+	sfree(&s);
+}
+
+/* A wide band cropped on all four sides, including an odd surface stride. */
+static void cropped_band(void)
+{
+	static const uint8_t band[] = {
+		0, 0, 0, 4, 0, 5, 8, 0, 19,
+		1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+		11, 12, 13, 14, 15, 16, 17, 18, 19, 20
+	};
+	uint8_t truncated[sizeof band];
+	Surface s;
+
+	surface_wh(&s, 3, 2, 2, 8);
+	s.ox = s.oy = -1;
+	CHECK(gfx_pic_band_crop8(&s, band, sizeof band) == 0);
+	CHECK(!memcmp(s.bits, "\x07\x08\x09\x00\x0c\x0d\x0e\x00", 8));
+	sfree(&s);
+
+	surface_wh(&s, 5, 2, 2, 8);
+	memcpy(truncated, band, sizeof band);
+	truncated[1] = 1;
+	truncated[2] = truncated[3] = 255;
+	CHECK(gfx_pic_band_crop8(&s, truncated, sizeof truncated) == -1);
+	CHECK(!memcmp(s.bits + s.rowBytes, "\x01\x02\x03\x04\x05\x00", 6));
 	sfree(&s);
 }
 
@@ -534,6 +559,7 @@ int main(int argc, char **argv)
 	courses(1);
 	courses(2);
 	bad_bands();
+	cropped_band();
 	text_paths();
 	swaps(160, 1);
 	swaps(160, 2);

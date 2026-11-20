@@ -1,0 +1,8 @@
+name Falesia Grove
+tee Medal
+tee Club
+tee Forward
+holes 18
+scenery 9
+wind 9
+green 10

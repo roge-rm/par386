@@ -853,13 +853,27 @@ SETS = {
         (OBJ_HOUSE, 0, log_cabin, 22),
         (OBJ_LANDMARK, 0, hotel, 48),
         (OBJ_ANIMAL, 0, elk, 14)],
+    7: [(OBJ_TREE, 0, lambda H, s: crown_tree(H, s, 0.57, 0.03, 0.65, 'tree', 57, 0.75, trunk='grey',
+                                             tw=0.04, branches=4, sparse=0.25, pale_trunk=True), 28),
+        (OBJ_BUSH, 0, lambda H, s: shrub(H, s, 1.7, 'far', 20, 'blossom', 0.9, 0.70), 9),
+        (OBJ_HOUSE, 0, lambda H, s: cottage(H, s, 1.8, 'wall', 0.7, 'slate', 'grey'), 23)],
+    8: [(OBJ_PALM, 0, palm, 30),
+        (OBJ_ROCK, 0, lambda H, s: boulder(H, s, 1.6, 'sand', 2.7, 0.07, layered=True), 9),
+        (OBJ_HOUSE, 0, lambda H, s: cottage(H, s, 1.9, 'sand', 0.72, 'flat', 'wall'), 22)],
+    9: [(OBJ_TREE, 0, lambda H, s: crown_tree(H, s, 1.23, 0.05, 0.6, 'tree', 57, 0.65, trunk='bark',
+                                             tw=0.06, branches=5, sparse=0.22, lean=0.25), 27),
+        (OBJ_PINE, 0, lambda H, s: crown_tree(H, s, 1.2, 0.03, 0.4, 'pine', 53, 0.62, trunk='bark',
+                                             tw=0.045, branches=3, sparse=0.14), 30),
+        (OBJ_WALL, 0, stone_wall, 8),
+        (OBJ_HOUSE, 0, lambda H, s: cottage(H, s, 1.9, 'grey', 0.97, 'slate', 'sand'), 24)],
 }
 
 # shared art for slots no set fills yet
 SHARED = [(OBJ_STAND, 0, grandstand, (16, 48))]
 
 NAMES = {1: 'links', 2: 'Irish clifftop', 3: 'Japanese seaside', 4: 'Australian sandbelt',
-         5: 'South African bush', 6: 'Canadian Rockies'}
+         5: 'South African bush', 6: 'Canadian Rockies', 7: 'English heathland',
+         8: 'Gulf desert', 9: 'Algarve hillside'}
 
 
 def set_id(scenery, typ, variant, size):

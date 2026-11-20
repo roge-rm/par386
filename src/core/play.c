@@ -8,6 +8,8 @@
 #define R_METER  4
 #define R_ALL    8      /* the scene under the overlays is new */
 
+enum { HEARD_LAND = 1, HEARD_LIP = 2 };
+
 #define STRIP_Y   (s->lh - RENDER_STATUS)   /* the strip's top in logical units */
 #define FLY_MS    42    /* a path point in the air: 1.5 times real time */
 #define ROLL_MS   62    /* a point on the ground: twice real time */
@@ -47,12 +49,17 @@
 #define CARD_X    (s->lw - 2 - CARD_W)
 #define MAP_CARD_X (ROSE_X - 1 - CARD_W)
 #define MAP_BACK_X (MAP_CARD_X - 1 - CARD_W)
+#define BOOK_X     2
+#define BOOK_W     BOX_W(4)
+#define BOOK_LINES 3
+#define BOOK_TEXT  (BOOK_LINES * 16 + 1)
 #define S16       (MTR_SNAP * 16)
 #define W16       (MTR_W * 16)
 
 static void SEC_UI launch(Play *p);
 static void SEC_UI stopped(const Play *p);
 static void SEC_UI result(Play *p);
+static int SEC_MENU book_tap(Play *p, int16_t x, int16_t y);
 
 static vec2 SEC_UI pin(const Play *p)
 {
@@ -106,6 +113,7 @@ static int SEC_MENU choose_club(Play *p, uint8_t club)
 {
 	uint8_t green = p->rv.green;
 	if (p->lie == LIE_GREEN) return 0;
+	if (club != p->club) snd_play(SND_CLUB_CHANGE);
 	set_club(p, club);
 	p->redraw |= R_OVER | R_STRIP;
 	if (p->rv.green == green) return 0;
@@ -372,9 +380,12 @@ static void SEC_UI launch(Play *p)
 	in.lie = p->lie;
 	in.mishit = p->mishit;
 	in.shape = p->shape;
-	snd_play(p->club == CLUB_PT ? SND_HIT_PUTT : p->club <= CLUB_5W ? SND_HIT_WOOD : SND_HIT_IRON);
+	snd_ambient(0);
+	snd_play(p->mishit ? SND_MISHIT :
+	         p->club == CLUB_PT ? SND_HIT_PUTT : p->club <= CLUB_5W ? SND_HIT_WOOD : SND_HIT_IRON);
 	ball_shot(&in, &p->shot);
 	p->have_shot = 1;
+	p->flight_sounds = 0;
 	p->state = PS_FLY;
 	p->result_pending = 0;
 	p->mprep = 0;
@@ -382,23 +393,28 @@ static void SEC_UI launch(Play *p)
 	p->redraw |= R_STRIP | R_OVER;
 }
 
-/* The sound of the ball first coming down, once the flight gets to point
- * i: the last point if the shot ends before landing (in the water). */
-static void SEC_UI landed(const Play *p, int16_t i)
+/* Collision sounds follow the path across both views, including skipped points. */
+static void SEC_UI flight_sounds(Play *p, int16_t i)
 {
 	const Shot *sh = &p->shot;
-	int16_t l = sh->fly_n < sh->n - 1 ? sh->fly_n : sh->n - 1;
 	uint8_t id;
 
-	if (p->club == CLUB_PT || !sh->fly_n || p->shown >= l || i < l) return;
-	switch (sh->land_surf) {
-	case SURF_WATER: id = SND_SPLASH; break;
-	case SURF_BUNKER: id = SND_LAND_SAND; break;
-	case SURF_ROUGH: case SURF_DEEP_ROUGH: id = SND_LAND_ROUGH; break;
-	case SURF_OOB: return;
-	default: id = SND_LAND_FAIRWAY; break;
+	if (!(p->flight_sounds & HEARD_LAND) && sh->land_pt && i >= sh->land_pt) {
+		p->flight_sounds |= HEARD_LAND;
+		switch (sh->land_surf) {
+		case SURF_WATER: id = SND_SPLASH; break;
+		case SURF_BUNKER: id = SND_LAND_SAND; break;
+		case SURF_ROUGH: case SURF_DEEP_ROUGH: id = SND_LAND_ROUGH; break;
+		case SURF_PATH: id = SND_LAND_PATH; break;
+		case SURF_OOB: id = SND_NONE; break;
+		default: id = SND_LAND_FAIRWAY; break;
+		}
+		snd_play(id);
 	}
-	snd_play(id);
+	if (!(p->flight_sounds & HEARD_LIP) && sh->lip_pt && i >= sh->lip_pt) {
+		p->flight_sounds |= HEARD_LIP;
+		snd_play(SND_LIP);
+	}
 }
 
 /* The sound of how the shot ended, as the ball stops. */
@@ -407,7 +423,7 @@ static void SEC_UI stopped(const Play *p)
 	const Shot *sh = &p->shot;
 	if (sh->result == SHOT_HOLED) snd_play(SND_CUP);
 	else if (sh->result == SHOT_OOB) snd_play(SND_OOB);
-	else if (sh->result == SHOT_WATER && (p->club == CLUB_PT || sh->land_surf != SURF_WATER)) snd_play(SND_SPLASH);
+	else if (sh->result == SHOT_WATER && (!(p->flight_sounds & HEARD_LAND) || sh->land_surf != SURF_WATER)) snd_play(SND_SPLASH);
 }
 
 /* After a player's hole is done: the next player, or the scorecard once
@@ -434,6 +450,14 @@ static int SEC_UI after_done(Play *p)
 /* The scorecard's button i. */
 static int SEC_UI card_button(Play *p, uint8_t i)
 {
+	if (p->card == CARD_STATS) {
+		if (i == 1) p->stat_player = (uint8_t)((p->stat_player + 1) % p->round->players);
+		else {
+			p->card = CARD_FINAL;
+			p->csel = card_stats_button(p->round, CARD_FINAL);
+		}
+		return PL_CARD;
+	}
 	if (p->board) {
 		/* the leaderboard: its first button does what the card's does, the second shows the card */
 		if (i == 1) {
@@ -444,6 +468,11 @@ static int SEC_UI card_button(Play *p, uint8_t i)
 	} else if (i == card_board_button(p->round, p->card)) {
 		/* the card's Board button */
 		p->board = 1;
+		p->csel = 0;
+		return PL_CARD;
+	} else if (i == card_stats_button(p->round, p->card)) {
+		p->card = CARD_STATS;
+		p->stat_player = 0;
 		p->csel = 0;
 		return PL_CARD;
 	} else if (i == 1) {
@@ -469,6 +498,10 @@ static int SEC_UI card_button(Play *p, uint8_t i)
 static int SEC_UI card_key(Play *p, uint8_t key)
 {
 	uint8_t pages = card_pages(p->round), n = p->board ? board_buttons(p->round, p->card) : card_buttons(p->round, p->card);
+	if (p->card == CARD_STATS && (key == KEY_BACK || key == KEY_MAP || key == KEY_CARD || key == KEY_OTHER))
+		return card_button(p, 0);
+	if (p->card == CARD_FINAL && key == KEY_CARD)
+		return card_button(p, p->board ? 1 : card_stats_button(p->round, CARD_FINAL));
 	switch (key) {
 	case KEY_LEFT:
 		if (n < 2) return 0;
@@ -479,10 +512,16 @@ static int SEC_UI card_key(Play *p, uint8_t key)
 		p->csel = (uint8_t)((p->csel + 1) % n);
 		return PL_CARD;
 	case KEY_UP:
+		if (p->card == CARD_STATS) {
+			if (n < 2) return 0;
+			p->stat_player = (uint8_t)((p->stat_player + p->round->players - 1) % p->round->players);
+			return PL_CARD;
+		}
 		if (pages < 2 || p->board) return 0;
 		p->page = (uint8_t)((p->page + pages - 1) % pages);
 		return PL_CARD;
 	case KEY_DOWN:
+		if (p->card == CARD_STATS) return n > 1 ? card_button(p, 1) : 0;
 		if (pages < 2 || p->board) return 0;
 		p->page = (uint8_t)((p->page + 1) % pages);
 		return PL_CARD;
@@ -610,9 +649,25 @@ static void SEC_MENU map_point(Play *p)
 	p->target.y = ball.y + fix_mulq14(range, dy);
 }
 
+static int SEC_MENU open_book(Play *p)
+{
+	p->view = PLAY_CARD;
+	p->card = CARD_BOOK;
+	return PL_CARD;
+}
+
+static int SEC_MENU close_book(Play *p)
+{
+	p->view = PLAY_MAP;
+	return PL_MAP;
+}
+
 int play_key(Play *p, uint8_t key, uint32_t now)
 {
 	if (p->view == PLAY_CARD && p->card == CARD_CLUB) return club_key(p, key);
+	if (p->view == PLAY_CARD && p->card == CARD_BOOK)
+		return key == KEY_BACK || key == KEY_MAP || key == KEY_SELECT ? close_book(p) : 0;
+	if (p->view == PLAY_CARD && p->card == CARD_STATS) return card_key(p, key);
 	if (key == KEY_BACK) return PL_BACK;
 	if (p->view == PLAY_CARD) return card_key(p, key);
 	/* as on the scene: the result goes on with Select only */
@@ -620,6 +675,7 @@ int play_key(Play *p, uint8_t key, uint32_t now)
 	if (p->cpu) return hurry(p, now);
 	if (key == KEY_CARD && p->round && !practice(p) && (p->state == PS_AIM || p->view == PLAY_MAP)) return open_card(p, CARD_VIEW);
 	if (p->view == PLAY_MAP) {
+		if (key == KEY_UP && p->state == PS_AIM) return open_book(p);
 		if (key == KEY_LEFT || key == KEY_RIGHT) {
 			p->aim = (angle)(p->aim + (key == KEY_LEFT ? MAP_AIM_STEP : -MAP_AIM_STEP));
 			map_point(p);
@@ -652,10 +708,13 @@ int play_key(Play *p, uint8_t key, uint32_t now)
 			p->redraw |= R_STRIP;
 		}
 		break;
-	case KEY_SHAPE:
-		p->shape = ball_shape_next(p->club, p->shape);
+	case KEY_SHAPE: {
+		uint8_t shape = ball_shape_next(p->club, p->shape);
+		if (shape != p->shape) snd_play(SND_CLUB_CHANGE);
+		p->shape = shape;
 		p->redraw |= R_STRIP | R_OVER;
 		break;
+	}
 	case KEY_LEFT:
 		p->aim = (angle)(p->aim + AIM_STEP);
 		p->target_set = 0;
@@ -731,6 +790,7 @@ static int SEC_MENU map_tap(Play *p, int16_t x, int16_t y, uint32_t now)
 	fixed range;
 
 	if (y >= ROW_B && y < ROW_B + ROW_H) {
+		if (x >= BOOK_X && x < BOOK_X + BOOK_W && p->state == PS_AIM) return open_book(p);
 		if (p->round && !practice(p) && x >= MAP_CARD_X && x < MAP_CARD_X + CARD_W) return open_card(p, CARD_VIEW);
 		if (x >= MAP_BACK_X && x < MAP_BACK_X + CARD_W) return play_key(p, KEY_SELECT, now);
 	}
@@ -755,6 +815,7 @@ int play_tap(Play *p, int16_t x, int16_t y, uint32_t now)
 	if (p->view == PLAY_CARD) {
 		int16_t cx = x - (s->lw - 160) / 2, cy = y - (s->lh - 160) / 2;
 		int i;
+		if (p->card == CARD_BOOK) return book_tap(p, cx, cy);
 		if (p->card == CARD_CLUB) {
 			Surface c = *s;
 			gfx_centre(&c, 1);
@@ -1450,6 +1511,9 @@ static void SEC_UI apply(Play *p)
 		}
 		return;
 	}
+	if (p->round)
+		rules_stat_shot(p->round, p->cur, p->lie, sh->lie, sh->result,
+		                (uint8_t)(sh->result != SHOT_HOLED && given(p, sh->stop, sh->lie)));
 	if (sh->result == SHOT_HOLED) {
 		done(p, p->stroke, 0);
 	} else {
@@ -1497,7 +1561,11 @@ static int SEC_UI next(Play *p)
 	if (p->state == PS_DONE) {
 		int16_t d = (int16_t)p->score - p->rv.hole->par;
 		/* the tunes are for people's scores */
-		if (!p->cpu) snd_play(d < 0 ? SND_BIRDIE : d == 0 ? SND_HOLED : SND_BOGEY);
+		if (!p->cpu) {
+			uint8_t tune = p->score == 1 && p->shot.result == SHOT_HOLED ? SND_ACE :
+			               d < 0 ? SND_BIRDIE : d == 0 ? SND_HOLED : SND_BOGEY;
+			snd_play(tune);
+		}
 		return 0;
 	}
 	if (p->round && (n = rules_next(p->round, pin(p))) >= 0 && (n != p->cur || p->cpu)) {
@@ -1960,7 +2028,7 @@ static int SEC_UI fly_map(Play *p, Surface *s, uint32_t now)
 	p->dirty.w = 0;
 	if (p->state == PS_FLY) {
 		int16_t i = fly_point(p, now);
-		landed(p, i);
+		flight_sounds(p, i);
 		if (i != p->shown) {
 			p->shown = i;
 			map_ball(p, s);
@@ -2068,7 +2136,7 @@ int play_frame(Play *p, Surface *s, Surface *bg, uint32_t now)
 		break;
 	case PS_FLY: {
 		int16_t i = fly_point(p, now);
-		landed(p, i);
+		flight_sounds(p, i);
 		if (p->mprep && p->mprep < 3 && i >= p->shot.fly_n) p->mprep = 3;    /* down before the map was ready */
 		if (p->mprep == 2 && (int32_t)(now - p->tf) >= PLAY_MAP_AFTER_MS) {
 			/* over to the map for the rest of the flight: the first map frame draws the trail so far */
@@ -2258,10 +2326,7 @@ void play_status(Surface *s, const Play *p, const char *info)
 		n += play_num(t + n, (uint32_t)((vec2_len(vec2_sub(p->target, p->rv.ball)) + FIX_HALF) >> 16));
 		add(t, &n, "y");
 		readout(s, SHAPE_X, ROW_A, ROSE_X - SHAPE_X - 1, t, -1, UIC_TEXT_HI);
-		n = 0;
-		add(t, &n, "Hole ");
-		play_num(t + n, p->rv.hole->number);
-		readout(s, 2, ROW_B, MAP_BACK_X - 3, t, -1, UIC_PAPER);
+		button(s, BOOK_X, ROW_B, BOOK_W, "Book");
 		button(s, MAP_BACK_X, ROW_B, CARD_W, "Back");
 		if (p->round && !practice(p)) button(s, MAP_CARD_X, ROW_B, CARD_W, "Card");
 		rose(p, s, 1);
@@ -2318,10 +2383,47 @@ static void SEC_MENU draw_clubs(Surface *s, const Play *p)
 	}
 }
 
+static void SEC_MENU book_layout(const Play *p, UiDialog *d, char *t)
+{
+	HazardCarry hazards[BOOK_LINES];
+	uint8_t i, count = hole_hazards(p->rv.hole, p->rv.grid, p->rv.ball, p->aim, hazards, BOOK_LINES);
+	int16_t n = 0;
+
+	for (i = 0; i < count; i++) {
+		const HazardCarry *h = &hazards[i];
+		if (i) t[n++] = '\n';
+		add(t, &n, h->surface == SURF_WATER ? "Water " : h->surface == SURF_BUNKER ? "Bunker " : "O.B. ");
+		n += play_num(t + n, h->entry);
+		if (h->clear) {
+			t[n++] = '-';
+			n += play_num(t + n, h->clear);
+		} else t[n++] = '+';
+	}
+	if (!count) add(t, &n, "No hazards ahead");
+	t[n] = 0;
+	ui_dialog_init(d, "Yards from ball", t, "Map");
+}
+
+static int SEC_MENU book_tap(Play *p, int16_t x, int16_t y)
+{
+	char t[BOOK_TEXT];
+	UiDialog d;
+	book_layout(p, &d, t);
+	return ui_dialog_hit(&d, x, y) == 0 ? close_book(p) : 0;
+}
+
 void play_card(Surface *s, Play *p)
 {
 	Surface c = *s;
 	p->geo = *s;
+	if (p->card == CARD_BOOK) {
+		char t[BOOK_TEXT];
+		UiDialog d;
+		book_layout(p, &d, t);
+		gfx_centre(&c, 1);
+		ui_dialog_draw(&c, &d);
+		return;
+	}
 	if (p->card == CARD_CLUB) {
 		draw_strip(p, s);
 		gfx_centre(&c, 1);
@@ -2335,7 +2437,8 @@ void play_card(Surface *s, Play *p)
 	}
 	gfx_centre(&c, 1);
 	if (p->round && p->board) board_draw(&c, p->round, p->card, p->csel);
-	else if (p->round) card_draw(&c, p->round, p->card, p->page, p->csel);
+	else if (p->round) card_draw(&c, p->round, p->card,
+	                           p->card == CARD_STATS ? p->stat_player : p->page, p->csel);
 }
 
 void play_map(Surface *s, Play *p)

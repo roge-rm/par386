@@ -1,4 +1,5 @@
 #include "front.h"
+#include "records.h"
 #include "sound.h"
 
 /* The menu board's felt and name plate in the menu picture (tools/mkart.py). */
@@ -47,10 +48,17 @@ void front_init(Front *f)
 	f->page = 0;
 	f->course_list[0] = 0;
 	f->tee = 0;
+	f->span = SPAN_FULL;
 	for (k = 0; k < FRONT_COURSES; k++) {
-		uint8_t t;
+		uint8_t t, span;
+		f->event_best[k] = 0;
 		f->tee_count[k] = 0;
-		for (t = 0; t < COURSE_MAX_TEES; t++) f->rec_strokes[k][t] = 0;
+		f->hole_count[k] = 0;
+		for (t = 0; t < COURSE_MAX_TEES; t++)
+			for (span = 0; span < SPAN_COUNT; span++) {
+				f->rec_strokes[k][t][span] = 0;
+				f->rec_par[k][t][span] = 0;
+			}
 	}
 	f->sound = SOUND_ON;
 	f->player = default_player;
@@ -105,6 +113,7 @@ void front_course_tees(Front *f, uint8_t i, const Course *c)
 	uint8_t t, k;
 	if (i >= FRONT_COURSES) return;
 	f->tee_count[i] = c ? c->tee_count : 0;
+	f->hole_count[i] = c ? c->hole_count : 0;
 	for (t = 0; c && t < c->tee_count && t < COURSE_MAX_TEES; t++)
 		for (k = 0; k <= TEE_NAME_MAX; k++) f->tee_names[i][t][k] = c->tee_names[t][k];
 }
@@ -123,11 +132,11 @@ const char *front_tee_name(const Front *f, uint8_t t)
 	return tee_generic[t < 3 ? t : 2];
 }
 
-void front_record(Front *f, uint8_t i, uint8_t tee, uint16_t strokes, int16_t to_par)
+void front_record(Front *f, uint8_t i, uint8_t tee, uint8_t span, uint16_t strokes, int16_t to_par)
 {
-	if (i >= FRONT_COURSES || tee >= COURSE_MAX_TEES) return;
-	f->rec_strokes[i][tee] = strokes;
-	f->rec_par[i][tee] = to_par;
+	if (i >= FRONT_COURSES || tee >= COURSE_MAX_TEES || span >= SPAN_COUNT) return;
+	f->rec_strokes[i][tee][span] = strokes;
+	f->rec_par[i][tee][span] = to_par;
 }
 
 static void SEC_MENU put_num(char *t, uint8_t *n, uint16_t v)
@@ -140,7 +149,7 @@ static void SEC_MENU put_num(char *t, uint8_t *n, uint16_t v)
 
 void front_record_line(const Front *f, uint8_t i, char *t)
 {
-	uint8_t n = 0, tee = f->tee, k, m = 0;
+	uint8_t n = 0, tee = f->tee, k, m = 0, span;
 	uint16_t strokes;
 	int16_t to_par;
 	const char *a = "Record";
@@ -152,8 +161,11 @@ void front_record_line(const Front *f, uint8_t i, char *t)
 		if (tee >= f->tee_count[i]) tee = (uint8_t)(f->tee_count[i] - 1);
 		a = f->tee_names[i][tee];
 	}
-	strokes = f->rec_strokes[i][tee];
-	to_par = f->rec_par[i][tee];
+	span = f->hole_count[i] == 18 ? f->span : SPAN_FULL;
+	if (span == SPAN_FRONT) a = "Front 9";
+	else if (span == SPAN_BACK) a = "Back 9";
+	strokes = f->rec_strokes[i][tee][span];
+	to_par = f->rec_par[i][tee][span];
 	if (!strokes || strokes > 999) return;
 	/* "Medal 68 (-4)", the name cut to fit the 16 characters of the well */
 	r[m++] = ' ';
@@ -178,9 +190,30 @@ uint8_t front_action(const Front *f, uint8_t line)
 	return line ? (uint8_t)(line - 1) : MAIN_CONTINUE;
 }
 
-uint16_t front_picture(const Front *f)
+uint16_t front_picture(const Front *f, const Surface *s)
 {
-	return f->screen == SCR_TITLE ? PIC_TITLE : PIC_MENU;
+	uint8_t title = f->screen == SCR_TITLE;
+
+	if (s->scale == 2 && s->depth == 8) {
+		if (s->w == 320 && s->h > 320) return title ? PIC_TALL_TITLE : PIC_TALL_MENU;
+		if (s->h == 320 && s->w > 320) return title ? PIC_WIDE_TITLE : PIC_WIDE_MENU;
+	}
+	return title ? PIC_TITLE : PIC_MENU;
+}
+
+/* The board and its controls use the same square in the middle of each picture. */
+int front_picture_band(Surface *s, uint16_t id, const uint8_t *d, uint32_t len)
+{
+	int16_t ox = s->ox, oy = s->oy;
+	int r;
+
+	if (id == PIC_TALL_TITLE || id == PIC_TALL_MENU) s->oy -= PIC_EXTEND_PX;
+	else if (id == PIC_WIDE_TITLE || id == PIC_WIDE_MENU) s->ox -= PIC_EXTEND_PX;
+	else return gfx_pic_band(s, d, len);
+	r = gfx_pic_band_crop8(s, d, len);
+	s->ox = ox;
+	s->oy = oy;
+	return r;
 }
 
 uint16_t front_preview(const Front *f)
@@ -260,6 +293,24 @@ static void SEC_MENU name_draw(const Front *f, Surface *s)
 	}
 }
 
+static void SEC_MENU event_setup(const Front *f, Surface *s)
+{
+	const char *name = rec_event_name(f->course < f->courses ? f->course_names[f->course] : "");
+	uint8_t finish = f->course < f->courses ? f->event_best[f->course] : 0;
+	uint8_t n = 0;
+	char best[16] = "Best: ";
+
+	while (name[n]) n++;
+	ui_fill(s, 16, 125, 128, 19, UIC_TITLE);
+	ui_bevel(s, 16, 125, 128, 19, UIC_INK, UIC_WHITE);
+	ui_ctext(s, 80, finish ? 127 : 131, name, n, UIC_TEXT_HI, -1);
+	if (!finish) return;
+	n = 6;
+	if (finish & EVENT_TIED) best[n++] = 'T';
+	put_num(best, &n, finish & EVENT_PLACE);
+	ui_ctext(s, 80, 135, best, n, UIC_PAPER, -1);
+}
+
 void front_draw(const Front *f, Surface *s)
 {
 	const char *plate = f->screen == SCR_PLAYERS ? "PLAYERS" : f->screen == SCR_COURSES ? "COURSES" :
@@ -269,7 +320,11 @@ void front_draw(const Front *f, Surface *s)
 	int16_t n;
 
 	if (f->screen == SCR_TITLE) {
-		ui_ctext(s, 80, 146, "PRESS ANY BUTTON", 16, UIC_WHITE, UIC_BLACK);
+		int16_t oy = s->oy;
+		uint16_t id = front_picture(f, s);
+		if (id == PIC_TALL_TITLE) s->oy = s->h - 320;
+		ui_ctext(s, 80, id == PIC_TITLE ? 146 : 142, "PRESS ANY BUTTON", 16, UIC_WHITE, UIC_BLACK);
+		s->oy = oy;
 		return;
 	}
 	for (n = 0; plate[n]; n++) {}
@@ -299,6 +354,7 @@ void front_draw(const Front *f, Surface *s)
 		}
 	}
 	ui_menu_draw(s, &f->menu);
+	if (f->screen == SCR_PLAYERS && f->mode == MODE_TOURN) event_setup(f, s);
 	if (f->dialog)
 		ui_dialog_draw(s, &f->dlg);
 }
@@ -320,6 +376,13 @@ static uint8_t SEC_MENU may_be_off(const Front *f, uint8_t i)
 /* What plays a slot, CPU_* then off. */
 static const char slot_names[CPU_LEVELS + 1][9] = { "Human", "CPU Easy", "CPU Fair", "CPU Good", "CPU Pro", "Off" };
 
+static uint8_t SEC_MENU has_nines(const Front *f)
+{
+	return f->mode < MODE_TOURN && f->course < f->courses && f->hole_count[f->course] == 18;
+}
+
+static const char span_names[SPAN_COUNT][8] = { "All 18", "Front 9", "Back 9" };
+
 /* The players screen's lines, the slots then Tee off and Back, keeping the highlight. */
 static void SEC_MENU players_menu(Front *f, uint8_t sel)
 {
@@ -340,18 +403,24 @@ static void SEC_MENU players_menu(Front *f, uint8_t sel)
 	if (f->tee >= front_tee_count(f)) f->tee = (uint8_t)(front_tee_count(f) - 1);
 	for (a = "Tees: "; *a; a++) f->players_list[n++] = *a;
 	for (a = front_tee_name(f, f->tee), i = 0; a[i] && i < 10; i++) f->players_list[n++] = a[i] == '|' ? ' ' : a[i];
+	if (has_nines(f)) {
+		for (a = "|Holes: "; *a; a++) f->players_list[n++] = *a;
+		for (a = span_names[f->span]; *a; a++) f->players_list[n++] = *a;
+	}
 	for (a = "|Tee off|Back"; *a; a++) f->players_list[n++] = *a;
 	f->players_list[n] = 0;
 	f->screen = SCR_PLAYERS;
 	/* 7 lines with 4 slots: closer together to stay on the board */
-	if (slots(f) > 3) ui_menu_init(&f->menu, f->players_list, 16, 30, 128, 16);
+	if (f->mode == MODE_TOURN || (has_nines(f) && slots(f) > 3))
+		ui_menu_init(&f->menu, f->players_list, 16, 24, 128, 14);
+	else if (slots(f) > 3) ui_menu_init(&f->menu, f->players_list, 16, 30, 128, 16);
 	else ui_menu_init(&f->menu, f->players_list, 16, 34, 128, 18);
 	f->menu.sel = sel;
 }
 
 static int SEC_MENU players_screen(Front *f)
 {
-	players_menu(f, (uint8_t)(slots(f) + 1));
+	players_menu(f, (uint8_t)(slots(f) + 1 + has_nines(f)));
 	return FR_REDRAW;
 }
 
@@ -361,6 +430,12 @@ static void SEC_MENU cycle_tee(Front *f, int8_t d)
 	uint8_t n = front_tee_count(f);
 	f->tee = (uint8_t)((f->tee + n + d) % n);
 	players_menu(f, slots(f));
+}
+
+static void SEC_MENU cycle_span(Front *f, int8_t d)
+{
+	f->span = (uint8_t)((f->span + SPAN_COUNT + d) % SPAN_COUNT);
+	players_menu(f, (uint8_t)(slots(f) + 1));
 }
 
 /* Slot i to the next or last kind of player that's allowed. */
@@ -601,7 +676,12 @@ static int SEC_MENU open_item(Front *f, uint8_t i)
 			cycle_tee(f, 1);
 			return FR_REDRAW | FR_LINES;
 		}
-		if (i == slots(f) + 1) return tee_off(f);
+		if (has_nines(f) && i == slots(f) + 1) {
+			f->oldSel = i;
+			cycle_span(f, 1);
+			return FR_REDRAW | FR_LINES;
+		}
+		if (i == slots(f) + 1 + has_nines(f)) return tee_off(f);
 		games_screen(f);
 		return FR_REDRAW;
 	}
@@ -704,9 +784,10 @@ static int SEC_MENU key_in(Front *f, uint8_t key)
 		return 0;
 	}
 	/* left and right change a player slot */
-	if (f->screen == SCR_PLAYERS && (key == KEY_LEFT || key == KEY_RIGHT) && f->menu.sel <= slots(f)) {
+	if (f->screen == SCR_PLAYERS && (key == KEY_LEFT || key == KEY_RIGHT) && f->menu.sel <= slots(f) + has_nines(f)) {
 		if (f->menu.sel < slots(f)) cycle_slot(f, f->menu.sel, key == KEY_LEFT ? -1 : 1);
-		else cycle_tee(f, key == KEY_LEFT ? -1 : 1);
+		else if (f->menu.sel == slots(f)) cycle_tee(f, key == KEY_LEFT ? -1 : 1);
+		else cycle_span(f, key == KEY_LEFT ? -1 : 1);
 		f->oldSel = f->menu.sel;
 		return FR_REDRAW | FR_LINES;
 	}
@@ -719,7 +800,7 @@ static int SEC_MENU key_in(Front *f, uint8_t key)
 	case KEY_DOWN: f->oldSel = f->menu.sel; ui_menu_move(&f->menu, 1); return FR_REDRAW | (f->screen == SCR_COURSES ? 0 : FR_LINES);
 	case KEY_SELECT: return open_item(f, f->menu.sel);
 	case KEY_BACK:
-		if (f->screen == SCR_PLAYERS) return open_item(f, (uint8_t)(slots(f) + 2));
+		if (f->screen == SCR_PLAYERS) return open_item(f, (uint8_t)(f->menu.count - 1));
 		if (f->screen == SCR_GAMES) return open_item(f, MODE_RANGE);
 		if (f->screen == SCR_PRACTICE) return open_item(f, 2);
 		if (f->screen == SCR_COURSES) return open_item(f, (uint8_t)(f->menu.count - 1));

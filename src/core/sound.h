@@ -13,21 +13,26 @@ enum {
 	SND_SWING,          /* the meter starts */
 	SND_CLICK,          /* the power click */
 	SND_HIT_WOOD, SND_HIT_IRON, SND_HIT_PUTT,
-	SND_LAND_FAIRWAY,   /* fairway, first cut, fringe, green, tee or path */
+	SND_LAND_FAIRWAY,   /* fairway, first cut, fringe, green or tee */
 	SND_LAND_ROUGH,
 	SND_LAND_SAND,
 	SND_SPLASH,
 	SND_CUP,            /* the ball drops in */
 	SND_OOB,
-	SND_HOLED,          /* tune: par, or a gimme or holed for less than a birdie */
-	SND_BIRDIE,         /* tune: birdie or better */
+	SND_HOLED,          /* tune: par */
+	SND_BIRDIE,         /* tune: under par, except an ace */
 	SND_BOGEY,          /* tune: bogey or worse */
 	SND_MENU_MOVE, SND_MENU_SELECT,
+	SND_LAND_PATH,
+	SND_LIP,
+	SND_MISHIT,
+	SND_CLUB_CHANGE,    /* club or shot shape changed */
+	SND_ACE,            /* tune: hole in one */
 	SND_COUNT
 };
 
 /* Sounds the "effects only" setting leaves out. */
-#define SND_IS_TUNE(id) ((id) == SND_HOLED || (id) == SND_BIRDIE || (id) == SND_BOGEY)
+#define SND_IS_TUNE(id) ((id) == SND_HOLED || (id) == SND_BIRDIE || (id) == SND_BOGEY || (id) == SND_ACE)
 
 #define SND_QUEUE 8     /* a power of 2 */
 

@@ -1096,6 +1096,34 @@ def cascade_art(res, prev):
             preview(idx, prev / f'backdrop-{1060 + k}.png', 2)
 
 
+def expansion_backdrop(style, width=1936):
+    """Full turn through the heath, dunes or coast."""
+    height = 48
+    y, x = np.ogrid[:height, :width]
+    t = x * 2 * math.pi / width
+    idx = np.zeros((height, width), dtype=np.uint8)
+    if style == 7:
+        hills = 24 + 5 * np.sin(3 * t) + 3 * np.sin(7 * t + 1)
+        trees = 34 + 4 * np.sin(8 * t) - np.abs(np.sin(173 * t)) * 2.5
+        idx[:] = np.where(y >= hills, ramp_index('far', 0.70 - (y - hills) / 150, 0), idx)
+        idx[:] = np.where(y >= trees, ramp_index('far', 0.35 + 0.10 * np.sin(93 * t), 0), idx)
+    elif style == 8:
+        far = 26 + 3 * np.sin(6 * t + 1) + 3 * np.sin(11 * t)
+        dune = 34 + 5 * np.sin(9 * t + 3 * np.sin(2 * t)) + 2 * np.sin(17 * t)
+        sun = 0.12 * np.sin(9 * t + 3 * np.sin(2 * t) + 1)
+        idx[:] = np.where(y >= far, ramp_index('wall', 0.64 - (y - far) / 90, 0), idx)
+        idx[:] = np.where(y >= dune, ramp_index('sand', 0.78 + sun - (y - dune) / 75, 0), idx)
+    else:
+        coast = 35 - 9 * np.maximum(0, np.sin(2 * t + 1)) + 2 * np.sin(13 * t)
+        cliffs = y >= coast + 3
+        idx[:] = np.where(y >= 35, ramp_index('water', 0.7 - (y - 35) / 96, 0), idx)
+        land = (np.sin(2 * t + 1) + 0.35 * np.sin(5 * t)) > -0.3
+        shade = 0.68 - 0.10 * np.sin((y - coast) * 1.2) - (y - coast) / 100
+        idx[:] = np.where(land & (y >= coast), np.where(cliffs, ramp_index('wall', shade, 0),
+                                                        ramp_index('far', shade - 0.2, 0)), idx)
+    return idx
+
+
 def main():
     out = Path(sys.argv[1])
     prev = Path(sys.argv[2]) if len(sys.argv) > 2 else None
@@ -1133,6 +1161,13 @@ def main():
     banksia_art(res, prev)
     croc_art(res, prev)
     cascade_art(res, prev)
+    for style in (7, 8, 9):
+        big = expansion_backdrop(style)
+        for k, idx in enumerate((half(big), big)):
+            rid = 1000 + 10 * style + k
+            res.append(('Bkd8', rid, bkd8(idx)))
+            if prev:
+                preview(idx, prev / f'backdrop-{rid}.png', 2)
     import mkstyle
     mkstyle.make(res, prev)
     rcp = ['/* Made by tools/mkobj.py. */']

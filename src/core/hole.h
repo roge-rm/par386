@@ -122,4 +122,13 @@ void SEC_CORE surface_raster(const Hole *h, uint8_t *row, SurfaceRowFn put, void
 /* Surface at (x, y). Off the grid it's out of bounds, or water past a water cell on the edge. */
 uint8_t SEC_CORE surface_at(const SurfaceGrid *g, fixed x, fixed y);
 
+typedef struct {
+	uint16_t entry, clear;     /* yards along the aim, clear is 0 when the hole ends in the hazard */
+	uint8_t surface;
+} HazardCarry;
+
+/* Significant crossings along a line from the ball, sampled at one-yard intervals. */
+uint8_t SEC_CORE hole_hazards(const Hole *h, const SurfaceGrid *g, vec2 ball, angle aim,
+			    HazardCarry *out, uint8_t cap);
+
 #endif

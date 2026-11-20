@@ -71,6 +71,7 @@ typedef struct {
 	uint8_t lip;               /* it rolled over the cup too fast and lipped out */
 	uint16_t steps;            /* how long it moved, in steps */
 	uint8_t n, fly_n;          /* path points, and how many of them are in the air */
+	uint8_t land_pt, lip_pt;   /* first landing and first lip-out points, 0 if absent */
 	BallPt path[BALL_PATH_MAX];
 } Shot;
 

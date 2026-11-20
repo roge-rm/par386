@@ -10,6 +10,7 @@ static void SEC_CORE reset_hole(Round *r)
 		p->lie = LIE_TEE;
 		p->taken = 0;
 		p->holed = 0;
+		p->stats.green_hit = 0;
 	}
 	r->turn = r->order[0];
 }
@@ -35,12 +36,35 @@ void rules_init(Round *r, const char *course, uint8_t players, uint8_t holes, co
 	r->players = players;
 	r->holes = holes;
 	r->seed = seed;
+	r->stats_available = 1;
 	for (i = 0; i < holes; i++) r->pars[i] = pars[i];
 	for (i = 0; i < RULES_PLAYERS; i++) {
 		default_name(r->pl[i].name, i);
 		r->order[i] = i;
 	}
 	reset_hole(r);
+}
+
+void rules_span(Round *r, uint8_t span)
+{
+	uint8_t h;
+
+	if (r->holes != 18 || r->mode >= MODE_TOURN || (span != SPAN_FRONT && span != SPAN_BACK)) return;
+	r->span = span;
+	r->holes = 9;
+	if (span == SPAN_BACK)
+		for (h = 0; h < 9; h++) r->pars[h] = r->pars[h + 9];
+	for (h = 9; h < 18; h++) r->pars[h] = 0;
+}
+
+int rules_course_matches(const Round *r, const Course *c)
+{
+	uint8_t h, first = (uint8_t)(rules_hole_number(r, 0) - 1);
+
+	if (c->hole_count != (r->span == SPAN_FULL ? r->holes : 18)) return 0;
+	for (h = 0; h < r->holes; h++)
+		if (r->pars[h] != c->par[h + first]) return 0;
+	return 1;
 }
 
 /* Names for computer golfers in each slot. */
@@ -126,6 +150,27 @@ void rules_hole_out(Round *r, uint8_t i, uint8_t strokes)
 	p->holed = 1;
 	p->taken = strokes;
 	if (r->hole < COURSE_MAX_HOLES) p->score[r->hole] = strokes;
+}
+
+void rules_stat_shot(Round *r, uint8_t i, uint8_t from, uint8_t to, uint8_t result, uint8_t gimme)
+{
+	RoundPlayer *p = &r->pl[i];
+	RoundStats *s = &p->stats;
+	uint8_t par = r->pars[r->hole];
+
+	if (!r->stats_available || MODE_PRACTICE(r->mode)) return;
+	if (!p->taken && from == LIE_TEE && (par == 4 || par == 5)) {
+		s->drives++;
+		if (result == SHOT_OK && to == LIE_FAIRWAY) s->fairways++;
+	}
+	if (!s->green_hit && p->taken + 3 <= par &&
+	    (result == SHOT_HOLED || (result == SHOT_OK && to == LIE_GREEN))) {
+		s->green_hit = 1;
+		s->greens++;
+	}
+	if (from == LIE_GREEN) s->putts++;
+	if (gimme) s->putts++;
+	if (result == SHOT_WATER || result == SHOT_OOB) s->penalties++;
 }
 
 int rules_hole_over(const Round *r)
@@ -265,10 +310,14 @@ void rules_tour_next(Round *r)
 
 	if (r->tour_stage != TOUR_BREAK) return;
 	for (i = 0; i < r->players; i++) {
+		RoundStats *s = &r->pl[i].stats;
 		r->tour_first[i] = (uint16_t)rules_strokes(r, i, 0, r->holes);
 		for (h = 0; h < r->holes; h++) r->pl[i].score[h] = 0;
+		s->fairways = s->drives = s->greens = 0;
+		s->putts = s->penalties = 0;
 		r->order[i] = i;
 	}
+	r->stats_available = 1;
 	r->hole = 0;
 	r->tour_stage = TOUR_SECOND;
 	reset_hole(r);
@@ -474,6 +523,19 @@ uint16_t rules_pack(const Round *r, uint8_t *buf)
 			*b++ = (uint8_t)r->tour_first[i];
 		}
 	}
+	*b++ = r->stats_available;
+	for (i = 0; i < r->players; i++) {
+		const RoundStats *s = &r->pl[i].stats;
+		*b++ = s->fairways;
+		*b++ = s->drives;
+		*b++ = s->greens;
+		*b++ = s->green_hit;
+		*b++ = (uint8_t)(s->putts >> 8);
+		*b++ = (uint8_t)s->putts;
+		*b++ = (uint8_t)(s->penalties >> 8);
+		*b++ = (uint8_t)s->penalties;
+	}
+	*b++ = r->span;
 	return (uint16_t)(b - buf);
 }
 
@@ -497,6 +559,8 @@ int rules_unpack(Round *r, const uint8_t *buf, uint32_t len)
 	if (len < size) return -1;
 	if (ver >= 5 && b[2 + 32 + 4 + 9 + holes] == MODE_TOURN)
 		size = (uint16_t)(size + 2 + holes + 2 * players);
+	if (ver >= 6) size = (uint16_t)(size + RULES_STATS_SAVE(players));
+	if (ver >= 7) size++;
 	if (len != size) return -1;
 
 	for (k = 0; k < sizeof(Round); k++) z[k] = 0;
@@ -573,6 +637,26 @@ int rules_unpack(Round *r, const uint8_t *buf, uint32_t len)
 		if (r->tour_stage == TOUR_FIRST && r->over) return -1;
 		if (r->tour_stage == TOUR_BREAK && (r->over || r->hole != holes - 1 || rules_done(r) != holes))
 			return -1;
+	}
+	if (ver >= 6) {
+		r->stats_available = *b++;
+		if (r->stats_available > 1) return -1;
+		for (i = 0; i < players; i++) {
+			RoundStats *s = &r->pl[i].stats;
+			s->fairways = *b++;
+			s->drives = *b++;
+			s->greens = *b++;
+			s->green_hit = *b++;
+			s->putts = (uint16_t)((uint16_t)b[0] << 8 | b[1]);
+			s->penalties = (uint16_t)((uint16_t)b[2] << 8 | b[3]);
+			b += 4;
+			if (s->fairways > s->drives || s->drives > holes || s->greens > holes ||
+			    s->green_hit > 1 || s->putts > holes * 255 || s->penalties > holes * 255) return -1;
+		}
+	}
+	if (ver >= 7) {
+		r->span = *b++;
+		if (r->span >= SPAN_COUNT || (r->span && (holes != 9 || r->mode >= MODE_TOURN))) return -1;
 	}
 	/* every player holed means the hole was over and rules_advance had run */
 	for (i = 0; i < players && r->pl[i].holed; i++) ;

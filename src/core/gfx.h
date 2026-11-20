@@ -58,6 +58,8 @@ int16_t SEC_UI gfx_ball_h(void);
  * at scale 2 as they're 160 wide, and 8-bit 320 wide ones on 160 wide 8-bit surfaces at half size. Returns 0, or -1
  * if the band doesn't fit the surface or is cut short. */
 int SEC_UI gfx_pic_band(Surface *s, const uint8_t *d, uint32_t len);
+/* Draws an 8-bit picture at ox, oy, clipping to the surface. */
+int SEC_UI gfx_pic_band_crop8(Surface *s, const uint8_t *d, uint32_t len);
 
 /* Copies a rectangle of an 8-bit surface to 16-bit colour pixels (5 red,
  * 6 green, 5 blue, high byte first, or low byte first if le) at the same

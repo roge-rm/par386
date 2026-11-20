@@ -30,9 +30,17 @@ enum { CPU_HUMAN, CPU_EASY, CPU_FAIR, CPU_GOOD, CPU_PRO, CPU_LEVELS };
 #define RULES_FIELD 8
 enum { TOUR_SINGLE, TOUR_FIRST, TOUR_BREAK, TOUR_SECOND };
 
-#define RULES_SAVE_VERSION 5
+enum { SPAN_FULL, SPAN_FRONT, SPAN_BACK, SPAN_COUNT };
+
+#define RULES_SAVE_VERSION 7
+#define RULES_STATS_SAVE(players) (1 + 8 * (players))
 /* The most a saved round's record takes. */
-#define RULES_SAVE_MAX    (2 + 32 + 4 + 9 + 2 * COURSE_MAX_HOLES + 7 + RULES_PLAYERS * (RULES_NAME_MAX + 1 + 14 + COURSE_MAX_HOLES))
+#define RULES_SAVE_MAX    (2 + 32 + 4 + 9 + 2 * COURSE_MAX_HOLES + 8 + RULES_PLAYERS * (RULES_NAME_MAX + 1 + 14 + COURSE_MAX_HOLES) + RULES_STATS_SAVE(RULES_PLAYERS))
+
+typedef struct {
+	uint16_t putts, penalties;
+	uint8_t fairways, drives, greens, green_hit; /* green_hit belongs to the current hole */
+} RoundStats;
 
 typedef struct {
 	vec2 ball;                          /* where it lies, once it's off the tee */
@@ -42,6 +50,7 @@ typedef struct {
 	uint8_t cpu;                        /* CPU_*: a person or a computer golfer */
 	char name[RULES_NAME_MAX + 1];
 	uint8_t score[COURSE_MAX_HOLES];    /* strokes per hole, 0 not played yet */
+	RoundStats stats;
 } RoundPlayer;
 
 typedef struct {
@@ -58,6 +67,8 @@ typedef struct {
 	uint8_t tee;                        /* the tee set played, 0 the longest (Hole.tee comes from it) */
 	uint8_t holeout;                    /* play every putt */
 	uint8_t repeat;                     /* on the practice green, return to the starting spot */
+	uint8_t span;                       /* SPAN_* */
+	uint8_t stats_available;           /* older saves lack the shots already played */
 	uint8_t tour_stage, tour_wind;      /* current round and the course's usual wind in mph */
 	int8_t tour_difficulty[COURSE_MAX_HOLES];  /* shift in the field's score odds by hole */
 	uint16_t tour_first[RULES_PLAYERS]; /* each player's first round strokes */
@@ -75,6 +86,12 @@ typedef struct {
 /* A new round on a course of holes holes with these pars, players named
  * "Player 1" and so on, everyone on the first tee in number order. */
 void SEC_CORE rules_init(Round *r, const char *course, uint8_t players, uint8_t holes, const uint8_t *pars, uint32_t seed);
+/* Selects the holes for a new round after rules_mode. */
+void SEC_CORE rules_span(Round *r, uint8_t span);
+/* One-based course record number for a zero-based hole index in the round. */
+#define rules_hole_number(r, h) ((uint8_t)((h) + ((r)->span == SPAN_BACK ? 10 : 1)))
+/* Checks the current course's hole count and pars against a saved round. */
+int SEC_CORE rules_course_matches(const Round *r, const Course *c);
 /* Sets the mode and who plays each slot (cpu has players entries, NULL
  * for all people). Computer golfers get their own names. Practice starts
  * on hole h (0-based). */
@@ -89,6 +106,8 @@ uint8_t SEC_CORE rules_mode_ok(uint8_t mode, uint8_t players);
 int SEC_CORE rules_next(const Round *r, vec2 pin);
 /* Player i finished the hole in strokes. */
 void SEC_CORE rules_hole_out(Round *r, uint8_t i, uint8_t strokes);
+/* Records the shot before the player's strokes and lie are updated. */
+void SEC_MENU rules_stat_shot(Round *r, uint8_t i, uint8_t from, uint8_t to, uint8_t result, uint8_t gimme);
 /* 1 once every player has holed out. */
 int SEC_CORE rules_hole_over(const Round *r);
 /* On to the next hole once this one is over: the honour goes to the lowest
@@ -144,7 +163,8 @@ uint32_t SEC_CORE rules_shot_seed(const Round *r, uint8_t i);
  * A version 1 record (before the modes) loads as stroke play with every
  * player a person, versions 1 and 2 from the first tee set, and versions
  * 1 through 3 with two-foot gimmies and varying practice putts.
- * Tournaments from versions 2 through 4 are single rounds. */
+ * Tournaments from versions 2 through 4 are single rounds. Saves up to
+ * version 6 cover the full course. */
 uint16_t SEC_CORE rules_pack(const Round *r, uint8_t *buf);
 int SEC_CORE rules_unpack(Round *r, const uint8_t *buf, uint32_t len);
 

@@ -10,7 +10,7 @@
 #include "rules.h"
 
 /* What the first button does: back to play, on to the next hole, or the round's done. */
-enum { CARD_VIEW, CARD_HOLE, CARD_FINAL, CARD_CLUB };
+enum { CARD_VIEW, CARD_HOLE, CARD_FINAL, CARD_CLUB, CARD_BOOK, CARD_STATS };
 
 #define CARD_ROW 9    /* logical units per line */
 
@@ -26,6 +26,7 @@ int SEC_MENU card_hit(const Round *r, uint8_t mode, uint8_t page, int16_t x, int
  * leaderboard (0xFF for none). */
 uint8_t SEC_MENU card_buttons(const Round *r, uint8_t mode);
 uint8_t SEC_MENU card_board_button(const Round *r, uint8_t mode);
+uint8_t SEC_MENU card_stats_button(const Round *r, uint8_t mode);
 
 /* The tournament leaderboard: every player and the field, to par over the
  * finished holes, best first. Its first button does what the card's first
