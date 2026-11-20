@@ -250,6 +250,17 @@ static void save_tests(void)
 	CHECK(rules_unpack(&q, buf, len) == 0);
 	CHECK(memcmp(&q, &r, sizeof r) == 0);
 
+	{
+		static const PlayerProfile profile = { "SAM WEST", GOLFER_FEMALE, SKIN_DARK, 1 };
+		static const PlayerProfile standard = { PLAYER_DEFAULT_NAME, GOLFER_MALE, SKIN_LIGHT, 0 };
+		r.pl[0].cpu = CPU_FAIR;
+		CHECK(rules_profile(&r, &profile) == 1);
+		CHECK(strcmp(r.pl[1].name, profile.name) == 0 && strcmp(r.pl[3].name, "Dan") == 0);
+		len = rules_pack(&r, buf);
+		CHECK(rules_unpack(&q, buf, len) == 0 && strcmp(q.pl[1].name, profile.name) == 0);
+		CHECK(rules_profile(&q, &standard) == 1 && strcmp(q.pl[1].name, "Player 2") == 0);
+	}
+
 	/* a short round for 2 */
 	rules_init(&r, "Par386 Test", 2, 3, pars, 0xDEADBEEFUL);
 	len = rules_pack(&r, buf);
@@ -418,7 +429,7 @@ static int run(Play *p, Surface *s, Surface *bg, uint32_t *t, uint8_t until_not)
 				CHECK(fly_have == have);
 				if (fly_have > 0 && have > 0)
 					CHECK(fly_v.hole == v.hole && fly_v.grid == v.grid && fly_v.ball.x == v.ball.x && fly_v.ball.y == v.ball.y &&
-					      fly_v.aim == v.aim && fly_v.pin == v.pin && fly_v.green == v.green);
+					      fly_v.aim == v.aim && fly_v.pin == v.pin && fly_v.green == v.green && fly_v.player == v.player);
 				ahead_fly++;
 				fly_have = 0;
 			}
@@ -428,7 +439,7 @@ static int run(Play *p, Surface *s, Surface *bg, uint32_t *t, uint8_t until_not)
 		if (st == PS_RESULT && have && (f & PL_RENDER)) {
 			if (have > 0) {
 				int same = p->rv.hole == v.hole && p->rv.grid == v.grid && p->rv.ball.x == v.ball.x && p->rv.ball.y == v.ball.y &&
-				           p->rv.aim == v.aim && p->rv.pin == v.pin && p->rv.green == v.green;
+				           p->rv.aim == v.aim && p->rv.pin == v.pin && p->rv.green == v.green && p->rv.player == v.player;
 				CHECK(same);
 				ahead_ok += same;
 			} else if (!p->cpu) {
@@ -1952,7 +1963,7 @@ static void front_tests(void)
 	/* no save: Play a round goes to the games, then the players */
 	front_init(&f);
 	front_clubhouse(&f, 0);
-	CHECK(f.menu.count == 5 && front_action(&f, 0) == MAIN_PLAY);
+	CHECK(f.menu.count == MAIN_QUIT + 1 && front_action(&f, 0) == MAIN_PLAY && front_action(&f, MAIN_PLAYER) == MAIN_PLAYER);
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_GAMES && f.menu.sel == 0 && f.menu.count == 6);
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_PLAYERS && f.mode == MODE_STROKE);
 	CHECK(f.menu.sel == 5 && f.menu.count == 7);
@@ -1994,7 +2005,7 @@ static void front_tests(void)
 	/* Back goes back to the games, and from there the clubhouse */
 	f.menu.sel = 6;
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_GAMES && f.menu.sel == MODE_STROKE);
-	CHECK(front_key(&f, KEY_BACK) == FR_REDRAW && f.screen == SCR_MENU && f.menu.count == 5);
+	CHECK(front_key(&f, KEY_BACK) == FR_REDRAW && f.screen == SCR_MENU && f.menu.count == MAIN_QUIT + 1);
 
 	/* match play: two slots, neither off */
 	f.slot[1] = SLOT_OFF;
@@ -2036,11 +2047,11 @@ static void front_tests(void)
 
 	/* with a save: Continue round first, the rest a line down */
 	front_clubhouse(&f, 1);
-	CHECK(f.menu.count == 6 && front_action(&f, 0) == MAIN_CONTINUE && front_action(&f, 1) == MAIN_PLAY &&
-	      front_action(&f, 5) == MAIN_QUIT);
-	CHECK(f.menu.y + 5 * f.menu.lineH + UI_CHAR < 150);
+	CHECK(f.menu.count == MAIN_QUIT + 2 && front_action(&f, 0) == MAIN_CONTINUE && front_action(&f, 1) == MAIN_PLAY &&
+	      front_action(&f, MAIN_PLAYER + 1) == MAIN_PLAYER && front_action(&f, MAIN_QUIT + 1) == MAIN_QUIT);
+	CHECK(f.menu.y + (MAIN_QUIT + 1) * f.menu.lineH + UI_CHAR < 150);
 	CHECK(front_key(&f, KEY_SELECT) == FR_CONTINUE);
-	f.menu.sel = 5;
+	f.menu.sel = MAIN_QUIT + 1;
 	CHECK(front_key(&f, KEY_SELECT) == FR_QUIT);
 	/* a new round asks first: Cancel keeps the save, OK goes on to the games */
 	f.menu.sel = 1;

@@ -279,6 +279,7 @@ static void SEC_UI take(Play *p, uint8_t i)
 	const RoundPlayer *rp = &r->pl[i];
 
 	p->cur = i;
+	p->rv.player = i;
 	r->turn = i;
 	if (rp->taken) {
 		p->rv.ball = rp->ball;
@@ -1512,7 +1513,7 @@ int play_next_view(const Play *p, RenderView *v)
 	const Shot *sh = &p->shot;
 	const Hole *h = p->rv.hole;
 	vec2 ball = sh->stop, to = h->pins[p->rv.pin & 3];
-	uint8_t lie = sh->lie, stroke;
+	uint8_t lie = sh->lie, stroke, player = p->cur;
 	uint16_t yd;
 
 	/* as apply and next would have it, with nothing changed */
@@ -1532,6 +1533,7 @@ int play_next_view(const Play *p, RenderView *v)
 			/* another player's turn: only a person's, whose aim is known */
 			rp = &r.pl[n];
 			if (rp->cpu || r.mode == MODE_GREEN) return 0;
+			player = (uint8_t)n;
 			if (rp->taken) {
 				ball = rp->ball;
 				lie = rp->lie;
@@ -1548,6 +1550,7 @@ int play_next_view(const Play *p, RenderView *v)
 	v->ball = ball;
 	v->aim = vec2_angle(vec2_sub(to, ball));
 	v->green = lie == LIE_GREEN || lie == LIE_FRINGE || ball_pick(yd, lie) == CLUB_PT;
+	v->player = player;
 	return 1;
 }
 

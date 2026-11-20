@@ -26,6 +26,7 @@
 #include "render.h"
 #include "pal.h"
 #include "paltab.h"
+#include "profile.h"
 #include "terra.h"
 
 #define CAM_BACK   (7L << 16)         /* yards behind the ball */
@@ -868,30 +869,44 @@ static void SEC_RENDER plot(const R *r, int16_t x, int16_t y, uint8_t c, uint8_t
 	else put(r, pixp(r, x, y), x, y, c);
 }
 
-/* Spr8 frame d with its ball point on (bx, by), and the ball if ball isn't 0. */
-static void SEC_RENDER golfer(const R *r, const RenderData *gd, int16_t bx, int16_t by, uint8_t ball, uint8_t dbl)
+static const uint8_t skin_ramp[SKIN_COLOURS - 1][PAL_SKIN_N] = {
+	{ PAL_BARK + 1, PAL_BARK + 2, PAL_SKIN + 1, PAL_SKIN + 2, PAL_SKIN + 3, PAL_SKIN + 4 },
+	{ PAL_BARK, PAL_BARK + 1, PAL_SKIN, PAL_BARK + 2, PAL_BARK + 3, PAL_SKIN + 2 }
+};
+
+static int16_t SEC_RENDER golfer_x(const RenderGolfer *g, const RenderData *d, uint16_t w, int16_t bx)
 {
+	int16_t anchor = (int16_t)be16(d->p + 8);
+	return (int16_t)(g->left ? bx + anchor - ((int16_t)w - 1) : bx - anchor);
+}
+
+/* Spr8 pose with its ball point on (bx, by). The ball itself stays put. */
+static void SEC_RENDER golfer(const R *r, const RenderGolfer *g, uint8_t pose, int16_t bx, int16_t by, uint8_t ball, uint8_t dbl)
+{
+	const RenderData *gd = &g->pose[pose];
+	const uint8_t *shade = r->lg >= 2 && g->skin > SKIN_LIGHT && g->skin < SKIN_COLOURS ? skin_ramp[g->skin - 1] : 0;
 	uint16_t w, h, i, j;
 	const uint8_t *px = sprite(gd, &w, &h);
 
 	if (px) {
-		int16_t x0 = bx - (int16_t)be16(gd->p + 8), y0 = by - (int16_t)be16(gd->p + 10);
+		int16_t x0 = golfer_x(g, gd, w, bx), y0 = by - (int16_t)be16(gd->p + 10);
+		int16_t step = g->left ? -1 : 1;
 		/* the columns on screen */
 		int16_t e = r->w - x0;
 		uint16_t i0 = x0 < 0 ? (uint16_t)-x0 : 0, i1 = e < 0 ? 0 : e < (int16_t)w ? (uint16_t)e : w;
 		for (j = 0; j < h; j++, px += w) {
 			int16_t y = y0 + (int16_t)j;
+			int16_t k = g->left ? (int16_t)(w - 1 - i0) : (int16_t)i0;
 			uint8_t *row;
 			if (y < 0 || y >= r->vh) continue;
-			if (dbl) {
-				for (i = i0; i < i1; i++)
-					if (px[i]) plot(r, x0 + (int16_t)i, y, px[i], 1);
-				continue;
-			}
 			row = r->bits + MULU16(y, r->rb);
-			for (i = i0; i < i1; i++) {
+			for (i = i0; i < i1; i++, k += step) {
 				int16_t x = x0 + (int16_t)i;
-				if (px[i]) put(r, row + ((uint16_t)x >> (3 - r->lg)), x, y, px[i]);
+				uint8_t c = px[k];
+				if (!c) continue;
+				if (shade && c >= PAL_SKIN && c < PAL_SKIN + PAL_SKIN_N) c = shade[c - PAL_SKIN];
+				if (dbl) plot(r, x, y, c, 1);
+				else put(r, row + ((uint16_t)x >> (3 - r->lg)), x, y, c);
 			}
 		}
 	}
@@ -917,7 +932,7 @@ static void SEC_RENDER golfer_box(const R *r, RenderGolfer *g, int16_t bx, int16
 		const RenderData *d = &g->pose[k];
 		int16_t ax, ay;
 		if (!sprite(d, &w, &h)) continue;
-		ax = bx - (int16_t)be16(d->p + 8);
+		ax = golfer_x(g, d, w, bx);
 		ay = by - (int16_t)be16(d->p + 10);
 		if (ax < x0) x0 = ax;
 		if (ay < y0) y0 = ay;
@@ -1078,7 +1093,7 @@ int render_pose(Surface *s, const RenderGolfer *g, uint8_t pose, uint8_t ball,
 	r.vh = d ? vh >> 1 : vh;
 	if (g->x + g->w > r.w || g->y + g->h > r.vh) return -1;
 	under_io(&r, g, 0, d);
-	golfer(&r, &g->pose[pose], g->bx, g->by, ball, d);
+	golfer(&r, g, pose, g->bx, g->by, ball, d);
 	*ox = d ? g->x << 1 : g->x;
 	*oy = d ? g->y << 1 : g->y;
 	*ow = d ? g->w << 1 : g->w;
@@ -1227,7 +1242,7 @@ int render_scene_step(void *work, RenderClock clk, uint32_t until)
 				}
 				g->shown = POSE_ADDRESS;
 				g->ball = 1;
-				golfer(r, &g->pose[POSE_ADDRESS], bx, by, 1, 0);
+				golfer(r, g, POSE_ADDRESS, bx, by, 1, 0);
 			}
 			t = lap(r->st, RS_GOLFER, t);
 			/* the status strip, black for now */

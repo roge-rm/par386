@@ -2,7 +2,7 @@
 a CMU golf swing retargeted onto the rig, camera and morning sun.
 
 Run with MPFB enabled in the Blender config (source env.sh, see ASSETS.md):
-  blender -b --python build_scene.py -- ASSETS OUT.blend
+  blender -b --python build_scene.py -- ASSETS OUT.blend [female]
 ASSETS holds cmu/ (64.asf, 64_01.amc) and syspack/x/ (MakeHuman system assets).
 Each swing frame in SWING below becomes one Blender frame, address is frame 1.
 """
@@ -18,8 +18,15 @@ from bl_ext.user_default.mpfb.services.humanservice import HumanService
 
 argv = sys.argv[sys.argv.index('--') + 1:]
 ASSETS, OUT = argv[0], argv[1]
+female = argv[2:] == ['female']
+if argv[2:] and not female:
+    raise SystemExit('Use ASSETS OUT.blend [female]')
 PACK = os.path.join(ASSETS, 'syspack', 'x')
 TRIAL = os.path.join(ASSETS, 'cmu', '64_01.amc')
+suit_name = 'female_casualsuit01' if female else 'male_casualsuit06'
+hair_name = 'ponytail01' if female else 'short02'
+skin_name = 'female' if female else 'male'
+CS = os.path.join(PACK, 'clothes', suit_name, suit_name)
 
 # CMU 64_01 frames (120 fps): address, then 12 swing frames
 SWING = [120, 215, 245, 268, 292, 312, 322, 331, 337, 343, 350, 405, 440]
@@ -28,14 +35,14 @@ SWING = [120, 215, 245, 268, 292, 312, 322, 331, 337, 343, 350, 405, 440]
 for o in list(bpy.data.objects):
     bpy.data.objects.remove(o, do_unlink=True)
 
-macro = {"gender": 1.0, "age": 0.55, "muscle": 0.6, "weight": 0.55, "proportions": 0.7,
+macro = {"gender": 0.0 if female else 1.0, "age": 0.55, "muscle": 0.6, "weight": 0.55, "proportions": 0.7,
          "height": 0.6, "cupsize": 0.5, "firmness": 0.5,
          "race": {"asian": 0.0, "caucasian": 1.0, "african": 0.0}}
 body = HumanService.create_human(macro_detail_dict=macro, feet_on_ground=True, scale=0.1)
 rig = HumanService.add_builtin_rig(body, "cmu_mb")
-for name in ['clothes/male_casualsuit06/male_casualsuit06.mhclo',
+for name in [CS + '.mhclo',
              'clothes/shoes02/shoes02.mhclo',
-             'hair/short02/short02.mhclo']:
+             f'hair/{hair_name}/{hair_name}.mhclo']:
     kind = 'Hair' if name.startswith('hair') else 'Clothes'
     HumanService.add_mhclo_asset(os.path.join(PACK, name), body, asset_type=kind, subdiv_levels=0)
 bpy.context.view_layer.update()
@@ -43,7 +50,7 @@ bpy.context.view_layer.update()
 meshes = [o for o in bpy.data.objects if o.type == 'MESH']
 suit = next(o for o in meshes if 'casualsuit' in o.name.lower())
 shoes = next(o for o in meshes if 'shoes' in o.name.lower())
-hair = next(o for o in meshes if 'short' in o.name.lower())
+hair = next(o for o in meshes if hair_name in o.name.lower().replace(' ', ''))
 
 # ---------------------------------------------------------------- materials
 def principled(name, colour, rough=0.8, tex=None, normal=None, sheen=0.0):
@@ -68,8 +75,8 @@ def principled(name, colour, rough=0.8, tex=None, normal=None, sheen=0.0):
 
 def lin(r, g, b): return tuple((c / 255.0) ** 2.2 for c in (r, g, b))
 
-CS = os.path.join(PACK, 'clothes/male_casualsuit06/male_casualsuit06')
-skin_m = principled('skin', lin(255, 236, 222), 0.55, os.path.join(PACK, 'skins/young_caucasian_male/young_lightskinned_male_diffuse.png'))
+skin_m = principled('skin', lin(255, 236, 222), 0.55,
+                    os.path.join(PACK, f'skins/young_caucasian_{skin_name}/young_lightskinned_{skin_name}_diffuse.png'))
 glove_m = principled('glove', lin(236, 236, 230), 0.7)
 # The suit is a white tee and blue jeans: the shirt takes its folds from the
 # suit's AO and normal maps under the shirt colour; trousers are dark grey-navy.
@@ -89,17 +96,35 @@ def set_only(o, m):
 set_only(shoes, shoe_m)
 set_only(hair, hair_m)
 
-# split the suit into shirt and trousers by the texture colour under each face
-img = bpy.data.images.load(CS + '_diffuse.png')
-W, H = img.size
-px = np.array(img.pixels[:], dtype=np.float32).reshape(H, W, 4)
 set_only(suit, shirt_m); suit.data.materials.append(trousers_m)
-uv = suit.data.uv_layers.active.data
-for poly in suit.data.polygons:
-    u = sum(uv[i].uv.x for i in poly.loop_indices) / poly.loop_total
-    v = sum(uv[i].uv.y for i in poly.loop_indices) / poly.loop_total
-    r, g, b, _ = px[min(H - 1, int(v * H)), min(W - 1, int(u * W))]
-    poly.material_index = 0 if min(r, g, b) > 0.55 and max(r, g, b) - min(r, g, b) < 0.12 else 1   # white tee, else jeans
+if female:
+    # The shirt and trousers are separate islands in this mesh.
+    adjacent = [[] for _ in suit.data.vertices]
+    for edge in suit.data.edges:
+        a, b = edge.vertices
+        adjacent[a].append(b)
+        adjacent[b].append(a)
+    first = max(suit.data.vertices, key=lambda v: (suit.matrix_world @ v.co).z).index
+    shirt = {first}
+    pending = [first]
+    while pending:
+        for v in adjacent[pending.pop()]:
+            if v not in shirt:
+                shirt.add(v)
+                pending.append(v)
+    for poly in suit.data.polygons:
+        poly.material_index = 0 if poly.vertices[0] in shirt else 1
+else:
+    # The male suit's white tee and jeans can be separated by texture colour.
+    img = bpy.data.images.load(CS + '_diffuse.png')
+    W, H = img.size
+    px = np.array(img.pixels[:], dtype=np.float32).reshape(H, W, 4)
+    uv = suit.data.uv_layers.active.data
+    for poly in suit.data.polygons:
+        u = sum(uv[i].uv.x for i in poly.loop_indices) / poly.loop_total
+        v = sum(uv[i].uv.y for i in poly.loop_indices) / poly.loop_total
+        r, g, b, _ = px[min(H - 1, int(v * H)), min(W - 1, int(u * W))]
+        poly.material_index = 0 if min(r, g, b) > 0.55 and max(r, g, b) - min(r, g, b) < 0.12 else 1
 
 # body: skin, with the left (lead) hand gloved
 set_only(body, skin_m); body.data.materials.append(glove_m)

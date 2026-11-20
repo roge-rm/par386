@@ -6,6 +6,10 @@ A golf game for Palm OS in the style of early 90s PC golf games. Runs on the Pal
 
 Install `Par386.prc` and the course files (`Par386-*.pdb`) you want. Courses can go in RAM or on an SD card, in `/PALM/Programs/Par386/`, `/PALM/Launcher/` or the root of the card. A card course is copied into RAM while you play it, so you need about 70 KB free.
 
+## Player
+
+Open Player in the clubhouse to set your name, golfer, skin colour and handedness. Your name can have up to eight characters. The choices are saved and used for the first human player, including when you continue a round. The left-handed golfer swings on the other side of the ball. Skin shades use the same silhouette on screens with one or two bits per pixel.
+
 ## Games
 
 Play a round, pick the game, then set each of the four player slots to Human, a computer golfer (CPU Easy, Fair, Good or Pro) or Off, and Tee off.

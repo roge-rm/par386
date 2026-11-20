@@ -11,12 +11,19 @@
 #define REC_Y 146
 #define REC_W 128
 
+enum { PLAYER_NAME, PLAYER_GOLFER, PLAYER_SKIN, PLAYER_HAND, PLAYER_BACK };
+enum { NAME_SPACE = 36, NAME_DEL, NAME_CLEAR, NAME_DONE, NAME_CANCEL, NAME_KEYS };
+
+static const char name_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+static const char *const name_actions[] = { "Space", "Del", "Clear", "Done", "Cancel" };
+static const PlayerProfile default_player = { PLAYER_DEFAULT_NAME, GOLFER_MALE, SKIN_LIGHT, 0 };
+
 static void SEC_MENU main_menu(Front *f)
 {
 	if (f->saved)
-		ui_menu_init(&f->menu, "Continue round|Play a round|Practice|Courses|Settings|Quit", 16, 34, 128, 18);
+		ui_menu_init(&f->menu, "Continue round|Play a round|Practice|Courses|Settings|Player|Quit", 16, 30, 128, 16);
 	else
-		ui_menu_init(&f->menu, "Play a round|Practice|Courses|Settings|Quit", 22, 36, 116, 20);
+		ui_menu_init(&f->menu, "Play a round|Practice|Courses|Settings|Player|Quit", 22, 36, 116, 20);
 }
 
 void front_init(Front *f)
@@ -46,6 +53,7 @@ void front_init(Front *f)
 		for (t = 0; t < COURSE_MAX_TEES; t++) f->rec_strokes[k][t] = 0;
 	}
 	f->sound = SOUND_ON;
+	f->player = default_player;
 	main_menu(f);
 }
 
@@ -197,10 +205,66 @@ int front_preview_band(Surface *s, const uint8_t *d, uint32_t len)
 	return r;
 }
 
+/* The keyboard's letter grid, editing keys and confirmation buttons. */
+static void SEC_MENU name_key_box(uint8_t key, URect *box)
+{
+	box->h = 11;
+	if (key < NAME_SPACE) {
+		box->x = (int16_t)(14 + (key / 6) * 22);
+		box->y = (int16_t)(46 + (key % 6) * 12);
+		box->w = 21;
+	} else if (key < NAME_DONE) {
+		box->x = (int16_t)(14 + (key - NAME_SPACE) * 44);
+		box->y = 120;
+		box->w = 43;
+	} else {
+		box->x = (int16_t)(14 + (key - NAME_DONE) * 66);
+		box->y = 134;
+		box->w = 65;
+	}
+}
+
+static const char *SEC_MENU name_letter(uint8_t key)
+{
+	return name_chars + (key % 6) * 6 + key / 6;
+}
+
+static uint8_t SEC_MENU name_len(const char *name)
+{
+	uint8_t n = 0;
+	while (n < PLAYER_NAME_MAX && name[n]) n++;
+	return n;
+}
+
+static void SEC_MENU name_draw(const Front *f, Surface *s)
+{
+	uint8_t key, len = name_len(f->player_name);
+
+	ui_fill(s, 14, 26, 131, 15, UIC_TITLE);
+	ui_bevel(s, 14, 26, 131, 15, UIC_INK, UIC_PAPER_DK);
+	ui_text(s, 20, 30, f->player_name, len, UIC_PAPER, -1);
+	if (len < PLAYER_NAME_MAX) ui_fill(s, 20 + len * UI_CHAR, 38, 6, 1, UIC_PAPER);
+	for (key = 0; key < NAME_KEYS; key++) {
+		URect b;
+		int16_t n = 1;
+		const char *t;
+		uint8_t selected = key == f->name_key;
+		if (key >= NAME_SPACE) {
+			t = name_actions[key - NAME_SPACE];
+			for (n = 0; t[n]; n++) {}
+		} else t = name_letter(key);
+		name_key_box(key, &b);
+		ui_fill(s, b.x, b.y, b.w, b.h, selected ? UIC_TITLE : UIC_BRASS);
+		ui_bevel(s, b.x, b.y, b.w, b.h, selected ? UIC_BAR_LT : UIC_BRASS_LT, UIC_BRASS_DK);
+		ui_ctext(s, b.x + b.w / 2, b.y + 2, t, n, selected ? UIC_TEXT_HI : UIC_INK, -1);
+	}
+}
+
 void front_draw(const Front *f, Surface *s)
 {
 	const char *plate = f->screen == SCR_PLAYERS ? "PLAYERS" : f->screen == SCR_COURSES ? "COURSES" :
 	                    f->screen == SCR_SETTINGS ? "SETTINGS" : f->screen == SCR_GAMES ? "GAMES" :
+	                    f->screen == SCR_PLAYER ? "PLAYER" : f->screen == SCR_PLAYER_NAME ? "NAME" :
 	                    f->screen == SCR_PRACTICE ? "PRACTICE" : "CLUBHOUSE";
 	int16_t n;
 
@@ -211,6 +275,10 @@ void front_draw(const Front *f, Surface *s)
 	for (n = 0; plate[n]; n++) {}
 	ui_ctext(s, PLATE_CX + 1, PLATE_Y + (PLATE_H - UI_CHAR) / 2 + 1, plate, n, UIC_BRASS_LT, -1);
 	ui_ctext(s, PLATE_CX, PLATE_Y + (PLATE_H - UI_CHAR) / 2, plate, n, UIC_BRASS_DK, -1);
+	if (f->screen == SCR_PLAYER_NAME) {
+		name_draw(f, s);
+		return;
+	}
 	if (f->screen == SCR_COURSES && line_course(f, f->menu.sel) != 0xFF) {
 		uint8_t ci = line_course(f, f->menu.sel);
 		/* the preview's frame, and a dark box the picture goes in, if there is one */
@@ -381,8 +449,110 @@ static void SEC_MENU settings_menu(Front *f)
 	f->menu.sel = sel;
 }
 
+static void SEC_MENU player_menu(Front *f, uint8_t sel)
+{
+	static const char *const skins[SKIN_COLOURS] = { "|Skin: Light", "|Skin: Medium", "|Skin: Dark" };
+	const char *a = "Name: ", *b = f->player.golfer == GOLFER_FEMALE ? "|Golfer: Female" : "|Golfer: Male";
+	const char *c = skins[f->player.skin < SKIN_COLOURS ? f->player.skin : SKIN_LIGHT];
+	const char *d = f->player.left ? "|Hand: Left|Back" : "|Hand: Right|Back";
+	uint8_t n = 0, k, len = name_len(f->player.name);
+
+	while (*a) f->player_list[n++] = *a++;
+	for (k = 0; k < len; k++) f->player_list[n++] = f->player.name[k] == '|' ? ' ' : f->player.name[k];
+	while (*b) f->player_list[n++] = *b++;
+	while (*c) f->player_list[n++] = *c++;
+	while (*d) f->player_list[n++] = *d++;
+	f->player_list[n] = 0;
+	f->screen = SCR_PLAYER;
+	ui_menu_init(&f->menu, f->player_list, 16, 36, 128, 18);
+	f->menu.sel = sel;
+}
+
+static int SEC_MENU player_pick(Front *f, uint8_t i, int8_t d)
+{
+	switch (i) {
+	case PLAYER_NAME: {
+		uint8_t k;
+		for (k = 0; k <= PLAYER_NAME_MAX; k++) f->player_name[k] = f->player.name[k];
+		f->player_name[PLAYER_NAME_MAX] = 0;
+		f->name_key = NAME_CLEAR;
+		f->screen = SCR_PLAYER_NAME;
+		return FR_REDRAW;
+	}
+	case PLAYER_GOLFER:
+		f->player.golfer ^= 1;
+		break;
+	case PLAYER_SKIN:
+		f->player.skin = (uint8_t)((f->player.skin + SKIN_COLOURS + d) % SKIN_COLOURS);
+		break;
+	case PLAYER_HAND:
+		f->player.left ^= 1;
+		break;
+	default:
+		front_clubhouse(f, f->saved);
+		f->menu.sel = (uint8_t)(MAIN_PLAYER + (f->saved ? 1 : 0));
+		return FR_REDRAW;
+	}
+	player_menu(f, i);
+	return FR_REDRAW | FR_PLAYER;
+}
+
+static int SEC_MENU name_input(Front *f, uint16_t chr)
+{
+	uint8_t n = name_len(f->player_name);
+
+	if (chr == '\r' || chr == '\n') {
+		const char *name;
+		uint8_t first = 0, k;
+		while (first < n && f->player_name[first] == ' ') first++;
+		while (n > first && f->player_name[n - 1] == ' ') n--;
+		name = first == n ? default_player.name : f->player_name + first;
+		n = first == n ? name_len(default_player.name) : (uint8_t)(n - first);
+		for (k = 0; k < n; k++) f->player.name[k] = name[k];
+		for (; k <= PLAYER_NAME_MAX; k++) f->player.name[k] = 0;
+		player_menu(f, PLAYER_NAME);
+		return FR_REDRAW | FR_PLAYER;
+	}
+	if (chr == 27) {
+		player_menu(f, PLAYER_NAME);
+		return FR_REDRAW;
+	}
+	if (chr == '\b') {
+		if (n) f->player_name[n - 1] = 0;
+		return FR_REDRAW;
+	}
+	if (chr < 32 || chr > 126 || chr == '|') return 0;
+	if (n < PLAYER_NAME_MAX) {
+		f->player_name[n] = (char)chr;
+		f->player_name[n + 1] = 0;
+	}
+	return FR_REDRAW;
+}
+
+static int SEC_MENU name_pick(Front *f, uint8_t key)
+{
+	if (key < NAME_SPACE) return name_input(f, (uint8_t)*name_letter(key));
+	switch (key) {
+	case NAME_SPACE: return name_input(f, ' ');
+	case NAME_DEL: return name_input(f, '\b');
+	case NAME_CLEAR: f->player_name[0] = 0; return FR_REDRAW;
+	case NAME_DONE: return name_input(f, '\r');
+	default: return name_input(f, 27);
+	}
+}
+
+int front_text(Front *f, uint16_t chr)
+{
+	int r;
+	if (f->screen != SCR_PLAYER_NAME) return 0;
+	r = name_input(f, chr);
+	if (r) snd_play(SND_MENU_SELECT);
+	return r;
+}
+
 static int SEC_MENU open_item(Front *f, uint8_t i)
 {
+	if (f->screen == SCR_PLAYER) return player_pick(f, i, 1);
 	if (f->screen == SCR_SETTINGS) {
 		if (i == 0) {
 			f->sound = (uint8_t)((f->sound + 1) % SOUND_MODES);
@@ -466,6 +636,9 @@ static int SEC_MENU open_item(Front *f, uint8_t i)
 		return FR_REDRAW;
 	}
 	switch (i) {
+	case MAIN_PLAYER:
+		player_menu(f, PLAYER_NAME);
+		return FR_REDRAW;
 	case MAIN_COURSES:
 		if (f->courses) return courses_screen(f);
 		ui_dialog_init(&f->dlg, "Courses", "No courses are\ninstalled.", "OK");
@@ -501,6 +674,20 @@ static int SEC_MENU key_in(Front *f, uint8_t key)
 		f->screen = SCR_MENU;
 		return FR_REDRAW;
 	}
+	if (f->screen == SCR_PLAYER_NAME) {
+		int16_t d;
+		switch (key) {
+		case KEY_UP: d = -1; break;
+		case KEY_DOWN: d = 1; break;
+		case KEY_LEFT: d = -6; break;
+		case KEY_RIGHT: d = 6; break;
+		case KEY_SELECT: return name_pick(f, f->name_key);
+		case KEY_BACK: return name_pick(f, NAME_CANCEL);
+		default: return 0;
+		}
+		f->name_key = (uint8_t)((f->name_key + NAME_KEYS + d) % NAME_KEYS);
+		return FR_REDRAW;
+	}
 	if (f->dialog) {
 		switch (key) {
 		case KEY_LEFT: case KEY_UP:
@@ -523,6 +710,9 @@ static int SEC_MENU key_in(Front *f, uint8_t key)
 		f->oldSel = f->menu.sel;
 		return FR_REDRAW | FR_LINES;
 	}
+	if (f->screen == SCR_PLAYER && f->menu.sel >= PLAYER_GOLFER && f->menu.sel <= PLAYER_HAND &&
+	    (key == KEY_LEFT || key == KEY_RIGHT))
+		return player_pick(f, f->menu.sel, key == KEY_LEFT ? -1 : 1);
 	switch (key) {
 	/* on the courses screen the preview changes too, so all of it is redrawn */
 	case KEY_UP: f->oldSel = f->menu.sel; ui_menu_move(&f->menu, -1); return FR_REDRAW | (f->screen == SCR_COURSES ? 0 : FR_LINES);
@@ -534,6 +724,7 @@ static int SEC_MENU key_in(Front *f, uint8_t key)
 		if (f->screen == SCR_PRACTICE) return open_item(f, 2);
 		if (f->screen == SCR_COURSES) return open_item(f, (uint8_t)(f->menu.count - 1));
 		if (f->screen == SCR_SETTINGS) return open_item(f, (uint8_t)(f->menu.count - 1));
+		if (f->screen == SCR_PLAYER) return open_item(f, PLAYER_BACK);
 		return 0;
 	}
 	return 0;
@@ -563,6 +754,18 @@ static int SEC_MENU tap_in(Front *f, int16_t x, int16_t y)
 	if (f->screen == SCR_TITLE) {
 		f->screen = SCR_MENU;
 		return FR_REDRAW;
+	}
+	if (f->screen == SCR_PLAYER_NAME) {
+		uint8_t key;
+		for (key = 0; key < NAME_KEYS; key++) {
+			URect b;
+			name_key_box(key, &b);
+			if (x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h) {
+				f->name_key = key;
+				return name_pick(f, key);
+			}
+		}
+		return 0;
 	}
 	if (f->dialog) {
 		i = ui_dialog_hit(&f->dlg, x, y);

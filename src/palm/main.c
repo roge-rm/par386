@@ -56,6 +56,7 @@ static UInt32 gHeapStart;      /* free dynamic heap at launch */
 #define kRecPref     4
 #define kShotPref    5
 #define kGimmePref   6
+#define kPlayerPref  7
 static Records gRecords;
 static Boolean gPlaying;
 static Play gPlay;
@@ -71,6 +72,7 @@ static MemHandle gHoleH, gGridH;
 static RenderGolfer gGolf;     /* the golfer's frames, kept locked while playing, and the pixels under him */
 static MemHandle gGolfH[RENDER_POSES];
 static UInt32 gUnderLen;
+static UInt8 gProfileSlot;    /* first human in the round, or RULES_PLAYERS */
 static UInt32 gMinFree;        /* least free heap while the scene was drawn */
 static Boolean gAnim;          /* play wants frames */
 static Boolean gFadeBack;      /* a shot is on the map: the next scene fades in over it */
@@ -524,50 +526,59 @@ static Boolean SEC_MENU ListVisit(const char *name, UInt16 vol, const char *path
 	return false;
 }
 
-/* Lets go of the golfer's frames and the pixels kept under him. */
-static void GolferFree(void)
+static void GolferFramesFree(RenderGolfer *g, MemHandle *frames)
 {
 	UInt16 k;
 
 	for (k = 0; k < RENDER_POSES; k++) {
-		if (gGolfH[k]) {
-			MemHandleUnlock(gGolfH[k]);
-			DmReleaseResource(gGolfH[k]);
+		if (frames[k]) {
+			MemHandleUnlock(frames[k]);
+			DmReleaseResource(frames[k]);
 		}
-		gGolfH[k] = NULL;
-		gGolf.pose[k].p = NULL;
-		gGolf.pose[k].len = 0;
+		frames[k] = NULL;
+		g->pose[k].p = NULL;
+		g->pose[k].len = 0;
 	}
+}
+
+/* Lets go of the golfer's frames and the pixels kept under the sprite. */
+static void GolferFree(void)
+{
+	GolferFramesFree(&gGolf, gGolfH);
 	if (gGolf.under) MemPtrFree(gGolf.under);
 	gGolf.under = NULL;
 	gGolf.w = 0;
 	gUnderLen = 0;
 }
 
-/* Locks the golfer's frames for scale sc (Spr8 2000 + 10 * pose + sc - 1)
- * and makes the buffer for the pixels under him. They stay while playing,
- * so his pose can change over the kept scene. Without the buffer the pose
- * stays at address. */
-static void GolferLock(UInt16 sc)
+/* The scene and a scene drawn ahead each keep their own frames locked. */
+static void GolferLock(RenderGolfer *g, MemHandle *frames, UInt16 sc, UInt8 player)
 {
-	UInt16 k;
+	UInt16 k, base = 2000;
+	Boolean custom = player == gProfileSlot;
+
+	GolferFramesFree(g, frames);
+	g->left = custom ? gFront.player.left : 0;
+	g->skin = custom ? gFront.player.skin : SKIN_LIGHT;
+	if (custom && gFront.player.golfer == GOLFER_FEMALE) base = 2100;
+	for (k = 0; k < RENDER_POSES; k++) {
+		MemHandle h = DmGetResource('Spr8', base + 10 * k + sc - 1);
+		if (!h) continue;
+		g->pose[k].p = MemHandleLock(h);
+		if (!g->pose[k].p) {
+			DmReleaseResource(h);
+			continue;
+		}
+		frames[k] = h;
+		g->pose[k].len = MemHandleSize(h);
+	}
+}
+
+/* Without room for the pixels under the pose, it stays at address. */
+static void GolferUnder(void)
+{
 	UInt32 n = render_under_size(&gS);
 
-	for (k = 0; k < RENDER_POSES; k++) {
-		MemHandle h;
-		if (gGolfH[k]) {
-			MemHandleUnlock(gGolfH[k]);
-			DmReleaseResource(gGolfH[k]);
-		}
-		gGolfH[k] = NULL;
-		gGolf.pose[k].p = NULL;
-		gGolf.pose[k].len = 0;
-		h = DmGetResource('Spr8', 2000 + 10 * k + sc - 1);
-		if (!h) continue;
-		gGolfH[k] = h;
-		gGolf.pose[k].p = MemHandleLock(h);
-		gGolf.pose[k].len = MemHandleSize(h);
-	}
 	if (gUnderLen != n) {
 		if (gGolf.under) MemPtrFree(gGolf.under);
 		gGolf.under = MemPtrNew(n);
@@ -772,6 +783,36 @@ static Boolean SEC_MENU LoadHole(UInt16 n)
 enum { PF_MEM, PF_SAVE, PF_MISSING, PF_NOCOURSE };
 static UInt8 gFail;
 
+/* Backed-up player preference version 1: model, colour, hand, then the name. */
+static void SEC_MENU PlayerLoad(void)
+{
+	UInt8 data[3 + PLAYER_NAME_MAX + 1];
+	UInt16 n = sizeof(data), k;
+	PlayerProfile *p = &gFront.player;
+
+	if (PrefGetAppPreferences(kCreator, kPlayerPref, data, &n, true) != 1 || n != sizeof(data) ||
+	    data[0] >= GOLFER_MODELS || data[1] >= SKIN_COLOURS || data[2] > 1 ||
+	    !data[3] || data[sizeof(data) - 1]) return;
+	for (k = 3; data[k]; k++)
+		if (data[k] < ' ' || data[k] > '~' || data[k] == '|') return;
+	p->golfer = data[0];
+	p->skin = data[1];
+	p->left = data[2];
+	StrCopy(p->name, (const char *)data + 3);
+}
+
+static void SEC_MENU PlayerSave(void)
+{
+	UInt8 data[3 + PLAYER_NAME_MAX + 1];
+
+	MemSet(data, sizeof(data), 0);
+	data[0] = gFront.player.golfer;
+	data[1] = gFront.player.skin;
+	data[2] = gFront.player.left;
+	StrCopy((char *)data + 3, gFront.player.name);
+	PrefSetAppPreferences(kCreator, kPlayerPref, 1, data, sizeof(data), true);
+}
+
 static Boolean SEC_MENU PlayStart(Boolean resume)
 {
 	LocalID id;
@@ -830,6 +871,7 @@ static Boolean SEC_MENU PlayStart(Boolean resume)
 	if ((id = DmFindDatabase(0, kScratchName)) == 0) return false;
 	if ((gScratchDb = DmOpenDatabase(0, id, dmModeReadWrite)) == 0) return false;
 	if (!LoadHole(gRound.hole + 1)) return false;
+	gProfileSlot = rules_profile(&gRound, &gFront.player);
 	gPlay.quick = gFront.quick;
 	gPlay.mapview = gFront.shotmap;
 	play_start(&gPlay, &gHole, &gGrid, &gRound);
@@ -899,6 +941,7 @@ static MemHandle gNextHs[RENDER_TYPES * RENDER_VARIANTS * RENDER_SIZES + 3];
 static UInt16 gNextN;
 static void *gNextWork;
 static RenderGolfer gNextGolf;
+static MemHandle gNextGolfH[RENDER_POSES];
 static UInt32 gNextTicks;      /* drawing it so far */
 #ifdef DEBUG
 static UInt32 gStopTicks;      /* when the ball stopped (the result's first frame) */
@@ -1192,6 +1235,7 @@ static void NextDrop(void)
 {
 	if (gNext == 1 || gNext == 2) ScreenSpareDrop();
 	ArtFree(gNextHs, &gNextN);
+	GolferFramesFree(&gNextGolf, gNextGolfH);
 	if (gNextWork) MemPtrFree(gNextWork);
 	if (gNextGolf.under) MemPtrFree(gNextGolf.under);
 	gNextWork = NULL;
@@ -1238,16 +1282,14 @@ static void NextStart(void)
 		if (render_green_begin(m, &gNextView, gNextWork) < 0) NextFail();
 		return;
 	}
-	/* the golfer's frames, if no scene has locked them yet (a round continued on the green) */
-	if (!gGolf.pose[POSE_ADDRESS].p) GolferLock(sc);
-	gNextGolf = gGolf;
-	gNextGolf.under = gGolf.under ? MemPtrNew(gUnderLen) : NULL;
+	gNextGolf.under = MemPtrNew(render_under_size(&gS));
 	gNextGolf.w = 0;
 	gNext = 1;
 	if (!gNextGolf.under) {
 		NextFail();
 		return;
 	}
+	GolferLock(&gNextGolf, gNextGolfH, sc, gNextView.player);
 	ArtLock(&gNextArt, gNextHs, &gNextN, sc);
 	gNextArt.golfer = &gNextGolf;
 #ifdef DEBUG
@@ -1328,7 +1370,7 @@ static Boolean NextUse(void)
 	const RenderView *a = &gNextView, *b = &gPlay.rv;
 
 	if ((gNext != 1 && gNext != 2) || !m || a->hole != b->hole || a->grid != b->grid || a->ball.x != b->ball.x ||
-	    a->ball.y != b->ball.y || a->aim != b->aim || a->pin != b->pin || a->green != b->green) {
+	    a->ball.y != b->ball.y || a->aim != b->aim || a->pin != b->pin || a->green != b->green || a->player != b->player) {
 		if (gNext) NextDrop();
 		return false;
 	}
@@ -1338,8 +1380,12 @@ static Boolean NextUse(void)
 	if (!a->green) {
 		/* the golfer and the pixels under him as drawn there */
 		u = gGolf.under;
+		GolferFramesFree(&gGolf, gGolfH);
 		gGolf = gNextGolf;
 		gNextGolf.under = u;
+		MemMove(gGolfH, gNextGolfH, sizeof(gGolfH));
+		MemSet(gNextGolfH, sizeof(gNextGolfH), 0);
+		gUnderLen = render_under_size(&gS);
 		gPlay.golf = &gGolf;
 	}
 #ifdef DEBUG
@@ -1430,7 +1476,8 @@ static void SceneRender(void)
 	/* the golfer and backdrop for the scale the scene is drawn at */
 	sc = gS.half ? 1 : gS.scale;
 	ArtLock(&art, hs, &n, sc);
-	GolferLock(sc);
+	GolferLock(&gGolf, gGolfH, sc, gPlay.rv.player);
+	GolferUnder();
 	art.golfer = &gGolf;
 	gPlay.golf = &gGolf;
 	gGolf.w = 0;    /* no golfer box until render_scene sets one */
@@ -1606,6 +1653,7 @@ static void Act(int r)
 	if (r & FR_CPU) PrefSetAppPreferences(kCreator, kCpuPref, 1, &gFront.quick, 1, true);
 	if (r & FR_SHOT) PrefSetAppPreferences(kCreator, kShotPref, 1, &gFront.shotmap, 1, true);
 	if (r & FR_GIMMES) PrefSetAppPreferences(kCreator, kGimmePref, 1, &gFront.holeout, 1, true);
+	if (r & FR_PLAYER) PlayerSave();
 	if (r & (FR_PLAY | FR_CONTINUE)) {
 		if (PlayStart((r & FR_CONTINUE) != 0)) {
 			PlayBegin();
@@ -1826,9 +1874,19 @@ static void EventLoop(void)
 			/* the TX centre's second code: the system can take 70 ms over it, mid-swing */
 			if (c == vchrRockerCenter && gTxCenter) continue;
 		}
-		if (e.eType == keyDownEvent && (key = MapKey(&e)) != KEY_NONE) {
-			Act(front_key(&gFront, key));
-			continue;
+		if (e.eType == keyDownEvent) {
+			if (gFront.screen == SCR_PLAYER_NAME) {
+				int r = front_text(&gFront, e.data.keyDown.chr);
+				if (r) {
+					Act(r);
+					continue;
+				}
+			}
+			key = MapKey(&e);
+			if (key != KEY_NONE) {
+				Act(front_key(&gFront, key));
+				continue;
+			}
 		}
 		if (SysHandleEvent(&e)) continue;
 		if (MenuHandleEvent(0, &e, &err)) continue;
@@ -1897,6 +1955,7 @@ UInt32 PilotMain(UInt16 cmd, void *cmdPBP, UInt16 launchFlags)
 	DebugCoreCheck();
 #endif
 	front_init(&gFront);
+	PlayerLoad();
 	gFront.sound = AudioOpen();
 	snd_set_hook(Sound);
 	DropLeftover();

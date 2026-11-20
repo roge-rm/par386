@@ -90,7 +90,7 @@ $(ART)/art.ro: $(ART)/art.rcp
 	pilrc -q -ro $(ART)/art.rcp $@
 
 # The renderer's sprites, golfer and backdrop, cut to the master palette.
-$(ART)/obj.rcp: tools/mkobj.py tools/mkstyle.py tools/mkpal.py tools/mkart.py src/core/uicol.h art/golfer/*.png
+$(ART)/obj.rcp: tools/mkobj.py tools/mkstyle.py tools/mkpal.py tools/mkart.py src/core/uicol.h art/golfer/*.png art/golfer/female/*.png
 	python3 tools/mkobj.py $(ART) $(DEBUGDIR)/m3/art
 
 $(ART)/obj.ro: $(ART)/obj.rcp

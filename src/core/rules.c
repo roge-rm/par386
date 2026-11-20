@@ -45,6 +45,7 @@ void rules_init(Round *r, const char *course, uint8_t players, uint8_t holes, co
 
 /* Names for computer golfers in each slot. */
 static const char cpu_names[RULES_PLAYERS][RULES_NAME_MAX + 1] = { "Hamish", "Angus", "Moira", "Fergus" };
+static const char default_profile_name[] = PLAYER_DEFAULT_NAME;
 
 void rules_mode(Round *r, uint8_t mode, const uint8_t *cpu, uint8_t h)
 {
@@ -61,6 +62,25 @@ void rules_mode(Round *r, uint8_t mode, const uint8_t *cpu, uint8_t h)
 		r->hole = h;
 		reset_hole(r);
 	}
+}
+
+uint8_t rules_profile(Round *r, const PlayerProfile *profile)
+{
+	uint8_t i, k;
+
+	for (i = 0; i < r->players; i++) {
+		if (r->pl[i].cpu) continue;
+		for (k = 0; k < sizeof(default_profile_name) && profile->name[k] == default_profile_name[k]; k++) {}
+		if (!profile->name[0] || k == sizeof(default_profile_name)) {
+			default_name(r->pl[i].name, i);
+			return i;
+		}
+		for (k = 0; k < RULES_NAME_MAX && k < PLAYER_NAME_MAX && profile->name[k]; k++)
+			r->pl[i].name[k] = profile->name[k];
+		for (; k <= RULES_NAME_MAX; k++) r->pl[i].name[k] = 0;
+		return i;
+	}
+	return RULES_PLAYERS;
 }
 
 uint8_t rules_mode_ok(uint8_t mode, uint8_t players)

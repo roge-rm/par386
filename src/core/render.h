@@ -40,6 +40,8 @@ typedef struct {
 	uint8_t half;               /* drawn at half size and doubled (Surface.half) */
 	uint8_t shown;              /* the pose drawn now */
 	uint8_t ball;               /* 1 if the ball is drawn at his feet */
+	uint8_t left;               /* reflect the pose about the ball point */
+	uint8_t skin;               /* SKIN_* from profile.h */
 } RenderGolfer;
 
 /* Spr8 resources by object type, variant and size, the golfer and the Bkd8
@@ -57,6 +59,7 @@ typedef struct {
 	angle aim;                  /* looking this way */
 	uint8_t pin;                /* which of the hole's pins has the flag */
 	uint8_t green;              /* 1 for the green view (render_green) */
+	uint8_t player;             /* whose turn the view shows */
 } RenderView;
 
 /* Stages timed in RenderStats.ticks. */

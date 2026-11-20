@@ -9,6 +9,7 @@
 #define RULES_H
 
 #include "hole.h"
+#include "profile.h"
 
 #define RULES_PLAYERS     4
 #define RULES_NAME_MAX    8      /* fits the status strip with the lie */
@@ -78,6 +79,8 @@ void SEC_CORE rules_init(Round *r, const char *course, uint8_t players, uint8_t 
  * for all people). Computer golfers get their own names. Practice starts
  * on hole h (0-based). */
 void SEC_CORE rules_mode(Round *r, uint8_t mode, const uint8_t *cpu, uint8_t h);
+/* Names the first human player and returns that slot, or RULES_PLAYERS. */
+uint8_t SEC_CORE rules_profile(Round *r, const PlayerProfile *profile);
 /* Whether the mode can be played by this many players. */
 uint8_t SEC_CORE rules_mode_ok(uint8_t mode, uint8_t players);
 

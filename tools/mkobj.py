@@ -2,8 +2,8 @@
 """Makes the renderer's art for the test hole, cut to the master palette
 (tools/mkpal.py), and packs it for the core:
   OUT/Spr8-ID.bin  object sprites, ID 1000 + type * 10 + size (0 small, 1 big),
-                   the golfer's poses, ID 2000 + 10 * pose + 0 or 1 for 40 or
-                   80 px, and the course sets from tools/mkstyle.py
+                   the golfer's poses, base 2000 (male) or 2100 (female) +
+                   10 * pose + 0 or 1 for 40 or 80 px, and the course sets from tools/mkstyle.py
   OUT/Bkd8-ID.bin  the backdrop strip, 1000 for 160 wide screens, 1001 for 320
   OUT/obj.rcp      PilRC DATA lines for all of them
 and previews to PREVIEW if given.
@@ -229,12 +229,16 @@ POSES = (1, 2, 4, 13)
 GOLFER_SIZES = (40, 80)
 
 
-def golfer(frame, n):
+def golfer(frame, n, female=False):
     """A golfer frame from art/golfer (already on the master palette, 0
     clear), trimmed to its pixels. The point is the ball, at the club head
     in the address frame; all frames share one canvas, so it holds for each."""
+    folder = ROOT / 'art/golfer'
+    if female:
+        folder /= 'female'
+
     def load(f):
-        return np.array(Image.open(ROOT / f'art/golfer/f{f:02d}-{n}.png'))
+        return np.array(Image.open(folder / f'f{f:02d}-{n}.png'))
     a0 = load(1)
     h, w = a0.shape
     ys, xs = np.nonzero(a0[:, w * 2 // 3:])
@@ -1107,12 +1111,14 @@ def main():
             res.append(('Spr8', rid, spr8(idx, ax, ay)))
             if prev:
                 preview(idx, prev / f'spr-{rid}.png', 4)
-    for p, frame in enumerate(POSES):
-        for k, n in enumerate(GOLFER_SIZES):
-            idx, fx, fy, bx, by = golfer(frame, n)
-            res.append(('Spr8', 2000 + 10 * p + k, spr8(idx, fx, fy, bx, by)))
-            if prev:
-                preview(idx, prev / f'golfer-{p}-{n}.png', 4)
+    for model, base in (('male', 2000), ('female', 2100)):
+        for p, frame in enumerate(POSES):
+            for k, n in enumerate(GOLFER_SIZES):
+                idx, fx, fy, bx, by = golfer(frame, n, model == 'female')
+                res.append(('Spr8', base + 10 * p + k, spr8(idx, fx, fy, bx, by)))
+                if prev:
+                    prefix = 'golfer' if model == 'male' else 'golfer-female'
+                    preview(idx, prev / f'{prefix}-{p}-{n}.png', 4)
     # The plain tree line is half a turn, repeated: it has no landmark.
     # 160 px is the view's 59.5 degrees (render.c), a little under 968 /
     # 360 a degree, so the strip moves a touch faster than the ground.

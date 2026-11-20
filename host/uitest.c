@@ -139,6 +139,14 @@ static void screens(uint8_t scale)
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.dialog);
 	draw(&s, &f);
 	save(&s, "dialog");
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && !f.dialog);
+	f.menu.sel = MAIN_PLAYER;
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_PLAYER);
+	draw(&s, &f);
+	save(&s, "player");
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_PLAYER_NAME);
+	draw(&s, &f);
+	save(&s, "player-name");
 	sfree(&s);
 }
 
@@ -217,7 +225,7 @@ static void input(void)
 
 	front_init(&f);
 	CHECK(front_tap(&f, 5, 5) == FR_REDRAW && f.screen == SCR_MENU);
-	CHECK(f.menu.count == 5);
+	CHECK(f.menu.count == 6);
 	/* Up from the top wraps to Quit, and selecting it quits. */
 	CHECK((front_key(&f, KEY_UP) & FR_REDRAW) && f.menu.sel == MAIN_QUIT);
 	CHECK(front_key(&f, KEY_SELECT) == FR_QUIT);
@@ -229,7 +237,7 @@ static void input(void)
 		CHECK(ui_menu_hit(&f.menu, f.menu.x + 20, y + 7) == i);
 	}
 	CHECK(ui_menu_hit(&f.menu, f.menu.x - 1, f.menu.y) == -1);
-	CHECK(ui_menu_hit(&f.menu, f.menu.x + 20, f.menu.y + 5 * f.menu.lineH + 2) == -1);
+	CHECK(ui_menu_hit(&f.menu, f.menu.x + 20, f.menu.y + f.menu.count * f.menu.lineH + 2) == -1);
 	CHECK(ui_menu_hit(&f.menu, f.menu.x + 20, f.menu.y - 8) == -1);
 	/* A tap on Courses opens its dialog, a tap outside the button does nothing, OK closes it. */
 	y = f.menu.y + MAIN_COURSES * f.menu.lineH + 3;
@@ -255,6 +263,43 @@ static void input(void)
 		p = ui_part("a|bb|ccc", '|', 1, &n);
 		CHECK(n == 2 && p[0] == 'b');
 	}
+}
+
+static void player_input(void)
+{
+	Front f;
+	int i;
+
+	front_init(&f);
+	CHECK(strcmp(f.player.name, PLAYER_DEFAULT_NAME) == 0);
+	CHECK(f.player.golfer == GOLFER_MALE && f.player.skin == SKIN_LIGHT && !f.player.left);
+	front_clubhouse(&f, 1);
+	CHECK(f.menu.count == 7 && front_action(&f, 0) == MAIN_CONTINUE);
+	CHECK(front_action(&f, MAIN_PLAYER + 1) == MAIN_PLAYER);
+	f.menu.sel = MAIN_PLAYER + 1;
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_PLAYER);
+	CHECK(front_tap(&f, 30, 54) == (FR_REDRAW | FR_PLAYER) && f.player.golfer == GOLFER_FEMALE);
+	CHECK(front_tap(&f, 30, 72) == (FR_REDRAW | FR_PLAYER) && f.player.skin == SKIN_MEDIUM);
+	CHECK(front_key(&f, KEY_LEFT) == (FR_REDRAW | FR_PLAYER) && f.player.skin == SKIN_LIGHT);
+	CHECK(front_key(&f, KEY_LEFT) == (FR_REDRAW | FR_PLAYER) && f.player.skin == SKIN_DARK);
+	CHECK(front_tap(&f, 30, 90) == (FR_REDRAW | FR_PLAYER) && f.player.left);
+	CHECK(front_tap(&f, 30, 36) == FR_REDRAW && f.screen == SCR_PLAYER_NAME);
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.player_name[0] == 0);
+	CHECK(front_tap(&f, 24, 51) == FR_REDRAW && strcmp(f.player_name, "A") == 0);
+	CHECK(front_key(&f, KEY_DOWN) == FR_REDRAW);
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && strcmp(f.player_name, "AG") == 0);
+	CHECK(front_tap(&f, 80, 125) == FR_REDRAW && strcmp(f.player_name, "A") == 0);
+	CHECK(front_tap(&f, 30, 139) == (FR_REDRAW | FR_PLAYER) && strcmp(f.player.name, "A") == 0);
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_PLAYER_NAME);
+	for (i = 0; i < 10; i++) CHECK(front_text(&f, 'a' + i) == FR_REDRAW);
+	CHECK(strcmp(f.player_name, "Aabcdefg") == 0);
+	CHECK(front_text(&f, '|') == 0);
+	CHECK(front_text(&f, 27) == FR_REDRAW && strcmp(f.player.name, "A") == 0);
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW);
+	CHECK(front_text(&f, '\b') == FR_REDRAW);
+	CHECK(front_text(&f, ' ') == FR_REDRAW);
+	CHECK(front_text(&f, '\r') == (FR_REDRAW | FR_PLAYER) && strcmp(f.player.name, PLAYER_DEFAULT_NAME) == 0);
+	CHECK(front_key(&f, KEY_BACK) == FR_REDRAW && f.screen == SCR_MENU && f.menu.sel == MAIN_PLAYER + 1);
 }
 
 /* The courses screen: lists the installed courses and Back, picks one, and
@@ -485,6 +530,7 @@ int main(int argc, char **argv)
 	pic_double(4);
 	pic_double(8);
 	input();
+	player_input();
 	courses(1);
 	courses(2);
 	bad_bands();

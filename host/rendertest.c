@@ -259,6 +259,53 @@ static void poses(const RenderView *v, const RenderArt *a, int scale, int depth,
 static uint32_t fake_t;
 static uint32_t fake_clock(void) { return fake_t++; }
 
+static void customised_golfer(const RenderView *v, const RenderArt *a, const char *dir, int scale)
+{
+	static const uint8_t stamp[] = {
+		0, 2, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, PAL_SKIN + 5, PAL_SHIRT
+	};
+	RenderGolfer g = *a->golfer;
+	RenderArt b = *a;
+	Surface s;
+	uint8_t under[64];
+	int16_t x, y, w, h;
+	int i, depth = scale == 1 ? 2 : 8;
+
+	b.golfer = &g;
+	g.left = 1;
+	g.skin = SKIN_DARK;
+	for (i = 0; i < RENDER_POSES; i++) {
+		g.pose[i] = art_file(dir, "Spr8", 2100 + 10 * i + scale - 1);
+		CHECK(g.pose[i].p && g.pose[i].len > 12);
+	}
+	poses(v, &b, scale, depth, 0, "female-left");
+	surface_d(&s, scale, depth);
+	CHECK(draw(&s, v, &b, NULL) == 0);
+	save(&s, "female-left");
+	sfree(&s);
+	for (i = 0; i < RENDER_POSES; i++) free((void *)g.pose[i].p);
+	if (scale == 1) return;
+
+	/* Reflect a known skin pixel across the ball point while keeping the shirt. */
+	surface_d(&s, 1, 8);
+	memset(under, PAL_TEE, sizeof under);
+	g.under = under;
+	g.half = 0;
+	g.bx = 76; g.by = 90;
+	g.x = 72; g.y = 86; g.w = 8; g.h = 8;
+	g.pose[POSE_ADDRESS].p = stamp;
+	g.pose[POSE_ADDRESS].len = sizeof stamp;
+	CHECK(render_pose(&s, &g, POSE_ADDRESS, 0, &x, &y, &w, &h) == 0);
+	CHECK(pixel(&s, 75, 90) == PAL_TEE && pixel(&s, 76, 90) == PAL_SHIRT && pixel(&s, 77, 90) == PAL_SKIN + 2);
+	g.skin = SKIN_MEDIUM;
+	CHECK(render_pose(&s, &g, POSE_ADDRESS, 0, &x, &y, &w, &h) == 0 && pixel(&s, 77, 90) == PAL_SKIN + 4);
+	g.left = 0;
+	g.skin = SKIN_LIGHT;
+	CHECK(render_pose(&s, &g, POSE_ADDRESS, 0, &x, &y, &w, &h) == 0);
+	CHECK(pixel(&s, 75, 90) == PAL_SKIN + 5 && pixel(&s, 76, 90) == PAL_SHIRT && pixel(&s, 77, 90) == PAL_TEE);
+	sfree(&s);
+}
+
 /* The scene drawn in slices (render_scene_begin and _step, a slice every
  * per looks at the clock) is byte for byte the one drawn in one go, the
  * golfer's box and the pixels kept under him too; at 8 bits the 16-bit
@@ -533,6 +580,8 @@ int main(int argc, char **argv)
 	poses(&v, &art[0], 1, 8, 0, 0);
 	poses(&v, &art[0], 2, 4, 1, "h4-tee");
 	poses(&v, &art[0], 2, 2, 1, 0);
+	customised_golfer(&v, &art[0], argv[2], 1);
+	customised_golfer(&v, &art[1], argv[2], 2);
 
 	/* Drawn in slices, the same as in one go: 160 and 320, half size, 2, 8 and 16 bits (8 turned to 16), tall. */
 	{

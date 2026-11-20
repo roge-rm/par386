@@ -6,6 +6,7 @@
 
 #include "ui.h"
 #include "rules.h"
+#include "profile.h"
 
 /* Background pictures. */
 #define PIC_TITLE 1000
@@ -43,10 +44,12 @@ enum { KEY_NONE, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_SELECT, KEY_OTHER, K
 #define FR_SHOT   128
 /* The gimme rule for new rounds changed: the platform saves it. */
 #define FR_GIMMES 256
+/* A player preference changed: the platform saves it. */
+#define FR_PLAYER 512
 
 /* The screens past the title are the menu board with a list. Games picks
  * the mode, players who plays each slot. */
-enum { SCR_TITLE, SCR_MENU, SCR_PLAYERS, SCR_COURSES, SCR_SETTINGS, SCR_GAMES, SCR_PRACTICE };
+enum { SCR_TITLE, SCR_MENU, SCR_PLAYERS, SCR_COURSES, SCR_SETTINGS, SCR_GAMES, SCR_PRACTICE, SCR_PLAYER, SCR_PLAYER_NAME };
 
 /* A player slot nobody plays. Others are CPU_* (rules.h). */
 #define SLOT_OFF 0xFF
@@ -63,7 +66,7 @@ enum { SOUND_ON, SOUND_FX, SOUND_OFF, SOUND_MODES };
 
 /* Main menu actions. With a saved round Continue round comes first and the
  * rest move down a line. */
-enum { MAIN_PLAY, MAIN_PRACTICE, MAIN_COURSES, MAIN_SETTINGS, MAIN_QUIT, MAIN_CONTINUE };
+enum { MAIN_PLAY, MAIN_PRACTICE, MAIN_COURSES, MAIN_SETTINGS, MAIN_PLAYER, MAIN_QUIT, MAIN_CONTINUE };
 
 /* Dialogs: a message with OK, or asking before a new round replaces the saved one. */
 enum { DLG_NONE, DLG_MESSAGE, DLG_NEW_ROUND };
@@ -85,6 +88,10 @@ typedef struct {
 	uint8_t course;          /* the one picked on the courses screen */
 	uint8_t sound;           /* SOUND_* */
 	char settings_list[64];  /* "Sound: On|CPU: Quick|Shot view: Map|Gimmies: 2 ft|Back" */
+	PlayerProfile player;
+	char player_list[64];
+	char player_name[PLAYER_NAME_MAX + 1]; /* draft name until Done */
+	uint8_t name_key;                     /* selected key on the name screen */
 	char players_list[RULES_PLAYERS * 13 + 16 + 14];   /* "P1  Human|P2  CPU Fair|Tees: Medal|Tee off|Back" */
 	uint8_t tee;             /* the tee set picked on the players screen, 0 the longest */
 	uint8_t tee_count[FRONT_COURSES];       /* each course's tee sets, 0 if not known (a card course) */
@@ -104,6 +111,8 @@ uint16_t SEC_MENU front_picture(const Front *f);
 void SEC_MENU front_draw(const Front *f, Surface *s);
 int SEC_MENU front_key(Front *f, uint8_t key);
 int SEC_MENU front_tap(Front *f, int16_t x, int16_t y);
+/* A printable character, Backspace, Return or Escape in the name editor. */
+int SEC_MENU front_text(Front *f, uint16_t chr);
 /* Opens a dialog with an OK button over the menu, such as when there's no course to play. */
 void SEC_MENU front_message(Front *f, const char *title, const char *text);
 /* Back to the clubhouse menu, with Continue round if saved isn't 0. */

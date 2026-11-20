@@ -268,13 +268,13 @@ void terra_row(TerraRow *t)
 			/* lowered ground (sand, water) only goes further down, so this hides it too */
 			if (y >= yb) continue;
 
-			/* Surface, with the lookup shaken by up to half a yard near the camera so cell edges break up. */
+			/* A little jitter softens the cell edges without breaking the bunker lips or the cut. */
 			{
 				fixed sx = px, sy = py;
 				int16_t cx, cy;
 				if (ns < 8) {
-					sx += (fixed)noise[(uint8_t)(x * 7 + step * 13)] * 4096;
-					sy += (fixed)noise[(uint8_t)(x * 11 + step * 5 + 101)] * 4096;
+					sx += (fixed)noise[(uint8_t)(x * 7 + step * 13)] * 1024;
+					sy += (fixed)noise[(uint8_t)(x * 11 + step * 5 + 101)] * 1024;
 				}
 				cx = (int16_t)(sx >> (16 + SURF_CELL_SHIFT));
 				cy = (int16_t)(sy >> (16 + SURF_CELL_SHIFT));
@@ -623,6 +623,19 @@ void terra_sky(TerraSky *ts)
 	ts->bw = bw;
 }
 
+#ifdef __arm__
+__attribute__((always_inline))
+#endif
+static __inline__ uint8_t SEC_CORE map_pattern(const uint8_t *cells, const uint8_t *patterns, uint8_t column, uint8_t blank)
+{
+	uint8_t surface;
+
+	if (column == 0xFF) return blank;
+	surface = cells[column >> 1];
+	surface = (column & 1) ? (surface & 15) : (surface >> 4);
+	return patterns[surface];
+}
+
 void terra_map(const TerraMap *t)
 {
 	const uint8_t *xcell = t->xcell, *col = t->col;
@@ -645,25 +658,38 @@ void terra_map(const TerraMap *t)
 		cells = t->cells + MULU16(cy, t->gs);
 		if (lg == 1) {
 			/* 2 bits: this row of each surface's pattern, a byte at a time */
-			uint8_t pr[SURF_COUNT + 1], i;
+			uint8_t pr[16], i;
 			for (i = 0; i < SURF_COUNT; i++) pr[i] = t->pat2[((uint16_t)col[i] << 2) | (y & 3)];
-			pr[SURF_COUNT] = 0xFF;
+			for (; i < 16; i++) pr[i] = pr[SURF_OOB];
 			for (x = 0; x < w; x += 4, p++) {
-				uint8_t k, v = 0;
 				if (xcell[x] == 0xFF && xcell[x + 3] == 0xFF) {
 					*p = 0xFF;
 					continue;
 				}
-				for (k = 0; k < 4; k++) {
-					uint8_t cx = xcell[x + k], c = SURF_COUNT;
-					if (cx != 0xFF) {
-						c = cells[cx >> 1];
-						c = (cx & 1) ? (c & 15) : (c >> 4);
-						if (c >= SURF_COUNT) c = SURF_OOB;
-					}
-					v |= (uint8_t)(pr[c] & (0xC0 >> (k << 1)));
-				}
-				*p = v;
+				*p = (uint8_t)((map_pattern(cells, pr, xcell[x], 0xFF) & 0xC0) |
+				               (map_pattern(cells, pr, xcell[x + 1], 0xFF) & 0x30) |
+				               (map_pattern(cells, pr, xcell[x + 2], 0xFF) & 0x0C) |
+				               (map_pattern(cells, pr, xcell[x + 3], 0xFF) & 0x03));
+			}
+			continue;
+		}
+		if (lg == 2) {
+			/* Precompute the four dither phases and write two pixels per byte. */
+			uint8_t pr[4][16], blank[4], k, i;
+			const uint8_t *phase = t->bayer + ((y & 3) << 2);
+			uint16_t dark = MULU16(255 - t->grey[PAL_BLACK], 15);
+			for (k = 0; k < 4; k++) blank[k] = (uint8_t)((dark + (phase[k] << 4)) >> 8);
+			for (i = 0; i < SURF_COUNT; i++) {
+				uint16_t shade = MULU16(255 - t->grey[col[i]], 15);
+				for (k = 0; k < 4; k++) pr[k][i] = (uint8_t)((shade + (phase[k] << 4)) >> 8);
+			}
+			for (; i < 16; i++)
+				for (k = 0; k < 4; k++) pr[k][i] = pr[k][SURF_OOB];
+			for (x = 0; x < w; x += 2, p++) {
+				uint8_t phase0 = (uint8_t)(x & 2), phase1 = (uint8_t)(phase0 + 1);
+				uint8_t a = map_pattern(cells, pr[phase0], xcell[x], blank[phase0]);
+				uint8_t b = map_pattern(cells, pr[phase1], xcell[x + 1], blank[phase1]);
+				*p = (uint8_t)((a << 4) | b);
 			}
 			continue;
 		}

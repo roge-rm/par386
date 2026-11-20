@@ -76,12 +76,26 @@ static void SEC_MENU addn(char *t, uint8_t *n, uint8_t v)
 	t[*n] = 0;
 }
 
+/* Default names use the short slot label on the card. */
+static const char player_prefix[] = "Player ";
+
+static uint8_t SEC_MENU named(const RoundPlayer *p, uint8_t slot)
+{
+	uint8_t k;
+
+	for (k = 0; player_prefix[k]; k++)
+		if (p->name[k] != player_prefix[k]) return 1;
+	return p->name[k] != '1' + slot || p->name[k + 1];
+}
+
 /* A side in match play ("P1") or best ball ("P1+P2"). */
 static void SEC_MENU side_name(const Round *r, uint8_t side, char *t, uint8_t *n)
 {
-	/* a computer golfer's name stands for their side in match play */
-	if (r->mode == MODE_MATCH && r->pl[side ? 1 : 0].cpu) {
-		add(t, n, r->pl[side ? 1 : 0].name);
+	if (r->mode == MODE_MATCH && named(&r->pl[side], side)) {
+		const char *name = r->pl[side].name;
+		uint8_t k;
+		for (k = 0; k < 6 && name[k]; k++) t[(*n)++] = name[k];
+		t[*n] = 0;
 		return;
 	}
 	add(t, n, side ? (r->mode == MODE_BEST ? "P3+P4" : "P2") : (r->mode == MODE_BEST ? "P1+P2" : "P1"));
@@ -217,14 +231,13 @@ void card_draw(Surface *s, const Round *r, uint8_t mode, uint8_t page, uint8_t s
 
 	tx = (int16_t)(b->x + (b->w - (PAR_R + COL_W * r->players)) / 2);
 	y = (int16_t)(b->y + 1 + TITLE_H + GAP);
-	/* the heading: Par and the players by number */
+	/* The heading holds three letters per player. */
 	rtext(s, tx + PAR_R, y, "Par", 3);
 	for (i = 0; i < r->players; i++) {
 		int16_t k = 2;
 		t[0] = 'P';
 		t[1] = (char)('1' + i);
-		/* a computer golfer's name, 3 letters to fit the column */
-		if (r->pl[i].cpu) {
+		if (named(&r->pl[i], i)) {
 			for (k = 0; k < 3 && r->pl[i].name[k]; k++) t[k] = r->pl[i].name[k];
 		}
 		rtext(s, (int16_t)(tx + PAR_R + COL_W * (i + 1)), y, t, k);

@@ -1,6 +1,6 @@
 """Turns the big golfer renders into Palm sprites and debug sheets.
 
-  python3 sprites.py RENDERDIR OUTDIR [BACKGROUND]
+  python3 sprites.py RENDERDIR OUTDIR [BACKGROUND] [--female]
 RENDERDIR holds f01.png ... and meta.json from render.py. For each sprite
 height (20, 40, 60 px for the standing golfer, and 80 for play and the title at 320)
 it writes ART/fNN-<h>.png in the repo's art/golfer/: the frame cut straight
@@ -20,21 +20,29 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.dirname(HERE))
 import mkpal   # noqa: E402
 
-src, out = sys.argv[1], sys.argv[2]
-BG = sys.argv[3] if len(sys.argv) > 3 else os.path.join(HERE, '..', 'mockup', 'r', 'scene_bg_960.png')
-ART = os.path.join(ROOT, 'art', 'golfer')
+args = sys.argv[1:]
+female = args[-1:] == ['--female']
+if female:
+    args.pop()
+src, out = args[:2]
+BG = args[2] if len(args) > 2 else os.path.join(HERE, '..', 'mockup', 'r', 'scene_bg_960.png')
+ART = os.path.join(ROOT, 'art', 'golfer', 'female' if female else '')
 os.makedirs(out, exist_ok=True)
 os.makedirs(ART, exist_ok=True)
 meta = json.load(open(os.path.join(src, 'meta.json')))
 paths = sorted(glob.glob(os.path.join(src, 'f[0-9][0-9].png')))
+frame_nums = [int(os.path.basename(path)[1:3]) for path in paths]
+if female and frame_nums != [1, 2, 4, 13]:
+    raise SystemExit('Render female frames 1,2,4,13')
 big = [np.asarray(Image.open(p).convert('RGBA')).astype(np.float64) / 255 for p in paths]
 # club alone (render.py), so the thin shaft survives the shrink
-clubs = [np.asarray(Image.open(p.replace('/f', '/c')).convert('RGBA')).astype(np.float64) / 255 for p in paths]
+clubs = [np.asarray(Image.open(os.path.join(src, f'c{n:02d}.png')).convert('RGBA')).astype(np.float64) / 255
+         for n in frame_nums]
 
-SIZES = (20, 40, 60, 80)               # sprite height of the standing golfer
-TITLE_ONLY = {80: (1, 4, 13)}          # frames made at a size, if not all
+SIZES = (40, 80) if female else (20, 40, 60, 80)
+TITLE_ONLY = {} if female else {80: (1, 4, 13)}
 # frames made after those at a size, with their own grain, so the others stay as they were
-LATE = {80: (2,)}
+LATE = {} if female else {80: (2,)}
 rng = np.random.default_rng(386)
 
 RGB, RAMPS, _, _ = mkpal.build()
@@ -123,11 +131,12 @@ for h in SIZES:
     scale = h / stand_h
     frames = [None] * len(big)
     late = LATE.get(h, ())
-    order = [n for n in range(len(big)) if n + 1 not in late] + [n - 1 for n in late]
+    order = [i for i, n in enumerate(frame_nums) if n not in late] + [frame_nums.index(n) for n in late]
     late_rng = np.random.default_rng(386 + h)
     for n in order:
         b, cl = big[n], clubs[n]
-        if h in TITLE_ONLY and n + 1 not in TITLE_ONLY[h] and n + 1 not in late:
+        frame = frame_nums[n]
+        if h in TITLE_ONLY and frame not in TITLE_ONLY[h] and frame not in late:
             continue
         c = b[y0:y1, x0:x1]
         s = shrink(c, scale)
@@ -137,11 +146,11 @@ for h in SIZES:
         # the shaft as a light line; at 20 px it can't be thinner than a pixel, so it's kept light to stand off the body
         col = k[on][:, :3] if h > 20 else np.maximum(k[on][:, :3], 0.62)
         s[on] = np.concatenate([col, np.ones((on.sum(), 1))], 1)
-        s[..., :3] = grain(s[..., :3], s[..., 3] > 0.4, 0.035 if h >= 40 else 0.02, late_rng if n + 1 in late else None)
+        s[..., :3] = grain(s[..., :3], s[..., 3] > 0.4, 0.035 if h >= 40 else 0.02, late_rng if frame in late else None)
         frames[n] = master(s, on)
-    for i, idx in enumerate(frames):
+    for frame, idx in zip(frame_nums, frames):
         if idx is not None:
-            to_png(idx).save(os.path.join(ART, f'f{i + 1:02d}-{h}.png'), transparency=0)
+            to_png(idx).save(os.path.join(ART, f'f{frame:02d}-{h}.png'), transparency=0)
     # feet anchor inside the sprite, in sprite pixels
     anchor = (round(((x0 + x1) / 2 - x0) * scale), round((feet_y - y0) * scale))
     ball = ((meta['ball'][0] - x0) * scale, (meta['ball'][1] - y0) * scale)
@@ -187,7 +196,8 @@ def mock(n, h):
     return bg
 
 
-for n, h in ((320, 40), (160, 20)):
+mock_sizes = ((320, 80), (160, 40)) if female else ((320, 40), (160, 20))
+for n, h in mock_sizes:
     m = mock(n, h)
     m.save(os.path.join(out, f'mock-{n}.png'))
     m.resize((n * (4 if n == 160 else 2),) * 2, Image.NEAREST).save(os.path.join(out, f'mock-{n}-big.png'))
