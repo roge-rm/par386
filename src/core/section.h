@@ -7,11 +7,15 @@
 #define SEC_UI     __attribute__((section("ui")))
 #define SEC_RENDER __attribute__((section("render")))
 #define SEC_MENU   __attribute__((section("menu")))
+#define SEC_DANA   __attribute__((section("dana")))
+#define SEC_CARD   __attribute__((section("cardui")))
 #else
 #define SEC_CORE
 #define SEC_UI
 #define SEC_RENDER
 #define SEC_MENU
+#define SEC_DANA
+#define SEC_CARD
 #endif
 
 #endif

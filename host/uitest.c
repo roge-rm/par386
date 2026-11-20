@@ -177,6 +177,34 @@ static void screens_at(int w, int h, uint8_t scale, uint8_t depth, const char *n
 	sfree(&s);
 }
 
+static void dana_front(void)
+{
+	static const char *const names[] = { "Auld Kirk", "Test" };
+	static const uint8_t scenery[] = { 1, 0 };
+	Surface s;
+	Front f;
+
+	surface_wh(&s, 560, 160, 1, 4);
+	gfx_centre(&s, 1);
+	front_init(&f);
+	front_dana(&f, 1);
+	front_courses(&f, names, scenery, 2, 0);
+	CHECK(front_dana_tap(&f, 280, 75) == FR_REDRAW && f.screen == SCR_MENU);
+	CHECK(front_dana_tap(&f, 120, 90) == FR_REDRAW && f.screen == SCR_SETTINGS && f.menu.count == 4);
+	CHECK(front_dana_tap(&f, 280, 74) == (FR_REDRAW | FR_GIMMES));
+	CHECK(front_key(&f, KEY_BACK) == FR_REDRAW && f.screen == SCR_MENU);
+	CHECK(front_dana_tap(&f, 120, 74) == FR_REDRAW && f.screen == SCR_COURSES);
+	draw(&s, &f);
+	save(&s, "dana-courses");
+	CHECK(front_dana_tap(&f, 120, 58) == FR_REDRAW && f.screen == SCR_MENU && f.course == 1);
+	CHECK(front_dana_tap(&f, 120, 42) == FR_REDRAW && f.screen == SCR_GAMES);
+	CHECK(front_dana_tap(&f, 180, 42) == FR_REDRAW && f.screen == SCR_PLAYERS);
+	draw(&s, &f);
+	save(&s, "dana-players");
+	CHECK(front_dana_tap(&f, 400, 58) == (FR_PLAY | FR_REDRAW));
+	sfree(&s);
+}
+
 /* The pictures alone at scale 1 and 2 at one depth: every pixel at 2 is
  * the one at 1 under it, so 2-bit pictures are doubled. */
 static void pic_double(uint8_t depth)
@@ -550,6 +578,8 @@ int main(int argc, char **argv)
 	screens_at(320, 320, 2, 1, "q1");
 	screens_at(320, 480, 2, 4, "tall4");
 	screens_at(480, 320, 2, 2, "wide2");
+	screens_at(560, 160, 1, 4, "dana");
+	dana_front();
 	pic_double(1);
 	pic_double(2);
 	pic_double(4);

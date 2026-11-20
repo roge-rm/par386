@@ -10,6 +10,7 @@
 #include "screen.h"
 #include "sonykeys.h"
 #include "audio.h"
+#include "dana.h"
 #include "sound.h"
 #include "records.h"
 
@@ -33,6 +34,7 @@ static UInt16 gBgPic;         /* what the kept copy holds: a picture's ID or PIC
 static UInt32 gShowTicks;
 #endif
 static Front gFront;
+static DanaPanels gDana;
 static UInt32 gHeapStart;      /* free dynamic heap at launch */
 
 /* Playing a hole. The hole record stays locked in the course database and
@@ -128,6 +130,11 @@ static void FrontOrigin(Int16 *x, Int16 *y)
 	gfx_centre(&gS, 0);
 }
 
+static Boolean DanaFront(void)
+{
+	return gS.scale == 1 && gS.w == DANA_SCREEN_W && gS.h == 160;
+}
+
 /* Draws the screen's picture band by band, then the game's text and boxes. */
 static void Redraw(void)
 {
@@ -139,6 +146,7 @@ static void Redraw(void)
 #endif
 
 	if (!gS.bits) return;
+	front_dana(&gFront, DanaFront());
 	if (ScreenKept() && gBgPic == id) {
 		ScreenRestoreAll();
 	} else {
@@ -275,7 +283,7 @@ static Boolean RedrawLines(void)
 	char t[12];
 #endif
 
-	if (!ScreenKept() || gBgPic != front_picture(&gFront, &gS)) return false;
+	if (DanaFront() || !ScreenKept() || gBgPic != front_picture(&gFront, &gS)) return false;
 	line[0] = gFront.oldSel;
 	line[1] = gFront.menu.sel;
 	FrontOrigin(&ox, &oy);
@@ -628,6 +636,7 @@ static void PlayEnd(void)
 	DropImported();
 	GolferFree();
 	gPlaying = false;
+	ScreenGame(false);
 }
 
 /* Each course's record line on the courses screen. */
@@ -903,7 +912,9 @@ static Boolean SEC_MENU PlayStart(Boolean resume)
 	if (!MODE_PRACTICE(gRound.mode)) gFront.span = gRound.span;
 	gProfileSlot = rules_profile(&gRound, &gFront.player);
 	gPlay.quick = gFront.quick;
-	gPlay.mapview = gFront.shotmap;
+	ScreenGame(true);
+	dana_reset(&gDana);
+	gPlay.mapview = gS.fullview ? 0 : gFront.shotmap;
 	play_start(&gPlay, &gHole, &gGrid, &gRound);
 	gPlaying = true;
 	if (!resume) SaveRound();
@@ -925,7 +936,7 @@ static void LockArt(RenderData *d, UInt32 type, UInt16 id, MemHandle *hs, UInt16
 /* Rows of gS above the panel, in pixels. */
 static Int16 ViewRows(void)
 {
-	return (Int16)(gS.h - RENDER_STATUS * gS.scale);
+	return (Int16)(RENDER_VIEW_H(&gS) * gS.scale);
 }
 
 /* Fades gS in over the screen from the picture ScreenFadeFrom kept
@@ -989,12 +1000,29 @@ static void Sound(void)
 	AudioTick(gPlaying && gPlay.view == PLAY_SCENE && snd_ambient_on(), gAnim);
 }
 
+static Boolean SEC_MENU DanaDraw(void)
+{
+	Surface left, right;
+	unsigned changed;
+
+	if (!ScreenDanaPane(false, &left) || !ScreenDanaPane(true, &right)) return false;
+	changed = dana_draw(&gDana, &left, &right, &gPlay);
+	if (changed & DANA_LEFT) ScreenDanaShow(false, 0, left.h);
+	if (changed & DANA_RIGHT) ScreenDanaShow(true, 0, right.h);
+	else if (changed & DANA_METER) ScreenDanaShow(true, DANA_METER_Y, DANA_METER_H);
+	return changed != 0;
+}
+
 /* Shows the strip saying whose turn it is while the scene draws. */
 static void TurnStrip(void)
 {
 	URect u;
 
 	if (!gS.bits) return;
+	if (gS.fullview) {
+		DanaDraw();
+		return;
+	}
 	play_turn(&gS, &gPlay);
 	u.x = 0;
 	u.y = gS.h - RENDER_STATUS * gS.scale;
@@ -1077,6 +1105,7 @@ static void MapStep(URect *c)
 static void PlayFrame(void)
 {
 	int f;
+	Boolean panels = false;
 #ifdef DEBUG
 	UInt8 st = gPlay.state;
 	UInt32 t0 = TimGetTicks();
@@ -1096,6 +1125,7 @@ static void PlayFrame(void)
 		FrameMark();
 #endif
 		f = play_frame(&gPlay, &gS, NULL, NowMs());
+		if (gS.fullview) DanaDraw();
 		if (f & PL_DIRTY) ScreenShow(&gPlay.dirty);
 		f &= ~PL_DIRTY;
 		if (f & ~PL_ANIM) {
@@ -1133,7 +1163,8 @@ static void PlayFrame(void)
 		SceneRender();
 		return;
 	}
-	if (f & PL_DIRTY) {
+	if (gS.fullview) panels = DanaDraw();
+	if ((f & PL_DIRTY) || panels) {
 		if (gPlay.dirty.w > 0) ScreenShow(&gPlay.dirty);
 		if (gPlay.gdirty.w > 0) ScreenShow(&gPlay.gdirty);
 		/* the meter's clock starts once its first frames are on the screen, and the late power press's grace once full shows */
@@ -1406,7 +1437,8 @@ static Boolean NextUse(void)
 	}
 	if (gNext == 1 && a->green) render_green_step(gNextWork, NULL, 0);
 	else if (gNext == 1) render_scene_step(gNextWork, NULL, 0);
-	MemMove(gS.bits, m->bits, (Int32)gS.rowBytes * gS.h);
+	if (gS.fullview) gfx_copy(&gS, m, 0, 0, gS.w, gS.h);
+	else MemMove(gS.bits, m->bits, (Int32)gS.rowBytes * gS.h);
 	if (!a->green) {
 		/* the golfer and the pixels under him as drawn there */
 		u = gGolf.under;
@@ -1583,6 +1615,7 @@ static void PlayAct(int f)
 			return;
 		}
 		if (gRound.tour_stage == TOUR_SECOND && !gRound.hole) SaveRound();
+		dana_reset(&gDana);
 		play_start(&gPlay, &gHole, &gGrid, &gRound);
 		PlayBegin();
 	} else if (f & PL_CARD) {
@@ -1590,6 +1623,7 @@ static void PlayAct(int f)
 		gAnim = false;
 		if (gPlay.card != CARD_BOOK && ScreenKept() && gBgPic == PIC_SCENE) ScreenRestoreAll();
 		play_card(&gS, &gPlay);
+		if (gS.fullview) DanaDraw();
 		ScreenShowAll();
 		if (gPlay.card == CARD_HOLE || gPlay.card == CARD_FINAL) SaveRound();
 	} else if ((f & PL_MAP) && gPlay.onmap && !gFadeBack && gPlay.mprep == 2 && ScreenSpareHas()) {
@@ -1623,12 +1657,14 @@ static void PlayAct(int f)
 		if (!gPlay.onmap) gMapTicks = TimGetTicks() - t0;
 #endif
 		PlayStatus();
+		if (gS.fullview) DanaDraw();
 		ScreenShowAll();
 		gFadeBack = gPlay.onmap;
 		gAnim = (f & PL_ANIM) != 0;
 	} else if (f & PL_PANEL) {
 		URect u;
 		PlayStatus();
+		if (gS.fullview) DanaDraw();
 		u.x = 0;
 		u.y = gS.h - RENDER_STATUS * gS.scale;
 		u.w = gS.w;
@@ -1654,13 +1690,20 @@ static void PlayAct(int f)
 }
 
 /* A key or tap while playing, with the physics timed in debug builds. */
-static void PlayInput(Boolean tap, Int16 x, Int16 y, UInt8 key)
+static void SEC_MENU PlayInput(Boolean tap, Int16 x, Int16 y, UInt8 key)
 {
 #ifdef DEBUG
 	UInt8 st = gPlay.state;
 	UInt32 t0 = TimGetTicks();
 #endif
-	int f = tap ? play_tap(&gPlay, x, y, NowMs()) : play_key(&gPlay, key, NowMs());
+	int f;
+	UInt32 now = NowMs();
+
+	if (!tap) f = play_key(&gPlay, key, now);
+	else if (gS.fullview && (x < DANA_RAIL_W || x >= DANA_RAIL_W + gS.lw)) {
+		f = x < DANA_RAIL_W ? dana_tap(&gDana, &gPlay, DANA_LEFT, x, y, now) :
+		                    dana_tap(&gDana, &gPlay, DANA_RIGHT, x - DANA_RAIL_W - gS.lw, y, now);
+	} else f = play_tap(&gPlay, gS.fullview ? x - DANA_RAIL_W : x, y, now);
 #ifdef DEBUG
 	SimTime(st, t0);
 	if (st == PS_AIM && gPlay.state == PS_UP) {
@@ -1750,7 +1793,7 @@ static void ScreenLost(void)
 /* The display changed size (the input area or a turn): the buffers are made
  * again at the new size and the screen drawn again. The map or card is drawn
  * again by itself; the scene is drawn when it closes. */
-static void Resized(void)
+static void SEC_MENU Resized(void)
 {
 	Int16 r;
 
@@ -1771,6 +1814,9 @@ static void Resized(void)
 		return;
 	}
 	gAnim = false;
+	ScreenGame(true);
+	dana_reset(&gDana);
+	gPlay.mapview = gS.fullview ? 0 : gFront.shotmap;
 	play_resized(&gPlay);
 	if (gPlay.view == PLAY_MAP) {
 		/* a shot on the map flies on */
@@ -1778,6 +1824,7 @@ static void Resized(void)
 	} else if (gPlay.view == PLAY_CARD) {
 		gfx_fill(&gS, 0, 0, gS.w, gS.h, UIC_BLACK);
 		play_card(&gS, &gPlay);
+		if (gS.fullview) DanaDraw();
 		ScreenShowAll();
 	} else {
 		SceneRender();
@@ -1788,13 +1835,13 @@ static Boolean MainFormHandleEvent(EventType *e)
 {
 	switch (e->eType) {
 	case frmOpenEvent:
-		FrmDrawForm(FrmGetActiveForm());
 		/* the input area may have been closed before launch, so no
 		 * winDisplayChangedEvent comes to fit the form */
 		if (ScreenResize() == SCREEN_FAILED) {
 			ScreenLost();
 			return true;
 		}
+		FrmDrawForm(FrmGetActiveForm());
 		gBgPic = 0;
 		Redraw();
 		return true;
@@ -1819,13 +1866,16 @@ static Boolean MainFormHandleEvent(EventType *e)
 			return true;
 		}
 		/* and the top right corner puts the ball on the green */
-		if (gPlaying && e->screenX >= gS.lw - 8 && e->screenY < 8 && gPlay.view == PLAY_SCENE) {
+		if (gPlaying && e->screenX >= (gS.fullview ? DANA_SCREEN_W : gS.lw) - 8 &&
+		    e->screenY < 8 && gPlay.view == PLAY_SCENE) {
 			PlayAct(play_debug_green(&gPlay));
 			return true;
 		}
 #endif
 		if (gPlaying) {
 			PlayInput(true, e->screenX, e->screenY, 0);
+		} else if (DanaFront()) {
+			Act(front_dana_tap(&gFront, e->screenX, e->screenY));
 		} else {
 			Int16 ox, oy;
 			FrontOrigin(&ox, &oy);

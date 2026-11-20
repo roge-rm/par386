@@ -43,7 +43,7 @@ CFLAGS   = -O2 -Wall -Wno-unknown-pragmas $(DEFS) $(INCLUDES) -Isrc/core -Isrc/p
 LDFLAGS  = -L$(SDK)/lib/m68k-palmos-coff
 
 PALMSRCS = main screen audio arm
-CORESRCS = fixed trig vec hole gfx ui front render play ball rules card sound cpu records to16 terra
+CORESRCS = fixed trig vec hole gfx ui front render play ball rules card sound cpu records to16 terra dana
 OBJS     = $(addprefix $(BUILD)/,$(addsuffix .o,$(PALMSRCS) $(CORESRCS)))
 
 all: build/$(PRC) courses
@@ -72,7 +72,7 @@ $(BUILD)/par386: $(OBJS) $(BUILD)/par386-sections.o $(BUILD)/par386-sections.ld
 	python3 tools/segcheck.py $(OBJS)
 	$(CC) $(LDFLAGS) $(OBJS) $(BUILD)/par386-sections.o $(BUILD)/par386-sections.ld -o $@
 
-$(BUILD)/par386.ro: src/par386.rcp src/palm/resource.h res/*.bmp | $(BUILD)
+$(BUILD)/par386.ro: src/par386.rcp src/palm/resource.h res/*.bmp res/wtap.bin | $(BUILD)
 	pilrc -q -ro -I src src/par386.rcp $@
 
 # Title and menu pictures. The scene render is slow and lives in

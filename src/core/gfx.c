@@ -28,6 +28,7 @@ void gfx_init(Surface *s)
 	s->lw = (int16_t)(s->w / s->scale);
 	s->lh = (int16_t)(s->h / s->scale);
 	s->ox = s->oy = 0;
+	s->fullview = 0;
 
 	for (i = 0; i < UIC_COUNT; i++) {
 		if (s->depth >= 8) {

@@ -16,6 +16,8 @@
 #define PIC_TALL_MENU  4010
 #define PIC_WIDE_TITLE 4020
 #define PIC_WIDE_MENU  4030
+#define PIC_DANA_TITLE 4100
+#define PIC_DANA_MENU  4110
 #define PIC_EXTEND_PX 80     /* from the artwork's edge to the centred square */
 /* Course previews, one picture per scenery number: PIC_PREVIEW + 10 * scenery
  * (tools/mkpreview.py), shown on the courses screen in the box below. */
@@ -88,6 +90,7 @@ typedef struct {
 	uint8_t cpu[RULES_PLAYERS];             /* the round's players in order, without the slots off */
 	uint8_t quick;           /* computer golfers' shots as a result on the map */
 	uint8_t shotmap;         /* full shots fly on the map, not the scene */
+	uint8_t dana;
 	uint8_t holeout;         /* play every putt in new rounds */
 	uint8_t pending;         /* what OK on the new round dialog opens: SCR_GAMES or SCR_PRACTICE */
 	uint8_t courses;         /* how many courses are installed */
@@ -116,11 +119,14 @@ typedef struct {
 } Front;
 
 void SEC_MENU front_init(Front *f);
+void SEC_MENU front_dana(Front *f, uint8_t wide);
 uint16_t SEC_MENU front_picture(const Front *f, const Surface *s);
 int SEC_MENU front_picture_band(Surface *s, uint16_t id, const uint8_t *d, uint32_t len);
 void SEC_MENU front_draw(const Front *f, Surface *s);
 int SEC_MENU front_key(Front *f, uint8_t key);
 int SEC_MENU front_tap(Front *f, int16_t x, int16_t y);
+/* The Dana's front screens use coordinates across the whole screen. */
+int SEC_DANA front_dana_tap(Front *f, int16_t x, int16_t y);
 /* A printable character, Backspace, Return or Escape in the name editor. */
 int SEC_MENU front_text(Front *f, uint16_t chr);
 /* Opens a dialog with an OK button over the menu, such as when there's no course to play. */

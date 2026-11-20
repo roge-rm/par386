@@ -15,7 +15,7 @@ uint8_t card_pages(const Round *r)
 }
 
 /* Holes on page: from and to, 0-based, to not included. */
-static void SEC_MENU page_holes(const Round *r, uint8_t page, uint8_t *from, uint8_t *to)
+static void SEC_CARD page_holes(const Round *r, uint8_t page, uint8_t *from, uint8_t *to)
 {
 	*from = (uint8_t)(page * 9);
 	*to = (uint8_t)(*from + 9 > r->holes ? r->holes : *from + 9);
@@ -27,14 +27,14 @@ static char title[24];
 
 /* Lines under the holes: Out or In on a course of more than 9, then Tot
  * and +/- (skins won in a skins game, for room). */
-static uint8_t SEC_MENU sums(const Round *r)
+static uint8_t SEC_CARD sums(const Round *r)
 {
 	return (uint8_t)(r->holes > 9 ? 3 : 2);
 }
 
 /* The buttons: what the first does, then the other nine on 18 holes, or
  * the next nine past that, then in a tournament the leaderboard. */
-static const char *SEC_MENU buttons(const Round *r, uint8_t mode, uint8_t page)
+static const char *SEC_CARD buttons(const Round *r, uint8_t mode, uint8_t page)
 {
 	if (mode == CARD_STATS) return r->stats_available && r->players > 1 ? "Back|Next" : "Back";
 	if (mode == CARD_FINAL && r->tour_stage == TOUR_BREAK) {
@@ -69,14 +69,14 @@ uint8_t card_stats_button(const Round *r, uint8_t mode)
 	return mode == CARD_FINAL ? (uint8_t)(card_buttons(r, mode) - 1) : 0xFF;
 }
 
-static void SEC_MENU add(char *t, uint8_t *n, const char *s)
+static void SEC_CARD add(char *t, uint8_t *n, const char *s)
 {
 	while (*s && *n < sizeof(title) - 1) t[(*n)++] = *s++;
 	t[*n] = 0;
 }
 
 /* Writes v in decimal at t[*n]. */
-static void SEC_MENU addn(char *t, uint8_t *n, uint8_t v)
+static void SEC_CARD addn(char *t, uint8_t *n, uint8_t v)
 {
 	if (v >= 10) t[(*n)++] = (char)('0' + v / 10);
 	t[(*n)++] = (char)('0' + v % 10);
@@ -86,7 +86,7 @@ static void SEC_MENU addn(char *t, uint8_t *n, uint8_t v)
 /* Default names use the short slot label on the card. */
 static const char player_prefix[] = "Player ";
 
-static uint8_t SEC_MENU named(const RoundPlayer *p, uint8_t slot)
+static uint8_t SEC_CARD named(const RoundPlayer *p, uint8_t slot)
 {
 	uint8_t k;
 
@@ -96,7 +96,7 @@ static uint8_t SEC_MENU named(const RoundPlayer *p, uint8_t slot)
 }
 
 /* A side in match play ("P1") or best ball ("P1+P2"). */
-static void SEC_MENU side_name(const Round *r, uint8_t side, char *t, uint8_t *n)
+static void SEC_CARD side_name(const Round *r, uint8_t side, char *t, uint8_t *n)
 {
 	if (r->mode == MODE_MATCH && named(&r->pl[side], side)) {
 		const char *name = r->pl[side].name;
@@ -110,7 +110,7 @@ static void SEC_MENU side_name(const Round *r, uint8_t side, char *t, uint8_t *n
 
 /* The card's title: the match's standing or result, the skins carried, or
  * plain "Scorecard" and "Final card". */
-static const char *SEC_MENU card_title(const Round *r, uint8_t mode)
+static const char *SEC_CARD card_title(const Round *r, uint8_t mode)
 {
 	uint8_t n = 0;
 
@@ -207,7 +207,7 @@ int card_hit(const Round *r, uint8_t mode, uint8_t page, int16_t x, int16_t y)
 }
 
 /* Writes v in decimal at t with a + or - if sign, returns the length. */
-static int16_t SEC_MENU num(char *t, int16_t v, uint8_t sign)
+static int16_t SEC_CARD num(char *t, int16_t v, uint8_t sign)
 {
 	char b[6];
 	int16_t n = 0, k = 0;
@@ -223,13 +223,13 @@ static int16_t SEC_MENU num(char *t, int16_t v, uint8_t sign)
 }
 
 /* Text with its right edge at x. */
-static void SEC_MENU rtext(Surface *s, int16_t x, int16_t y, const char *t, int16_t n)
+static void SEC_CARD rtext(Surface *s, int16_t x, int16_t y, const char *t, int16_t n)
 {
 	ui_text(s, (int16_t)(x - n * UI_CHAR), y, t, n, UIC_INK, -1);
 }
 
 /* Append a row to the stats dialog. A nonnegative total makes a fraction. */
-static char *SEC_MENU stat_row(char *t, const char *label, uint16_t value, int16_t total)
+static char *SEC_CARD stat_row(char *t, const char *label, uint16_t value, int16_t total)
 {
 	*t++ = '\n';
 	while (*label) *t++ = *label++;
@@ -241,13 +241,80 @@ static char *SEC_MENU stat_row(char *t, const char *label, uint16_t value, int16
 	return t;
 }
 
+static void SEC_CARD draw_page(Surface *s, const Round *r, uint8_t mode, uint8_t page, int16_t tx, int16_t y, int16_t col_w, uint8_t sum_rows)
+{
+	uint8_t from, to, h, i, k;
+	int16_t n, line, name_cols = (col_w - 4) / UI_CHAR;
+	char t[RULES_NAME_MAX + 1];
+
+	page_holes(r, page, &from, &to);
+	/* Headings use the space in each player's column. */
+	rtext(s, tx + PAR_R, y, "Par", 3);
+	for (i = 0; i < r->players; i++) {
+		int16_t k = 2;
+		t[0] = 'P';
+		t[1] = (char)('1' + i);
+		if (named(&r->pl[i], i)) {
+			for (k = 0; k < name_cols && r->pl[i].name[k]; k++) t[k] = r->pl[i].name[k];
+		}
+		rtext(s, (int16_t)(tx + PAR_R + col_w * (i + 1)), y, t, k);
+	}
+	y += CARD_ROW;
+	line = (int16_t)(tx + PAR_R + col_w * r->players);
+	ui_fill(s, tx, y, line - tx, 1, UIC_INK);
+	y += 2;
+	for (h = from; h < to; h++) {
+		/* the hole being played on a light bar */
+		if (h == r->hole && !r->over && mode == CARD_VIEW)
+			ui_fill(s, tx - 1, y - 1, line - tx + 2, CARD_ROW, UIC_PAPER_DK);
+		n = num(t, rules_hole_number(r, h), 0);
+		ui_text(s, tx, y, t, n, UIC_INK, -1);
+		n = num(t, r->pars[h], 0);
+		rtext(s, tx + PAR_R, y, t, n);
+		for (i = 0; i < r->players; i++) {
+			if (!r->pl[i].score[h]) continue;
+			n = num(t, r->pl[i].score[h], 0);
+			rtext(s, (int16_t)(tx + PAR_R + col_w * (i + 1)), y, t, n);
+		}
+		y += CARD_ROW;
+	}
+	ui_fill(s, tx, y, line - tx, 1, UIC_INK);
+	y += 2;
+	for (k = 0; k < sum_rows; k++) {
+		/* Out or In over this page's holes, then Tot over all of them, then against par or skins */
+		uint8_t a = 0, z = r->holes, kind = (uint8_t)(k + 3 - sums(r));
+		const char *l;
+		if (kind == 2 && r->mode == MODE_SKINS) kind = 3;
+		l = kind == 0 ? (page == 0 ? "Out" : page == 1 ? "In" : "Sub") : kind == 1 ? "Tot" : kind == 2 ? "+/-" : "Skn";
+		if (kind == 0) { a = from; z = to; }
+		for (n = 0; l[n]; n++) {}
+		ui_text(s, tx, y, l, n, UIC_INK, -1);
+		if (kind < 2) {
+			n = num(t, rules_par(r, a, z), 0);
+			rtext(s, tx + PAR_R, y, t, n);
+		}
+		if (kind == 3) {
+			uint8_t won[RULES_PLAYERS], carry;
+			rules_skins(r, won, &carry);
+			for (i = 0; i < r->players; i++) {
+				n = num(t, won[i], 0);
+				rtext(s, (int16_t)(tx + PAR_R + col_w * (i + 1)), y, t, n);
+			}
+			y += CARD_ROW;
+			continue;
+		}
+		for (i = 0; i < r->players; i++) {
+			if (!rules_played(r, i, a, z)) continue;
+			n = kind < 2 ? num(t, rules_strokes(r, i, a, z), 0) : num(t, rules_to_par(r, i), 1);
+			rtext(s, (int16_t)(tx + PAR_R + col_w * (i + 1)), y, t, n);
+		}
+		y += CARD_ROW;
+	}
+}
+
 void card_draw(Surface *s, const Round *r, uint8_t mode, uint8_t page, uint8_t sel)
 {
 	UiDialog d;
-	uint8_t from, to, h, i, k;
-	int16_t tx, y, n, line;
-	char t[8];
-	const URect *b;
 
 	card_layout(&d, r, mode, page);
 	d.sel = (uint8_t)(sel < d.count ? sel : 0);
@@ -267,74 +334,9 @@ void card_draw(Surface *s, const Round *r, uint8_t mode, uint8_t page, uint8_t s
 		ui_dialog_draw(s, &d);
 		return;
 	}
-	page_holes(r, page, &from, &to);
-	b = &d.box;
 	ui_dialog_draw(s, &d);
-
-	tx = (int16_t)(b->x + (b->w - (PAR_R + COL_W * r->players)) / 2);
-	y = (int16_t)(b->y + 1 + TITLE_H + GAP);
-	/* The heading holds three letters per player. */
-	rtext(s, tx + PAR_R, y, "Par", 3);
-	for (i = 0; i < r->players; i++) {
-		int16_t k = 2;
-		t[0] = 'P';
-		t[1] = (char)('1' + i);
-		if (named(&r->pl[i], i)) {
-			for (k = 0; k < 3 && r->pl[i].name[k]; k++) t[k] = r->pl[i].name[k];
-		}
-		rtext(s, (int16_t)(tx + PAR_R + COL_W * (i + 1)), y, t, k);
-	}
-	y += CARD_ROW;
-	line = (int16_t)(tx + PAR_R + COL_W * r->players);
-	ui_fill(s, tx, y, line - tx, 1, UIC_INK);
-	y += 2;
-	for (h = from; h < to; h++) {
-		/* the hole being played on a light bar */
-		if (h == r->hole && !r->over && mode == CARD_VIEW)
-			ui_fill(s, tx - 1, y - 1, line - tx + 2, CARD_ROW, UIC_PAPER_DK);
-		n = num(t, rules_hole_number(r, h), 0);
-		ui_text(s, tx, y, t, n, UIC_INK, -1);
-		n = num(t, r->pars[h], 0);
-		rtext(s, tx + PAR_R, y, t, n);
-		for (i = 0; i < r->players; i++) {
-			if (!r->pl[i].score[h]) continue;
-			n = num(t, r->pl[i].score[h], 0);
-			rtext(s, (int16_t)(tx + PAR_R + COL_W * (i + 1)), y, t, n);
-		}
-		y += CARD_ROW;
-	}
-	ui_fill(s, tx, y, line - tx, 1, UIC_INK);
-	y += 2;
-	for (k = 0; k < sums(r); k++) {
-		/* Out or In over this page's holes, then Tot over all of them, then against par or skins */
-		uint8_t a = 0, z = r->holes, kind = (uint8_t)(k + 3 - sums(r));
-		const char *l;
-		if (kind == 2 && r->mode == MODE_SKINS) kind = 3;
-		l = kind == 0 ? (page == 0 ? "Out" : page == 1 ? "In" : "Sub") : kind == 1 ? "Tot" : kind == 2 ? "+/-" : "Skn";
-		if (kind == 0) { a = from; z = to; }
-		for (n = 0; l[n]; n++) {}
-		ui_text(s, tx, y, l, n, UIC_INK, -1);
-		if (kind < 2) {
-			n = num(t, rules_par(r, a, z), 0);
-			rtext(s, tx + PAR_R, y, t, n);
-		}
-		if (kind == 3) {
-			uint8_t won[RULES_PLAYERS], carry;
-			rules_skins(r, won, &carry);
-			for (i = 0; i < r->players; i++) {
-				n = num(t, won[i], 0);
-				rtext(s, (int16_t)(tx + PAR_R + COL_W * (i + 1)), y, t, n);
-			}
-			y += CARD_ROW;
-			continue;
-		}
-		for (i = 0; i < r->players; i++) {
-			if (!rules_played(r, i, a, z)) continue;
-			n = kind < 2 ? num(t, rules_strokes(r, i, a, z), 0) : num(t, rules_to_par(r, i), 1);
-			rtext(s, (int16_t)(tx + PAR_R + COL_W * (i + 1)), y, t, n);
-		}
-		y += CARD_ROW;
-	}
+	draw_page(s, r, mode, page, (int16_t)(d.box.x + (d.box.w - (PAR_R + COL_W * r->players)) / 2),
+	          (int16_t)(d.box.y + 1 + TITLE_H + GAP), COL_W, sums(r));
 }
 
 /* ---- the tournament leaderboard ---- */
@@ -398,23 +400,16 @@ void board_layout(UiDialog *d, const Round *r, uint8_t mode, uint8_t lines)
 	}
 }
 
-void board_draw(Surface *s, const Round *r, uint8_t mode, uint8_t sel)
+static void SEC_CARD draw_leaders(Surface *s, const Round *r, const BoardLine *b, uint8_t n, int16_t x, int16_t y, int16_t pitch)
 {
-	UiDialog d;
-	BoardLine b[RULES_PLAYERS + RULES_FIELD];
-	uint8_t n = rules_board(r, b), i;
-	int16_t x, y, k;
+	uint8_t i;
+	int16_t k;
 	char t[8];
 
-	board_layout(&d, r, mode, n);
-	d.sel = (uint8_t)(sel < d.count ? sel : 0);
-	ui_dialog_draw(s, &d);
-	x = (int16_t)(d.box.x + (d.box.w - (POS_W + NAME_W + PAR_W)) / 2);
-	y = (int16_t)(d.box.y + 1 + TITLE_H + GAP + 12);
-	for (i = 0; i < n; i++, y += CARD_ROW) {
+	for (i = 0; i < n; i++, y += pitch) {
 		const char *nm = b[i].who < RULES_PLAYERS ? r->pl[b[i].who].name : rules_field_name((uint8_t)(b[i].who - RULES_PLAYERS));
 		/* the round's players on a light bar */
-		if (b[i].who < RULES_PLAYERS) ui_fill(s, x - 1, y - 1, POS_W + NAME_W + PAR_W + 2, CARD_ROW, UIC_PAPER_DK);
+		if (b[i].who < RULES_PLAYERS) ui_fill(s, x - 1, y - 1, POS_W + NAME_W + PAR_W + 2, pitch, UIC_PAPER_DK);
 		k = 0;
 		if (b[i].tied) t[k++] = 'T';
 		k = (int16_t)(k + num(t + k, b[i].pos, 0));
@@ -426,9 +421,151 @@ void board_draw(Surface *s, const Round *r, uint8_t mode, uint8_t sel)
 	}
 }
 
+void board_draw(Surface *s, const Round *r, uint8_t mode, uint8_t sel)
+{
+	UiDialog d;
+	BoardLine b[RULES_PLAYERS + RULES_FIELD];
+	uint8_t n = rules_board(r, b);
+	int16_t x, y;
+
+	board_layout(&d, r, mode, n);
+	d.sel = (uint8_t)(sel < d.count ? sel : 0);
+	ui_dialog_draw(s, &d);
+	x = (int16_t)(d.box.x + (d.box.w - (POS_W + NAME_W + PAR_W)) / 2);
+	y = (int16_t)(d.box.y + 1 + TITLE_H + GAP + 12);
+	draw_leaders(s, r, b, n, x, y, CARD_ROW);
+}
+
 int board_hit(const Round *r, uint8_t mode, int16_t x, int16_t y)
 {
 	UiDialog d;
 	board_layout(&d, r, mode, (uint8_t)(r->players + RULES_FIELD));
 	return ui_dialog_hit(&d, x, y);
+}
+
+/* Keep the action numbers shared with the usual card, where 1 changes pages. */
+int card_wide_both(const Round *r, uint8_t mode)
+{
+	return mode != CARD_STATS && r->holes > 9 && r->holes <= 18;
+}
+
+static void SEC_CARD widen_dialog(UiDialog *d, int16_t width)
+{
+	int16_t total = 0, x, n;
+	uint8_t i;
+
+	d->box.x = 3;
+	d->box.w = width - 6;
+	d->count = ui_parts(d->buttons, '|');
+	for (i = 0; i < d->count; i++) {
+		ui_part(d->buttons, '|', i, &n);
+		d->btn[i].w = (int16_t)(n * UI_CHAR + 12);
+		if (d->btn[i].w < 36) d->btn[i].w = 36;
+		total += d->btn[i].w + (i ? 8 : 0);
+	}
+	x = (width - total) / 2;
+	for (i = 0; i < d->count; i++) {
+		d->btn[i].x = x;
+		d->btn[i].y = (int16_t)(d->box.y + d->box.h - BTN_H - GAP - 1);
+		d->btn[i].h = BTN_H;
+		x += d->btn[i].w + 8;
+	}
+}
+
+#define WIDE_BOARD_PITCH 14
+
+static void SEC_CARD wide_layout(UiDialog *d, const Round *r, uint8_t mode, uint8_t page, uint8_t board, int16_t width)
+{
+	if (board) {
+		int16_t rows = (r->players + RULES_FIELD + 1) / 2;
+		board_layout(d, r, mode, 0);
+		d->box.h += (int16_t)(rows * WIDE_BOARD_PITCH + 12);
+	} else {
+		card_layout(d, r, mode, mode == CARD_STATS ? page : 0);
+		if (mode == CARD_STATS && r->stats_available) {
+			d->box.h = 108;
+			d->text = "";
+		} else if (card_wide_both(r, mode)) {
+			d->buttons = mode == CARD_FINAL ? (r->tour_stage == TOUR_BREAK ? "Round 2|Stats" : "Done|Stats") :
+			             mode == CARD_HOLE ? "Next hole" : r->mode == MODE_TOURN ? "OK|Board" : "OK";
+		} else if (mode != CARD_STATS) d->buttons = buttons(r, mode, page);
+	}
+	d->box.y = (int16_t)((160 - d->box.h) / 2);
+	widen_dialog(d, width);
+}
+
+static void SEC_CARD draw_wide_page(Surface *s, const Round *r, uint8_t mode, uint8_t page,
+                                   int16_t x, int16_t y, int16_t w, uint8_t sum_rows)
+{
+	int16_t col_w = (w - PAR_R) / r->players;
+	if (col_w > 68) col_w = 68;
+	draw_page(s, r, mode, page, (int16_t)(x + (w - PAR_R - col_w * r->players) / 2), y, col_w, sum_rows);
+}
+
+static void SEC_CARD wide_stat(Surface *s, int16_t x, int16_t y, int16_t w,
+                               const char *label, uint16_t value, int16_t total)
+{
+	int16_t n;
+	char t[16];
+
+	ui_fill(s, x, y, w, 17, UIC_TITLE);
+	ui_bevel(s, x, y, w, 17, UIC_INK, UIC_WHITE);
+	ui_part(label, 0, 0, &n);
+	ui_text(s, x + 4, y + 5, label, n, UIC_PAPER, -1);
+	n = num(t, (int16_t)value, 0);
+	if (total >= 0) {
+		t[n++] = '/';
+		n += num(t + n, total, 0);
+	}
+	ui_text(s, x + w - 4 - n * UI_CHAR, y + 5, t, n, UIC_TEXT_HI, -1);
+}
+
+void card_wide_draw(Surface *s, const Round *r, uint8_t mode, uint8_t page, uint8_t board, uint8_t sel)
+{
+	UiDialog d;
+	int16_t middle = s->lw / 2, y;
+
+	wide_layout(&d, r, mode, page, board, s->lw);
+	if (!board && card_wide_both(r, mode)) sel = sel > 1 ? 1 : 0;
+	d.sel = (uint8_t)(sel < d.count ? sel : 0);
+	ui_dialog_draw(s, &d);
+	y = (int16_t)(d.box.y + 1 + TITLE_H + GAP);
+	if (board) {
+		BoardLine b[RULES_PLAYERS + RULES_FIELD];
+		uint8_t n = rules_board(r, b), half = (uint8_t)((n + 1) / 2);
+		int16_t x = (middle - POS_W - NAME_W - PAR_W) / 2;
+		draw_leaders(s, r, b, half, x, y + 18, WIDE_BOARD_PITCH);
+		draw_leaders(s, r, b + half, (uint8_t)(n - half), middle + x, y + 18, WIDE_BOARD_PITCH);
+		ui_fill(s, middle, y + 15, 1, half * WIDE_BOARD_PITCH, UIC_PAPER_DK);
+	} else if (mode == CARD_STATS) {
+		if (r->stats_available) {
+			const RoundPlayer *p = &r->pl[page];
+			const RoundStats *st = &p->stats;
+			int16_t n, w = middle - 16;
+			ui_part(p->name, 0, 0, &n);
+			ui_ctext(s, middle, y + 1, p->name, n, UIC_INK, -1);
+			wide_stat(s, 10, y + 14, w, "Fairways", st->fairways, st->drives);
+			wide_stat(s, middle + 6, y + 14, w, "Greens in reg", st->greens, rules_played(r, page, 0, r->holes));
+			wide_stat(s, 10, y + 35, w, "Putts", st->putts, -1);
+			wide_stat(s, middle + 6, y + 35, w, "Penalties", st->penalties, -1);
+		}
+	} else if (r->holes > 9) {
+		uint8_t pages = card_pages(r), first = pages == 2 ? 0 : page;
+		uint8_t other = (uint8_t)((first + 1) % pages);
+		draw_wide_page(s, r, mode, first, 6, y, middle - 12, 1);
+		draw_wide_page(s, r, mode, other, middle + 6, y, middle - 12, sums(r));
+		ui_fill(s, middle, y - 1, 1, d.btn[0].y - y - 2, UIC_PAPER_DK);
+	} else {
+		draw_wide_page(s, r, mode, page, 6, y, s->lw - 12, sums(r));
+	}
+}
+
+int card_wide_hit(const Round *r, uint8_t mode, uint8_t page, uint8_t board, int16_t width, int16_t x, int16_t y)
+{
+	UiDialog d;
+	int i;
+
+	wide_layout(&d, r, mode, page, board, width);
+	i = ui_dialog_hit(&d, x, y);
+	return i == 1 && !board && card_wide_both(r, mode) ? 2 : i;
 }

@@ -12,6 +12,7 @@
 #include "render.h"
 #include "pal.h"
 #include "play.h"
+#include "dana.h"
 
 static int fails, checks;
 
@@ -869,6 +870,65 @@ int main(int argc, char **argv)
 		surface_wh(&s, 480, 320, 2, 8);
 		views(&s, "", &v, &art[1], 1);
 		sfree(&s);
+		/* The Dana's packed panes share a row stride. Drawing one must leave the others alone. */
+		{
+			static Play p;
+			DanaPanels panels = {0};
+			Surface left, centre, right;
+			uint8_t *work;
+			int y, x, intact = 1;
+			uint8_t last[DANA_SCENE_W / 2];
+
+			surface_wh(&s, DANA_SCREEN_W, 160, 1, 4);
+			left = centre = right = s;
+			left.w = left.lw = right.w = right.lw = DANA_RAIL_W;
+			centre.w = centre.lw = DANA_SCENE_W;
+			centre.bits += DANA_RAIL_W / 2;
+			centre.fullview = 1;
+			right.bits += (DANA_RAIL_W + DANA_SCENE_W) / 2;
+			memset(s.bits, 0x5a, (size_t)s.rowBytes * s.h);
+			play_init(&p, v.hole, v.grid, 3);
+			work = malloc(render_work_size(&centre));
+			CHECK(work && render_scene(&centre, &p.rv, &art[0], work, NULL) == 0);
+			for (y = 0; y < s.h; y++)
+				for (x = 0; x < DANA_RAIL_W / 2; x++)
+					intact &= left.bits[y * s.rowBytes + x] == 0x5a && right.bits[y * s.rowBytes + x] == 0x5a;
+			CHECK(intact);
+			memcpy(last, centre.bits + (s.h - 1) * s.rowBytes, sizeof last);
+			dana_reset(&panels);
+			CHECK(dana_draw(&panels, &left, &right, &p) == (DANA_LEFT | DANA_RIGHT));
+			CHECK(panels.map_ready && !memcmp(last, centre.bits + (s.h - 1) * s.rowBytes, sizeof last));
+			CHECK(dana_draw(&panels, &left, &right, &p) == 0);
+			play_frame(&p, &centre, NULL, 0);
+			save(&s, "dana-tee");
+			CHECK(play_key(&p, KEY_MAP, 10) == PL_MAP);
+			play_map(&centre, &p);
+			CHECK(p.mg.ypp > 0 && p.mg.by > p.mg.py);
+			if (p.mg.ypp > 0) {
+				vec2 target = vec2_make((p.rv.ball.x + v.hole->pins[0].x) / 2,
+				                        (p.rv.ball.y + v.hole->pins[0].y) / 2);
+				int16_t mx = (int16_t)(centre.w - 1 - p.mg.top - (p.mg.length - target.y) / p.mg.ypp);
+				int16_t my = (int16_t)(p.mg.left + target.x / p.mg.ypp);
+				CHECK(play_tap(&p, mx, my, 11) == PL_MAP && p.target_set);
+				CHECK(fix_abs(p.target.x - target.x) <= p.mg.ypp && fix_abs(p.target.y - target.y) <= p.mg.ypp);
+			}
+			play_map(&centre, &p);
+			play_status(&centre, &p, NULL);
+			save(&s, "dana-map");
+			for (y = 0; y < s.h; y++) {
+				memset(left.bits + y * s.rowBytes, 0x5a, DANA_RAIL_W / 2);
+				memset(right.bits + y * s.rowBytes, 0x5a, DANA_RAIL_W / 2);
+			}
+			p.rv.green = 1;
+			p.rv.ball = vec2_make(v.hole->pins[0].x - (2L << 16), v.hole->pins[0].y - (7L << 16));
+			CHECK(render_green(&centre, &p.rv) == 0);
+			for (y = 0; y < s.h; y++)
+				for (x = 0; x < DANA_RAIL_W / 2; x++)
+					intact &= left.bits[y * s.rowBytes + x] == 0x5a && right.bits[y * s.rowBytes + x] == 0x5a;
+			CHECK(intact);
+			free(work);
+			sfree(&s);
+		}
 		/* and every depth at those sizes, for the guard bytes */
 		for (i = 1; i <= 4; i <<= 1) {
 			surface_wh(&s, 320, 480, 2, i);

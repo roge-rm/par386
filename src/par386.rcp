@@ -2,6 +2,9 @@
 
 VERSION ID 1 kAppVersion
 
+// Ask the AlphaSmart Dana for its wide display.
+DATA "wTap" ID 1000 "../res/wtap.bin"
+
 ICONFAMILYEX
 BEGIN
   BITMAP "../res/icon-1.bmp" BPP 1

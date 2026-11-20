@@ -14,7 +14,7 @@ typedef int32_t fixed;
 #define FIX_MAX   INT32_MAX
 #define FIX_MIN   INT32_MIN
 
-#define PAR386_VERSION "0.8.0"
+#define PAR386_VERSION "0.9.0"
 
 fixed SEC_CORE fix_from_int(int v);
 /* Rounds to the nearest whole number, halves away from zero. */

@@ -12,6 +12,7 @@
 /* Logical rows left at the bottom for the panel (play.c): the view is the
  * top lh - RENDER_STATUS rows (times the surface's scale). */
 #define RENDER_STATUS     26
+#define RENDER_VIEW_H(s)  ((s)->lh - ((s)->fullview ? 0 : RENDER_STATUS))
 #define RENDER_TYPES      13    /* object types 0..12 (hole.h) */
 #define RENDER_VARIANTS   2     /* sprite variants per type, picked by the object's variant byte */
 #define RENDER_SIZES      2     /* sprite sizes per type, small then big */
@@ -142,6 +143,9 @@ void SEC_RENDER render_terra_use(void (*fn)(uint8_t op, void *job));
 int SEC_RENDER render_map(Surface *s, const RenderView *v, RenderMap *out);
 /* The whole hole, with the line drawn to the chosen target. */
 int SEC_RENDER render_target_map(Surface *s, const RenderView *v, RenderMap *out, const vec2 *target);
+/* The Dana's whole-hole map, tee on the left. RenderMap keeps its normal
+ * coordinates: on screen, (x, y) is (s->w - 1 - y, x). */
+int SEC_RENDER render_dana_map(Surface *s, const RenderView *v, RenderMap *out, const vec2 *target);
 /* A part of the hole for render_map_box, in yards. */
 typedef struct {
 	fixed x0, y0, x1, y1;

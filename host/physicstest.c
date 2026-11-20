@@ -710,6 +710,37 @@ static void surface2(Surface *s)
 	gfx_init(s);
 }
 
+/* The longer landscape meter changes the marked column, not the click timing. */
+static void landscape_meter_test(const Hole *h, const SurfaceGrid *g)
+{
+	static Play p;
+	Surface s;
+	uint32_t start = 1000, power = MTR_UP_MS * 4 / 5;
+	int16_t x, width;
+
+	memset(&s, 0, sizeof s);
+	s.scale = 2;
+	s.depth = 2;
+	s.w = 480;
+	s.h = 320;
+	s.rowBytes = s.w / 4;
+	s.bits = calloc(s.rowBytes, s.h);
+	gfx_init(&s);
+	play_init(&p, h, g, 7);
+	play_frame(&p, &s, NULL, 0);
+	CHECK(play_tap(&p, 20, 151, start) & PL_ANIM);
+	CHECK(p.state == PS_UP);
+	play_frame(&p, &s, NULL, start + power);
+	width = s.lw - 2 * MTR_X;
+	x = MTR_X + width * (p.mpos >> 4) / MTR_W;
+	CHECK(p.mshown == x && x > MTR_X + MTR_W);
+	CHECK(play_tap(&p, 235, 151, start + power) & PL_ANIM);
+	CHECK(p.state == PS_DOWN && p.power > YD(0.79) && p.power < YD(0.81));
+	CHECK(play_tap(&p, 235, 151, start + power + power * MTR_DOWN_MS / MTR_UP_MS) & PL_ANIM);
+	CHECK(p.state == PS_FLY && p.snap == 0);
+	free(s.bits);
+}
+
 /* Plays the swing through: start at t, power at t + up ms, snap at off ms from the snap line. */
 static void swing(Play *p, Surface *s, Surface *bg, uint32_t t, uint32_t up, int32_t off)
 {
@@ -1390,6 +1421,7 @@ int main(int argc, char **argv)
 	putt_tests();
 	test_hole(&h, &g);
 	meter_tests(&h, &g);
+	landscape_meter_test(&h, &g);
 	press_tests(&h, &g);
 	green_tests(&h, &g);
 	shotmap_tests(&h, &g);

@@ -20,6 +20,7 @@ typedef struct {
 	uint8_t scale;          /* pixels per logical unit: 1 on 160 wide screens, 2 on 320 */
 	uint8_t half;           /* at scale 2, render.c draws the views at scale 1 and doubles
 	                         * them (slow CPUs); the platform sets it, gfx_init leaves it */
+	uint8_t fullview;       /* the controls are outside this surface */
 	int16_t lw, lh;         /* size in logical units, set by gfx_init */
 	int16_t ox, oy;         /* where ui.c and pictures put logical 0,0, in pixels; 0 from gfx_init */
 	uint8_t pa[UIC_COUNT];  /* pixel value of each UI colour on even checker squares */

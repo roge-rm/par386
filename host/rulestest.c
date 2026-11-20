@@ -1218,6 +1218,56 @@ static void card_tests(void)
 	free(s2.bits);
 }
 
+static void dana_card_tests(void)
+{
+	Surface s = {0};
+	Round r;
+	static Play p;
+	uint8_t before[8][368];
+	int x, y, front = 0, back = 0;
+
+	s.w = s.rowBytes = 368;
+	s.h = 160;
+	s.depth = 8;
+	s.scale = 1;
+	s.bits = calloc(s.rowBytes, s.h);
+	gfx_init(&s);
+	s.fullview = 1;
+	rules_init(&r, "Dana test", 1, 18, pars18, 1);
+	p = (Play){0};
+	p.round = &r;
+	p.view = PLAY_CARD;
+	p.card = CARD_VIEW;
+	p.card_from = PLAY_MAP;
+
+	play_card(&s, &p);
+	memcpy(before, s.bits + 28 * s.rowBytes, sizeof before);
+	r.pl[0].score[0] = 4;
+	r.pl[0].score[9] = 5;
+	play_card(&s, &p);
+	/* The first score on each nine shares a row, on opposite sides. */
+	for (y = 0; y < 8; y++)
+		for (x = 0; x < s.lw; x++)
+			if (before[y][x] != s.bits[(28 + y) * s.rowBytes + x]) {
+				if (x < s.lw / 2) front++;
+				else back++;
+			}
+	CHECK(front > 0 && back > 0);
+	CHECK(play_key(&p, KEY_RIGHT, 0) == 0 && p.csel == 0);
+	CHECK(play_key(&p, KEY_DOWN, 0) == 0 && p.page == 0);
+	CHECK(play_key(&p, KEY_BACK, 0) == PL_BACK);
+	CHECK(play_key(&p, KEY_SELECT, 0) == PL_MAP && p.view == PLAY_MAP);
+
+	p.view = PLAY_CARD;
+	CHECK(play_tap(&p, 184, 148, 0) == PL_MAP && p.view == PLAY_MAP);
+	p.view = PLAY_CARD;
+	p.card = CARD_FINAL;
+	CHECK(play_key(&p, KEY_RIGHT, 0) == PL_CARD && p.csel == 2);
+	CHECK(play_key(&p, KEY_SELECT, 0) == PL_CARD && p.card == CARD_STATS);
+	CHECK(play_key(&p, KEY_BACK, 0) == PL_CARD && p.card == CARD_FINAL && p.csel == 2);
+	free(s.bits);
+}
+
 /* ---- game modes, computer golfers and records (milestone 12) ---- */
 
 /* Every player's score on the hole being played, then on to the next. */
@@ -2776,6 +2826,11 @@ int main(int argc, char **argv)
 
 	if (argc >= 3 && strcmp(argv[1], "--cpu") == 0)
 		return cpu_course(argv[2], argc > 3 ? atoi(argv[3]) : 8, argc > 4 ? atoi(argv[4]) : 0);
+	if (argc == 2 && strcmp(argv[1], "--dana-card") == 0) {
+		dana_card_tests();
+		printf("dana-card: %d checks, %d failed\n", checks, fails);
+		return fails != 0;
+	}
 	if (argc < 4) { fprintf(stderr, "usage: rulestest COURSE.pdb ARTDIR OUTDIR, or rulestest --cpu COURSE.pdb [ROUNDS [TEE]]\n"); return 2; }
 	artdir = argv[2];
 	outdir = argv[3];
@@ -2787,6 +2842,7 @@ int main(int argc, char **argv)
 	total_tests();
 	save_tests();
 	card_tests();
+	dana_card_tests();
 	front_tests();
 	book_edge_test();
 	round_tests(argv[1]);

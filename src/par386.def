@@ -1,2 +1,2 @@
 application { "Par 386" P386 }
-multiple code { "core" "ui" "render" "ball" "menu" }
+multiple code { "core" "ui" "render" "ball" "menu" "dana" "cardui" }

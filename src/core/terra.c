@@ -648,7 +648,7 @@ void terra_map(const TerraMap *t)
 		int32_t cy;
 		const uint8_t *cells;
 		if (y < top || y >= top + mh) {
-			for (x = 0; x < (int16_t)rb; x++) p[x] = 0xFF;
+			for (x = 0; x < (int16_t)(((uint16_t)w << lg) >> 3); x++) p[x] = 0xFF;
 			continue;
 		}
 		/* the far end at the top; sample each pixel's centre */

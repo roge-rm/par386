@@ -19,7 +19,11 @@ void ScreenClose(void);
 #define SCREEN_SAME   0
 #define SCREEN_NEW    1
 #define SCREEN_FAILED 2
-Int16 ScreenResize(void);
+Int16 SEC_DANA ScreenResize(void);
+/* On the Dana, the game draws into the middle of a wide screen. */
+void SEC_DANA ScreenGame(Boolean playing);
+Boolean SEC_DANA ScreenDanaPane(Boolean right, Surface *s);
+void SEC_DANA ScreenDanaShow(Boolean right, Int16 y, Int16 h);
 #ifdef DEBUG
 /* Makes the next Make fail, once more for each call, to test the above. */
 void ScreenFailNext(void);

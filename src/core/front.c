@@ -1,4 +1,5 @@
 #include "front.h"
+#include "dana.h"
 #include "records.h"
 #include "sound.h"
 
@@ -12,8 +13,24 @@
 #define REC_Y 146
 #define REC_W 128
 
+#define DANA_LIST_X 32
+#define DANA_LIST_W 248
+#define DANA_DETAIL_X 292
+#define DANA_DETAIL_W 236
+#define DANA_PREVIEW_X 304
+#define DANA_PREVIEW_Y 46
+#define DANA_CENTER_X 112
+#define DANA_CENTER_W 336
+#define DANA_BOX_Y 6
+#define DANA_BOX_H 148
+#define DANA_LINE_Y 38
+#define DANA_LINE_H 16
+
 enum { PLAYER_NAME, PLAYER_GOLFER, PLAYER_SKIN, PLAYER_HAND, PLAYER_BACK };
 enum { NAME_SPACE = 36, NAME_DEL, NAME_CLEAR, NAME_DONE, NAME_CANCEL, NAME_KEYS };
+
+static int SEC_DANA dana_surface(const Surface *s);
+static void SEC_DANA dana_front_draw(const Front *f, Surface *s, const char *plate);
 
 static const char name_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 static const char *const name_actions[] = { "Space", "Del", "Clear", "Done", "Cancel" };
@@ -41,6 +58,7 @@ void front_init(Front *f)
 	f->cpu[0] = f->cpu[1] = f->cpu[2] = f->cpu[3] = CPU_HUMAN;
 	f->quick = 1;
 	f->shotmap = 1;
+	f->dana = 0;
 	f->pending = SCR_GAMES;
 	f->oldSel = 0;
 	f->courses = 0;
@@ -194,6 +212,7 @@ uint16_t front_picture(const Front *f, const Surface *s)
 {
 	uint8_t title = f->screen == SCR_TITLE;
 
+	if (dana_surface(s)) return title ? PIC_DANA_TITLE : PIC_DANA_MENU;
 	if (s->scale == 2 && s->depth == 8) {
 		if (s->w == 320 && s->h > 320) return title ? PIC_TALL_TITLE : PIC_TALL_MENU;
 		if (s->h == 320 && s->w > 320) return title ? PIC_WIDE_TITLE : PIC_WIDE_MENU;
@@ -207,6 +226,13 @@ int front_picture_band(Surface *s, uint16_t id, const uint8_t *d, uint32_t len)
 	int16_t ox = s->ox, oy = s->oy;
 	int r;
 
+	if (id == PIC_DANA_TITLE || id == PIC_DANA_MENU) {
+		s->ox = s->oy = 0;
+		r = gfx_pic_band(s, d, len);
+		s->ox = ox;
+		s->oy = oy;
+		return r;
+	}
 	if (id == PIC_TALL_TITLE || id == PIC_TALL_MENU) s->oy -= PIC_EXTEND_PX;
 	else if (id == PIC_WIDE_TITLE || id == PIC_WIDE_MENU) s->ox -= PIC_EXTEND_PX;
 	else return gfx_pic_band(s, d, len);
@@ -228,13 +254,21 @@ uint16_t front_preview(const Front *f)
 int front_preview_band(Surface *s, const uint8_t *d, uint32_t len)
 {
 	int16_t ox = s->ox, oy = s->oy;
+	uint8_t scale = s->scale;
 	int r;
 
-	s->ox = (int16_t)(ox + PREVIEW_X * s->scale);
-	s->oy = (int16_t)(oy + PREVIEW_Y * s->scale);
+	if (dana_surface(s)) {
+		s->ox = DANA_PREVIEW_X;
+		s->oy = DANA_PREVIEW_Y;
+		s->scale = 2;
+	} else {
+		s->ox = (int16_t)(ox + PREVIEW_X * scale);
+		s->oy = (int16_t)(oy + PREVIEW_Y * scale);
+	}
 	r = gfx_pic_band(s, d, len);
 	s->ox = ox;
 	s->oy = oy;
+	s->scale = scale;
 	return r;
 }
 
@@ -319,6 +353,10 @@ void front_draw(const Front *f, Surface *s)
 	                    f->screen == SCR_PRACTICE ? "PRACTICE" : "CLUBHOUSE";
 	int16_t n;
 
+	if (dana_surface(s)) {
+		dana_front_draw(f, s, plate);
+		return;
+	}
 	if (f->screen == SCR_TITLE) {
 		int16_t oy = s->oy;
 		uint16_t id = front_picture(f, s);
@@ -516,12 +554,19 @@ static void SEC_MENU settings_menu(Front *f)
 	while (*b) f->settings_list[n++] = *b++;
 	while (*c) f->settings_list[n++] = *c++;
 	while (*d) f->settings_list[n++] = *d++;
-	while (*e) f->settings_list[n++] = *e++;
+	if (!f->dana) while (*e) f->settings_list[n++] = *e++;
 	while (*g) f->settings_list[n++] = *g++;
 	f->settings_list[n] = 0;
 	f->screen = SCR_SETTINGS;
 	ui_menu_init(&f->menu, f->settings_list, 16, 36, 128, 18);
-	f->menu.sel = sel;
+	f->menu.sel = sel < f->menu.count ? sel : f->menu.count - 1;
+}
+
+void front_dana(Front *f, uint8_t wide)
+{
+	if (f->dana == wide) return;
+	f->dana = wide;
+	if (f->screen == SCR_SETTINGS) settings_menu(f);
 }
 
 static void SEC_MENU player_menu(Front *f, uint8_t sel)
@@ -639,12 +684,12 @@ static int SEC_MENU open_item(Front *f, uint8_t i)
 			settings_menu(f);
 			return FR_REDRAW | FR_CPU;
 		}
-		if (i == 2) {
+		if (i == 2 && !f->dana) {
 			f->shotmap ^= 1;
 			settings_menu(f);
 			return FR_REDRAW | FR_SHOT;
 		}
-		if (i == 3) {
+		if (i == (f->dana ? 2 : 3)) {
 			f->holeout ^= 1;
 			settings_menu(f);
 			return FR_REDRAW | FR_GIMMES;
@@ -811,8 +856,6 @@ static int SEC_MENU key_in(Front *f, uint8_t key)
 	return 0;
 }
 
-static int SEC_MENU tap_in(Front *f, int16_t x, int16_t y);
-
 /* A click for anything a key did: a move or a pick. */
 int front_key(Front *f, uint8_t key)
 {
@@ -820,6 +863,8 @@ int front_key(Front *f, uint8_t key)
 	if (r) snd_play(key == KEY_UP || key == KEY_DOWN || key == KEY_LEFT || key == KEY_RIGHT ? SND_MENU_MOVE : SND_MENU_SELECT);
 	return r;
 }
+
+static int SEC_MENU tap_in(Front *f, int16_t x, int16_t y);
 
 int front_tap(Front *f, int16_t x, int16_t y)
 {
@@ -864,4 +909,195 @@ static int SEC_MENU tap_in(Front *f, int16_t x, int16_t y)
 		if (r & FR_LINES) f->oldSel = old;
 		return r | FR_REDRAW;
 	}
+}
+
+static int dana_surface(const Surface *s)
+{
+	return s->scale == 1 && s->w == DANA_SCREEN_W && s->h == 160;
+}
+
+static void SEC_DANA dana_well(Surface *s, int16_t x, int16_t y, int16_t w, const char *t, uint8_t bright)
+{
+	int16_t n;
+
+	ui_part(t, 0, 0, &n);
+	ui_fill(s, x, y, w, 15, UIC_TITLE);
+	ui_bevel(s, x, y, w, 15, UIC_INK, UIC_WHITE);
+	ui_ctext(s, x + w / 2, y + 4, t, n, bright ? UIC_TEXT_HI : UIC_PAPER, -1);
+}
+
+static void SEC_DANA dana_box(Surface *s, int16_t x, int16_t w, const char *title)
+{
+	ui_fill(s, x + 3, DANA_BOX_Y + 3, w, DANA_BOX_H, UIC_BLACK);
+	ui_fill(s, x, DANA_BOX_Y, w, DANA_BOX_H, UIC_PAPER_DK);
+	ui_bevel(s, x, DANA_BOX_Y, w, DANA_BOX_H, UIC_WHITE, UIC_INK);
+	dana_well(s, x + 4, DANA_BOX_Y + 4, w - 8, title, 1);
+}
+
+/* Keep the row order for the keyboard as it moves between the two boards. */
+static uint8_t SEC_DANA dana_menus(const Front *f, UiMenu *left, UiMenu *right)
+{
+	uint8_t split = f->screen == SCR_PLAYERS ? slots(f) : 0;
+	uint8_t pair = split || f->screen == SCR_MENU || f->screen == SCR_COURSES;
+
+	*left = f->menu;
+	left->x = (pair ? DANA_LIST_X : DANA_CENTER_X) + 8;
+	left->w = (pair ? DANA_LIST_W : DANA_CENTER_W) - 16;
+	left->y = DANA_LINE_Y;
+	left->lineH = DANA_LINE_H;
+	if (split) {
+		int16_t n;
+		*right = *left;
+		right->items = ui_part(f->menu.items, '|', split, &n);
+		right->x = DANA_DETAIL_X + 8;
+		right->w = DANA_DETAIL_W - 16;
+		right->count -= split;
+		right->sel = f->menu.sel < split ? 0xff : (uint8_t)(f->menu.sel - split);
+		left->count = split;
+		if (left->sel >= split) left->sel = 0xff;
+	}
+	return split;
+}
+
+static void SEC_DANA dana_course_detail(const Front *f, Surface *s)
+{
+	uint8_t preview = f->screen == SCR_COURSES ? line_course(f, f->menu.sel) : 0xff;
+	uint8_t pick = preview == 0xff ? f->course : preview;
+	char line[20];
+	int16_t n;
+
+	if (pick >= f->courses) {
+		dana_well(s, DANA_DETAIL_X + 12, 42, DANA_DETAIL_W - 24, "No courses installed", 0);
+		return;
+	}
+	dana_well(s, DANA_DETAIL_X + 8, 28, DANA_DETAIL_W - 16, f->course_names[pick], 1);
+	if (preview != 0xff) {
+		ui_fill(s, DANA_PREVIEW_X, DANA_PREVIEW_Y, PREVIEW_W * 2, PREVIEW_H * 2, UIC_BLACK);
+		ui_bevel(s, DANA_PREVIEW_X - 1, DANA_PREVIEW_Y - 1, PREVIEW_W * 2 + 2, PREVIEW_H * 2 + 2, UIC_INK, UIC_WHITE);
+		if (f->scenery[pick] == SCENERY_UNKNOWN)
+			ui_ctext(s, DANA_PREVIEW_X + PREVIEW_W, DANA_PREVIEW_Y + PREVIEW_H - 4, "ON CARD", 7, UIC_WHITE, -1);
+	} else {
+		if (f->hole_count[pick]) {
+			uint8_t i = 0;
+			put_num(line, &i, f->hole_count[pick]);
+			ui_text(s, DANA_DETAIL_X + 16, 54, "Holes", 5, UIC_INK, -1);
+			ui_text(s, DANA_DETAIL_X + 88, 54, line, i, UIC_INK, -1);
+		}
+		if (f->tee_count[pick]) {
+			const char *tee = front_tee_name(f, f->tee < f->tee_count[pick] ? f->tee : 0);
+			ui_part(tee, 0, 0, &n);
+			ui_text(s, DANA_DETAIL_X + 16, 72, "Tees", 4, UIC_INK, -1);
+			ui_text(s, DANA_DETAIL_X + 88, 72, tee, n, UIC_INK, -1);
+		}
+		ui_text(s, DANA_DETAIL_X + 16, 90, "Player", 6, UIC_INK, -1);
+		ui_text(s, DANA_DETAIL_X + 88, 90, f->player.name, name_len(f->player.name), UIC_INK, -1);
+	}
+	front_record_line(f, pick, line);
+	dana_well(s, DANA_DETAIL_X + 12, 120, DANA_DETAIL_W - 24, line[0] ? line : "No record yet", 0);
+}
+
+static void SEC_DANA dana_event(const Front *f, Surface *s)
+{
+	const char *name = rec_event_name(f->course < f->courses ? f->course_names[f->course] : "");
+	uint8_t finish = f->course < f->courses ? f->event_best[f->course] : 0;
+	char best[16] = "Best: ";
+	uint8_t n = 6;
+
+	dana_well(s, DANA_DETAIL_X + 8, 106, DANA_DETAIL_W - 16, name, 1);
+	if (finish) {
+		if (finish & EVENT_TIED) best[n++] = 'T';
+		put_num(best, &n, finish & EVENT_PLACE);
+		best[n] = 0;
+		dana_well(s, DANA_DETAIL_X + 8, 124, DANA_DETAIL_W - 16, best, 0);
+	}
+}
+
+static void SEC_DANA dana_name_box(uint8_t key, URect *b)
+{
+	name_key_box(key, b);
+	b->x = DANA_CENTER_X + 18 + (int16_t)((b->x - 14) * 50 / 22);
+	b->w = (int16_t)((b->w + 1) * 50 / 22 - 2);
+}
+
+static void SEC_DANA dana_name(const Front *f, Surface *s)
+{
+	uint8_t key, len = name_len(f->player_name);
+
+	dana_box(s, DANA_CENTER_X, DANA_CENTER_W, "NAME");
+	ui_fill(s, DANA_CENTER_X + 18, 27, 298, 15, UIC_TITLE);
+	ui_bevel(s, DANA_CENTER_X + 18, 27, 298, 15, UIC_INK, UIC_WHITE);
+	ui_text(s, DANA_CENTER_X + 24, 31, f->player_name, len, UIC_PAPER, -1);
+	if (len < PLAYER_NAME_MAX) ui_fill(s, DANA_CENTER_X + 24 + len * UI_CHAR, 39, 6, 1, UIC_PAPER);
+	for (key = 0; key < NAME_KEYS; key++) {
+		URect b;
+		int16_t n;
+		uint8_t selected = key == f->name_key;
+		const char *t = key < NAME_SPACE ? name_letter(key) : name_actions[key - NAME_SPACE];
+		dana_name_box(key, &b);
+		if (key < NAME_SPACE) n = 1;
+		else ui_part(t, 0, 0, &n);
+		ui_fill(s, b.x, b.y, b.w, b.h, selected ? UIC_TITLE : UIC_BRASS);
+		ui_bevel(s, b.x, b.y, b.w, b.h, selected ? UIC_BAR_LT : UIC_BRASS_LT, UIC_BRASS_DK);
+		ui_ctext(s, b.x + b.w / 2, b.y + 2, t, n, selected ? UIC_TEXT_HI : UIC_INK, -1);
+	}
+}
+
+static void dana_front_draw(const Front *f, Surface *s, const char *plate)
+{
+	int16_t ox = s->ox, oy = s->oy;
+	UiMenu left, right;
+	uint8_t split;
+
+	s->ox = s->oy = 0;
+	if (f->screen == SCR_TITLE) {
+		dana_well(s, 208, 141, 144, "PRESS ANY BUTTON", 1);
+	} else if (f->screen == SCR_PLAYER_NAME) {
+		dana_name(f, s);
+	} else {
+		split = dana_menus(f, &left, &right);
+		dana_box(s, left.x - 8, left.w + 16, plate);
+		ui_menu_draw(s, &left);
+		if (split) {
+			dana_box(s, DANA_DETAIL_X, DANA_DETAIL_W, "ROUND");
+			ui_menu_draw(s, &right);
+			if (f->mode == MODE_TOURN) dana_event(f, s);
+		} else if (f->screen == SCR_MENU || f->screen == SCR_COURSES) {
+			dana_box(s, DANA_DETAIL_X, DANA_DETAIL_W, "COURSE");
+			dana_course_detail(f, s);
+		}
+		if (f->dialog) {
+			s->ox = (DANA_SCREEN_W - 160) / 2;
+			ui_dialog_draw(s, &f->dlg);
+		}
+	}
+	s->ox = ox;
+	s->oy = oy;
+}
+
+int front_dana_tap(Front *f, int16_t x, int16_t y)
+{
+	UiMenu left, right;
+	uint8_t split;
+	int i;
+
+	if (f->screen == SCR_TITLE || f->dialog) return front_tap(f, x - (DANA_SCREEN_W - 160) / 2, y);
+	if (f->screen == SCR_PLAYER_NAME) {
+		uint8_t key;
+		for (key = 0; key < NAME_KEYS; key++) {
+			URect b;
+			dana_name_box(key, &b);
+			if (x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h) {
+				name_key_box(key, &b);
+				return front_tap(f, b.x, b.y);
+			}
+		}
+		return 0;
+	}
+	split = dana_menus(f, &left, &right);
+	i = ui_menu_hit(&left, x, y);
+	if (i < 0 && split) {
+		i = ui_menu_hit(&right, x, y);
+		if (i >= 0) i += split;
+	}
+	return i < 0 ? 0 : front_tap(f, f->menu.x, f->menu.y + i * f->menu.lineH);
 }

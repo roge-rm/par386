@@ -4,7 +4,7 @@
 Draws both screens with the mockup scripts (tools/mockup/mock1b2.py) over the
 rendered course scene (tools/mockup/r/scene_bg_960.png, from render.py) and
 the address frame of the golfer, then writes:
-  OUT/Pic2-ID.bin   160x160, 4 greys: flat greys by region, ordered dither between
+  OUT/Pic2-ID.bin   4 greys: flat greys by region, ordered dither between
   OUT/Pic8-ID.bin   8 bits on the master palette
   OUT/Pal8-1000.bin the master palette (tools/mkpal.py), RGB
   OUT/art.rcp       PilRC DATA lines for all of them
@@ -35,6 +35,7 @@ SCENE = MOCK / 'r/scene_bg_960.png'
 # the finish of the swing, from tools/golfer/: 40 px for 160 screens, 80 for 320
 GOLFER = {1: ROOT / 'art/golfer/f13-40.png', 2: ROOT / 'art/golfer/f13-80.png'}
 PIC_TITLE, PIC_MENU, PIC_PREVIEW = 1000, 1100, 1200
+DANA_TITLE, DANA_MENU = 4100, 4110
 FULL_SCREENS = ((320, 480, 4000, 4010), (480, 320, 4020, 4030))
 BAND_ROWS = {2: 160, 8: 64}
 
@@ -147,28 +148,24 @@ def layer(m, draw):
     return c.img
 
 
-def title_grey(m):
-    """The 160x160 title for 4 greys, as rows of 2-bit values. The scene is
-    cut by region: sky, hills and water run from black dither at the top to white
-    at the horizon; greens are stretched so the rough is dark grey, shadows dither to black and the
-    fairway light. The logo, ribbon and golfer go on flat, with no dither."""
-    scene = Image.open(SCENE).convert('RGB').resize((160, 160), Image.LANCZOS)
-    g = Image.open(GOLFER[1]).convert('RGBA')
-    feet_x, feet_y = 50, 141
-    p = scene.load()
+def lum(c):
+    return (c[0] * 30 + c[1] * 59 + c[2] * 11) / 25500
 
-    def lum(c):
-        return (c[0] * 30 + c[1] * 59 + c[2] * 11) / 25500
-    blue = [[p[x, y][2] >= p[x, y][1] for x in range(160)] for y in range(160)]
+
+def scenery_grey(scene):
+    """Map sky and turf separately so both use the four greys."""
+    w, h = scene.size
+    p = scene.load()
+    blue = [[p[x, y][2] >= p[x, y][1] for x in range(w)] for y in range(h)]
     def span(vals):
         vals = sorted(vals)
         return vals[len(vals) // 50], vals[-len(vals) // 50 - 1]
-    blo, bhi = span([lum(p[x, y]) for y in range(160) for x in range(160) if blue[y][x]])
-    glo, ghi = span([lum(p[x, y]) for y in range(160) for x in range(160) if not blue[y][x]])
+    blo, bhi = span([lum(p[x, y]) for y in range(h) for x in range(w) if blue[y][x]])
+    glo, ghi = span([lum(p[x, y]) for y in range(h) for x in range(w) if not blue[y][x]])
     rows = []
-    for y in range(160):
+    for y in range(h):
         row = []
-        for x in range(160):
+        for x in range(w):
             L = lum(p[x, y])
             if blue[y][x]:
                 v = 0.0 + 1.05 * (L - blo) / (bhi - blo)
@@ -176,7 +173,13 @@ def title_grey(m):
                 v = 0.38 + 0.7 * (L - glo) / (ghi - glo)
             row.append(dither(v, x, y))
         rows.append(row)
+    return rows
 
+
+def title_overlay(m, rows, ox):
+    """Draw the logo, ribbon and golfer in flat greys."""
+    g = Image.open(GOLFER[1]).convert('RGBA')
+    feet_x, feet_y = ox + 50, 141
     yb = [0]
     def logo(c):
         yb[0] = m['logo'](c, y=4, size=28)
@@ -186,10 +189,10 @@ def title_grey(m):
         for x in range(160):
             c = rb[x, y]
             if c != MAGENTA:
-                rows[y][x] = WHITE if lum(c) > 0.6 else BLACK
+                rows[y][ox + x] = WHITE if lum(c) > 0.6 else BLACK
             c = lg[x, y]
             if c != MAGENTA:
-                rows[y][x] = BLACK if c == (70, 30, 6) else DARK if c == (10, 10, 30) else WHITE
+                rows[y][ox + x] = BLACK if c == (70, 30, 6) else DARK if c == (10, 10, 30) else WHITE
     # Golfer: a black figure with the cap, glove and shoes light.
     gp = g.load()
     for j in range(g.height):
@@ -199,10 +202,26 @@ def title_grey(m):
                 continue
             L = (r * 50 + gg * 40 + b * 10) / 25500
             rows[feet_y - g.height + j][feet_x + i] = LIGHT if L > 0.7 else BLACK
+
+
+def title_grey(m):
+    scene = Image.open(SCENE).convert('RGB').resize((160, 160), Image.LANCZOS)
+    rows = scenery_grey(scene)
+    title_overlay(m, rows, 0)
     # A black strip for PRESS ANY BUTTON.
     for y in range(144, 157):
         rows[y] = [BLACK] * 160
     return rows
+
+
+def dana_grey(m):
+    source = Image.open(SCENE).convert('RGB')
+    w, h = source.size
+    scene = source.crop((0, 9 * h // 32, w, 17 * h // 24)).resize((560, 160), Image.LANCZOS)
+    rows = scenery_grey(scene)
+    backdrop = [[min(BLACK, v + ((x + y) & 1)) for x, v in enumerate(row)] for y, row in enumerate(rows)]
+    title_overlay(m, rows, 200)
+    return rows, backdrop
 
 
 def menu_grey(title):
@@ -379,6 +398,12 @@ def main():
             total += write_bands(out, rcp, pid, 8, rows8(q))
             if prev:
                 q.convert('RGB').save(prev / f'art-{pid}-{w}x{h}.png')
+    for pid, g in zip((DANA_TITLE, DANA_MENU), dana_grey(m)):
+        total += write_bands(out, rcp, pid, 2, pack_rows(g, 2))
+        if prev:
+            gi = Image.new('L', (560, 160))
+            gi.putdata([(3 - v) * 85 for row in g for v in row])
+            gi.save(prev / f'art-{pid}-560x160-grey.png')
     # course select previews, by scenery number (tools/mkpreview.py)
     import mkpreview
     for sc, (img, lab) in mkpreview.make().items():

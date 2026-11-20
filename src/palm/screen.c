@@ -13,6 +13,7 @@
 #define ALLOW_ACCESS_TO_INTERNALS_OF_WINDOWS
 #include <PalmOS.h>
 #include "screen.h"
+#include "dana.h"
 #include "sonyhr.h"
 #include "silk.h"
 #include "arm.h"
@@ -21,6 +22,9 @@
 #define kSonyCreator 'SoNy'
 
 Surface gS;
+static Surface gLCD;            /* the whole Dana screen while gS holds the course */
+static UInt8 *gDanaDisplay;
+static Int16 gDanaOrigin;
 
 static WinHandle gOff;          /* copied to the display */
 static WinHandle gBg;           /* the kept copy, when it's a window */
@@ -170,6 +174,9 @@ static void Free(void)
 	ScreenSpareDrop();
 	/* nothing draws until Make works again */
 	gS.bits = NULL;
+	gLCD.bits = NULL;
+	gDanaDisplay = NULL;
+	gDanaOrigin = 0;
 	gS.w = gS.h = gS.lw = gS.lh = 0;
 	gS.rowBytes = 0;
 }
@@ -188,12 +195,17 @@ static void Extent(Coord *ew, Coord *eh)
 	}
 }
 
-static void Size(Int16 *w, Int16 *h)
+static void SEC_DANA Size(Int16 *w, Int16 *h)
 {
 	Coord ew = 160, eh = 160;
 	Int16 sc = gS.scale;
 
 	if (gRom35 && (!gSony || gSilk) && !gSmall) Extent(&ew, &eh);
+	if (sc == 1 && ew == DANA_SCREEN_W && eh == 160) {
+		*w = ew;
+		*h = eh;
+		return;
+	}
 	if (ew > 240) ew = 240;
 	if (eh > 240) eh = 240;
 	if (ew < 160) ew = 160;
@@ -259,6 +271,20 @@ static Err Make(void)
 	gS.depth = g16 ? 8 : gDepth;
 	if (!gS.bits) return 2;
 	gfx_init(&gS);
+	if (w == DANA_SCREEN_W && gS.scale == 1 && !g16) {
+		WinHandle display = WinGetDisplayWindow();
+		BitmapType *bm = WinGetBitmap(display);
+		RectangleType bounds;
+		Coord dw, dh;
+		UInt16 drb;
+		WinGetBounds(display, &bounds);
+		gDanaOrigin = bounds.topLeft.x;
+		if (bm) {
+			BmpGetDimensions(bm, &dw, &dh, &drb);
+			if (dw == w && dh == h && drb == rb && BmpGetBitDepth(bm) == gS.depth)
+				gDanaDisplay = BmpGetBits(bm);
+		}
+	}
 	/* 68k devices (before OS 5) draw the views at 160 and double them at 320 */
 	gS.half = gS.scale == 2 && !gOS5;
 	return errNone;
@@ -494,6 +520,7 @@ static Int16 Remake(void)
 Int16 ScreenResize(void)
 {
 	Int16 w, h, res;
+	Boolean playing = gLCD.bits != NULL;
 	RectangleType r;
 	FormType *frm = FrmGetActiveForm();
 
@@ -507,12 +534,60 @@ Int16 ScreenResize(void)
 	}
 	gSmall = false;
 	Size(&w, &h);
-	if (gS.bits && w == gS.w && h == gS.h) return SCREEN_SAME;
+	if (gS.bits && w == (playing ? gLCD.w : gS.w) && h == gS.h) return SCREEN_SAME;
 	/* depth changes made here notify too */
 	gResizing = true;
 	res = Remake();
 	gResizing = false;
+	if (playing && res == SCREEN_NEW) ScreenGame(true);
 	return res;
+}
+
+void ScreenGame(Boolean playing)
+{
+	if (!playing && gLCD.bits) {
+		ScreenDropKept();
+		gS = gLCD;
+		gLCD.bits = NULL;
+	} else if (playing && gS.w == DANA_SCREEN_W && gS.h == 160 && !g16) {
+		ScreenDropKept();
+		gLCD = gS;
+		gS.bits += (DANA_RAIL_W << gS.lg) >> 3;
+		gS.w = gS.lw = DANA_SCENE_W;
+		gS.fullview = 1;
+	}
+}
+
+Boolean ScreenDanaPane(Boolean right, Surface *s)
+{
+	if (!gLCD.bits) return false;
+	*s = gLCD;
+	if (right) s->bits += ((DANA_SCREEN_W - DANA_RAIL_W) << s->lg) >> 3;
+	s->w = s->lw = DANA_RAIL_W;
+	return true;
+}
+
+/* The Dana keeps a 160-wide coordinate origin in some drawing calls. */
+static void SEC_DANA DanaBlit(Int16 x, Int16 y, Int16 w, Int16 h)
+{
+	RectangleType r;
+	const Surface *lcd = gLCD.bits ? &gLCD : &gS;
+
+	if (gDanaDisplay) {
+		Int16 first = (x << lcd->lg) >> 3;
+		Int16 n = (((x + w) << lcd->lg) + 7) / 8 - first;
+		UInt32 at = (UInt32)y * lcd->rowBytes + first;
+		for (; h > 0; h--, at += lcd->rowBytes)
+			MemMove(gDanaDisplay + at, lcd->bits + at, n);
+	} else {
+		RctSetRectangle(&r, x, y, w, h);
+		WinCopyRectangle(gOff, WinGetDisplayWindow(), &r, x - gDanaOrigin, y, winPaint);
+	}
+}
+
+void ScreenDanaShow(Boolean right, Int16 y, Int16 h)
+{
+	if (gLCD.bits) DanaBlit(right ? DANA_SCREEN_W - DANA_RAIL_W : 0, y, DANA_RAIL_W, h);
 }
 
 #ifdef DEBUG
@@ -544,6 +619,14 @@ static void Blit(const URect *d)
 	RectangleType r;
 
 	if (!gOff || !gS.bits || !Clip(d, &x0, &y0, &x1, &y1)) return;
+	if (gLCD.bits) {
+		x0 += DANA_RAIL_W;
+		x1 += DANA_RAIL_W;
+	}
+	if (gLCD.bits || gS.w == DANA_SCREEN_W) {
+		DanaBlit(x0, y0, x1 - x0, y1 - y0);
+		return;
+	}
 	if (gSony) {
 		RctSetRectangle(&r, x0, y0, x1 - x0, y1 - y0);
 		HRWinCopyRectangle(gSonyRef, gOff, WinGetDisplayWindow(), &r, x0, y0, winPaint);
@@ -565,6 +648,11 @@ void ScreenShow(const URect *d)
 void ScreenShowAll(void)
 {
 	URect u;
+
+	if (gLCD.bits) {
+		ScreenDanaShow(false, 0, gLCD.h);
+		ScreenDanaShow(true, 0, gLCD.h);
+	}
 	u.x = u.y = 0;
 	u.w = gS.w;
 	u.h = gS.h;
@@ -586,7 +674,7 @@ Boolean ScreenKeep(void)
 				gBgS.bits = BmpGetBits(gBg8);
 			}
 		} else {
-			gBg = NewWin(gS.w, gS.h);
+			gBg = NewWin(gLCD.bits ? gLCD.w : gS.w, gS.h);
 			if (gBg) gBgS.bits = WinBits(gBg, &rb);
 		}
 		if ((!gBg && !gBg8) || !gBgS.bits || rb != gS.rowBytes) {
@@ -634,7 +722,7 @@ Boolean ScreenFadeFrom(const Surface *src, Int16 y1)
 	UInt32 n;
 
 	ScreenFadeDrop();
-	if (!gS.bits || !gOff || !src || !src->bits) return false;
+	if (!gS.bits || !gOff || !src || !src->bits || gLCD.bits) return false;
 	if (g16) {
 		/* gOff holds what the display shows */
 		gFromOk = true;
@@ -720,7 +808,7 @@ Surface *ScreenSpare(void)
 			gSpS.bits = BmpGetBits(gSp8);
 		}
 	} else {
-		gSp = NewWin(gS.w, gS.h);
+		gSp = NewWin(gLCD.bits ? gLCD.w : gS.w, gS.h);
 		if (gSp) gSpS.bits = WinBits(gSp, &rb);
 	}
 	if (!gSpS.bits || rb != gS.rowBytes) {

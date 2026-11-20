@@ -196,7 +196,7 @@ int SEC_UI play_map_prep(Surface *m, Play *p, int16_t rows);
  * practice, or with no shot flying or showing. The platform can draw it ahead
  * (render_scene_begin, render_green_begin) and use it if rv matches it
  * once PL_RENDER comes. */
-int SEC_CORE play_next_view(const Play *p, RenderView *v);
+int SEC_MENU play_next_view(const Play *p, RenderView *v);
 /* One press of a select key counts once. Some devices send two codes
  * for one press (the TX centre sends vchrTxCenter and vchrRockerCenter),
  * repeat a held key, or a worn switch bounces. A select press counts
@@ -227,5 +227,9 @@ void SEC_CORE gate_release(KeyGate *g, uint16_t code, uint16_t key);
 void SEC_CORE gate_flush(KeyGate *g);
 /* Writes v in decimal at t, returns the length. */
 int16_t SEC_UI play_num(char *t, uint32_t v);
+int SEC_MENU play_dana_clubs(Play *p);
+int SEC_MENU play_dana_aim(Play *p, vec2 point);
+const char *SEC_MENU play_dana_action(const Play *p);
+uint16_t SEC_MENU play_dana_distance(const Play *p);
 
 #endif
