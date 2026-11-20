@@ -47,6 +47,13 @@ static void SEC_CORE tput(uint8_t lg, const uint8_t *pat2, const uint8_t *grey, 
 #define DIV(a, b) ((a) / (b))
 #endif
 
+/* Inlined on the 68k, where gcc 2.95 won't by itself; the ARM build stays as it is. */
+#ifdef __m68k__
+#define INL68 __inline__
+#else
+#define INL68
+#endif
+
 #define PUT(t, p, x, y, c) tput((t)->lg, (t)->pat2, (t)->grey, (t)->bayer, p, x, y, c)
 
 /* a * q / 16384 for a 2.14 q, as fix_mulq14. */
@@ -63,7 +70,7 @@ static fixed SEC_CORE mulq(fixed a, int16_t q)
 }
 
 /* Camera height minus a height, both 8.8 byte steps, as 1/64 steps clamped to 16 bits. */
-static int16_t SEC_CORE dz6(int32_t camb, int32_t hb)
+static INL68 int16_t SEC_CORE dz6(int32_t camb, int32_t hb)
 {
 	int32_t d = (camb - hb) >> 2;
 	if (d > 32767) d = 32767;
@@ -226,6 +233,10 @@ static void SEC_CORE far_span(TerraRow *t, int16_t xx, int16_t y, int16_t ye, ui
 	c = (hb > ((tb * 7 + 3) & 15)) ? (uint8_t)(PAL_HAZE + l) : (uint8_t)(base + l); \
 } while (0)
 
+/* Surfaces with their own light in terra_row, a bit each; the rest (rough
+ * and the like, the most common) take one test. */
+#define SURF_OWN ((1 << SURF_FAIRWAY) | (1 << SURF_GREEN) | (1 << SURF_TEE) | (1 << SURF_BUNKER) | (1 << SURF_WATER))
+
 void terra_row(TerraRow *t)
 {
 	const uint8_t *bayer = t->bayer, *cells = t->cells;
@@ -262,8 +273,8 @@ void terra_row(TerraRow *t)
 				fixed sx = px, sy = py;
 				int16_t cx, cy;
 				if (ns < 8) {
-					sx += (fixed)noise[(x * 7 + step * 13) & 255] * 4096;
-					sy += (fixed)noise[(x * 11 + step * 5 + 101) & 255] * 4096;
+					sx += (fixed)noise[(uint8_t)(x * 7 + step * 13)] * 4096;
+					sy += (fixed)noise[(uint8_t)(x * 11 + step * 5 + 101)] * 4096;
 				}
 				cx = (int16_t)(sx >> (16 + SURF_CELL_SHIFT));
 				cy = (int16_t)(sy >> (16 + SURF_CELL_SHIFT));
@@ -274,11 +285,11 @@ void terra_row(TerraRow *t)
 					else if ((uint16_t)cx >= gw) cx = (int16_t)(gw - 1);
 					if (sy < 0) cy = 0;
 					else if ((uint16_t)cy >= gh) cy = (int16_t)(gh - 1);
-					c = cells[MULU16(cy, gs) + ((uint16_t)cx >> 1)];
+					c = cells[MULU16(cy, gs) + (((uint32_t)cx & 0xFFFF) >> 1)];
 					surf = (cx & 1) ? (c & 15) : (c >> 4);
 					if (surf != SURF_WATER) surf = SURF_OOB;
 				} else {
-					uint8_t c = cells[MULU16(cy, gs) + ((uint16_t)cx >> 1)];
+					uint8_t c = cells[MULU16(cy, gs) + (((uint32_t)cx & 0xFFFF) >> 1)];
 					surf = (cx & 1) ? (c & 15) : (c >> 4);
 					if (surf >= SURF_COUNT) surf = SURF_OOB;
 				}
@@ -304,7 +315,10 @@ void terra_row(TerraRow *t)
 				int16_t lv = la, yy;
 				uint8_t base = (uint8_t)(PAL_TERRAIN + surf * PAL_RAMP_N);
 
-				if (surf == SURF_FAIRWAY) {
+				if (!(SURF_OWN & (1 << surf))) {
+					if (prev == SURF_BUNKER) lv += 24;   /* the far lip faces the camera */
+					if (prev == SURF_WATER && t->wmin) wf |= WF_EDGE;    /* and the far bank of water */
+				} else if (surf == SURF_FAIRWAY) {
 					lv += ((py >> 19) & 1) ? stripe : -stripe;    /* 8 yard mowing bands */
 				} else if (surf == SURF_GREEN) {
 					lv += ((py >> 18) & 1) ? stripe : -stripe;    /* 4 yard bands */
@@ -321,9 +335,6 @@ void terra_row(TerraRow *t)
 						if (t->wmin) wf |= WF_EDGE;       /* far: a dark line along the near bank */
 						else lv = 0;                      /* near: the bank's shadow */
 					}
-				} else {
-					if (prev == SURF_BUNKER) lv += 24;   /* the far lip faces the camera */
-					if (prev == SURF_WATER && t->wmin) wf |= WF_EDGE;    /* and the far bank of water */
 				}
 				if (cw > 1) prevs[x + 1] = surf;
 
@@ -550,7 +561,7 @@ void terra_sky(TerraSky *ts)
 	uint8_t lg = ts->lg, dith = lg == 3;
 
 	for (y = ts->y0; y < ts->y1; y++) {
-		const uint8_t *row = 0, *tb = ts->bayer + ((y & 3) << 2);
+		const uint8_t *row = 0;
 		uint8_t *p = ts->bits + MULU16(y, ts->rb);
 		int16_t sv = y < yh ? (int16_t)DIV((int32_t)y * (16 * (PAL_SKY_N - 1)), (int32_t)yh) : 16 * (PAL_SKY_N - 1);
 		int16_t sx = off;
@@ -589,6 +600,7 @@ void terra_sky(TerraSky *ts)
 			continue;
 		}
 		for (x = 0; x < w; x++) {
+			const uint8_t *tb = ts->bayer + ((y & 3) << 2);
 			uint8_t c = 0;
 			if (y < ybuf[x]) {
 				if (row) c = row[sx];
