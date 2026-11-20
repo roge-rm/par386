@@ -10,7 +10,7 @@
 #include "rules.h"
 
 /* What the first button does: back to play, on to the next hole, or the round's done. */
-enum { CARD_VIEW, CARD_HOLE, CARD_FINAL };
+enum { CARD_VIEW, CARD_HOLE, CARD_FINAL, CARD_CLUB };
 
 #define CARD_ROW 9    /* logical units per line */
 

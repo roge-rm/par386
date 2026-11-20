@@ -23,11 +23,6 @@ static const Skill skills[4] = {
  * flat fairway, about the same for every club). */
 static const uint8_t carry_at[9] = { 9, 22, 40, 64, 92, 128, 169, 212, 255 };
 
-/* G over the green's rolling slow-down: a putt rolls this many yards
- * further for every yard it climbs, and drifts this many yards per yard
- * of putt for a slope of 1 across it. */
-#define SLOPE_K 11
-
 static uint32_t SEC_CORE next(uint32_t *s)
 {
 	*s = *s * 1664525UL + 1013904223UL;
@@ -88,13 +83,18 @@ static void SEC_CORE putt(const CpuView *v, const Skill *k, uint32_t *rs, CpuSho
 	dz = hole_height(v->hole, v->pin.x, v->pin.y) - hole_height(v->hole, v->ball.x, v->ball.y);
 	m = vec2_make(v->ball.x + (d.x >> 1), v->ball.y + (d.y >> 1));
 	side = (hole_height(v->hole, m.x + off.x, m.y + off.y) - hole_height(v->hole, m.x - off.x, m.y - off.y)) >> 1;
+	/* Steep add-on terrain reaches the pace and break limits before these bounds. */
+	if (dz > 1024L * FIX_ONE) dz = 1024L * FIX_ONE;
+	if (dz < -1024L * FIX_ONE) dz = -1024L * FIX_ONE;
+	if (side > FIX_ONE / 4) side = FIX_ONE / 4;
+	if (side < -FIX_ONE / 4) side = -FIX_ONE / 4;
 	/* a foot past the cup on a green of the course's speed, plus the climb */
 	want = len + FIX_ONE / 3;
 	want = hole_putt_len(v->hole, v->grid, v->ball, v->pin, want);
-	want += ((dz * SLOPE_K) >> 2) * k->read;
+	want += ((dz * BALL_PUTT_GRADE) >> 2) * k->read;
 	if (want < FIX_ONE / 2) want = FIX_ONE / 2;
-	/* higher on the left breaks it right: aim left, 10430 angle units a radian */
-	side = ((((side * SLOPE_K) >> 6) * 10430L) >> 10) * k->read >> 2;
+	/* A midpoint slope is only a rough read of break over the whole putt. */
+	side = k->read ? (((side * BALL_PUTT_GRADE) >> 6) * 10430L) >> 11 : 0;
 	if (side > 1820) side = 1820;
 	if (side < -1820) side = -1820;
 	a = (angle)(a + (int16_t)side);

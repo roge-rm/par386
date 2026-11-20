@@ -35,6 +35,11 @@ static uint8_t SEC_MENU sums(const Round *r)
  * the next nine past that, then in a tournament the leaderboard. */
 static const char *SEC_MENU buttons(const Round *r, uint8_t mode, uint8_t page)
 {
+	if (mode == CARD_FINAL && r->tour_stage == TOUR_BREAK) {
+		if (r->holes <= 9) return "Round 2";
+		if (r->holes > 18) return "Round 2|Next 9";
+		return page ? "Round 2|Front 9" : "Round 2|Back 9";
+	}
 	if (r->mode == MODE_TOURN && mode == CARD_VIEW) {
 		if (r->holes <= 9) return "OK|Board";
 		if (r->holes > 18) return "OK|Next 9|Board";
@@ -125,6 +130,8 @@ static const char *SEC_MENU card_title(const Round *r, uint8_t mode)
 			return title;
 		}
 	}
+	if (r->tour_stage == TOUR_FIRST || r->tour_stage == TOUR_BREAK) return "Round 1 card";
+	if (r->tour_stage == TOUR_SECOND) return "Round 2 card";
 	return mode == CARD_FINAL ? "Final card" : "Scorecard";
 }
 
@@ -296,8 +303,11 @@ void board_layout(UiDialog *d, const Round *r, uint8_t mode, uint8_t lines)
 	title[0] = 0;
 	if (r->over) {
 		add(title, &n, "Final leaders");
+	} else if (r->tour_stage == TOUR_BREAK) {
+		add(title, &n, "Round 1 leaders");
 	} else {
-		add(title, &n, "Leaders");
+		add(title, &n, r->tour_stage == TOUR_FIRST ? "Round 1" :
+		              r->tour_stage == TOUR_SECOND ? "Round 2" : "Leaders");
 		if (done) {
 			add(title, &n, " after ");
 			addn(title, &n, done);
@@ -305,7 +315,8 @@ void board_layout(UiDialog *d, const Round *r, uint8_t mode, uint8_t lines)
 	}
 	d->title = title;
 	d->text = "";
-	d->buttons = mode == CARD_FINAL ? "Done|Card" : mode == CARD_HOLE ? "Next hole|Card" : "OK|Card";
+	d->buttons = mode == CARD_FINAL ? (r->tour_stage == TOUR_BREAK ? "Round 2|Card" : "Done|Card") :
+		mode == CARD_HOLE ? "Next hole|Card" : "OK|Card";
 	d->count = ui_parts(d->buttons, '|');
 	d->sel = 0;
 	for (i = 0; i < d->count; i++) {
@@ -363,7 +374,6 @@ void board_draw(Surface *s, const Round *r, uint8_t mode, uint8_t sel)
 int board_hit(const Round *r, uint8_t mode, int16_t x, int16_t y)
 {
 	UiDialog d;
-	BoardLine b[RULES_PLAYERS + RULES_FIELD];
-	board_layout(&d, r, mode, rules_board(r, b));
+	board_layout(&d, r, mode, (uint8_t)(r->players + RULES_FIELD));
 	return ui_dialog_hit(&d, x, y);
 }

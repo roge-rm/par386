@@ -22,7 +22,7 @@ static int fails, checks;
 #define TOYD(v) ((v) / 65536.0)
 
 /* The stored checksum over the run of shots in checksum_run. */
-#define CHECKSUM 0x9577d95bUL
+#define CHECKSUM 0xdf6148f0UL
 
 /* Carry ranges in yards, longest first, rising down the bag with no overlaps. */
 static const int range_lo[CLUB_COUNT - 1] = { 230, 212, 198, 186, 176, 166, 155, 144, 132, 120, 108, 95, 80, 60 };
@@ -988,7 +988,7 @@ static void meter_tests(const Hole *h, const SurfaceGrid *g)
 	CHECK(play_frame(&p, &s, &bg, t + 2000) & PL_RENDER);
 	CHECK(play_key(&p, KEY_OTHER, t + 2100) == PL_MAP);
 	play_map(&s, &p);
-	CHECK(play_tap(&p, 10, 10, t + 2200) == PL_SCENE);
+	CHECK(play_tap(&p, 80, 154, t + 2200) == PL_SCENE);
 	CHECK(play_frame(&p, &s, &bg, t + 2300) & PL_DIRTY);
 	free(s.bits);
 	free(bg.bits);
@@ -1019,8 +1019,7 @@ static void green_view(Play *p, Surface *s, Surface *bg)
 /* A putt through play.c: the power click when the marker reaches the cup's tick, plus late ms. */
 static void putt_play(Play *p, Surface *s, Surface *bg, uint32_t t, int32_t late, const char *name)
 {
-	fixed d = vec2_len(vec2_sub(p->rv.hole->pins[p->rv.pin & 3], p->rv.ball));
-	uint32_t ms = (uint32_t)((double)d / p->range * MTR_UP_MS) + late;
+	uint32_t ms = (uint32_t)(((int32_t)p->putt_tick * MTR_UP_MS + (MTR_W - MTR_SNAP) / 2) / (MTR_W - MTR_SNAP) + late);
 	int f, k = 0;
 	CHECK(play_key(p, KEY_SELECT, t) & PL_ANIM);
 	CHECK(p->state == PS_UP);
@@ -1279,6 +1278,7 @@ static void green_tests(const Hole *h, const SurfaceGrid *g)
 		for (late = 0; late < 400; late += 20) {
 			play_init(&p, h, g, 7);
 			place(&p, &s, &bg, at, LIE_GREEN, 1000);
+			CHECK(p.putt_tick > (MTR_W - MTR_SNAP) * 3.0 / TOYD(p.range));
 			green_view(&p, &s, &bg);
 			play_frame(&p, &s, &bg, 3000);
 			putt_play(&p, &s, &bg, 5000, late, NULL);
@@ -1289,6 +1289,24 @@ static void green_tests(const Hole *h, const SurfaceGrid *g)
 	CHECK(p.state == PS_DONE && p.shot.result == SHOT_HOLED);
 	CHECK(strcmp(p.msg1, "In the cup, 2 shots") == 0 && strcmp(p.msg2, "Eagle") == 0 && p.score == 2);
 	save(&s, "putt-holed");
+
+	/* Even the largest grades a course can encode keep the mark on the meter. */
+	{
+		static const uint8_t heights[] = { 0, 255, 0, 255 };
+		Hole steep = *h;
+		steep.heights = heights;
+		steep.hm_w = steep.hm_h = 2;
+		steep.hm_shift = 0;
+		steep.step = YD(15);
+		steep.pins[0] = vec2_make(YD(1), YD(1));
+		play_init(&p, &steep, g, 7);
+		place(&p, &s, &bg, vec2_make(0, YD(1)), LIE_GREEN, 1000);
+		CHECK(p.putt_tick == MTR_W - MTR_SNAP - 1);
+		steep.pins[0].x = 0;
+		play_init(&p, &steep, g, 7);
+		place(&p, &s, &bg, vec2_make(YD(1), YD(1)), LIE_GREEN, 1000);
+		CHECK(p.putt_tick == 0);
+	}
 
 	/* left 1.5 ft away: given, one stroke more */
 	play_init(&p, h, g, 7);

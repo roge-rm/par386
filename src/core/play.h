@@ -29,7 +29,7 @@ enum { PS_AIM, PS_UP, PS_DOWN, PS_FLY, PS_RESULT, PS_DONE };
 #define PL_BACK   8     /* back to the clubhouse */
 #define PL_DIRTY  16    /* copy the dirty rectangle, and gdirty if it isn't empty, to the screen */
 #define PL_ANIM   32    /* call play_frame again soon */
-#define PL_CARD   64    /* put back the kept scene and draw the scorecard over it (play_card) */
+#define PL_CARD   64    /* put back the kept scene and draw the card or club picker */
 #define PL_NEXT   128   /* load the round's hole and play_start it */
 #define PL_TURN   256   /* another player's turn: show play_turn while the scene draws */
 #define PL_PANEL  512   /* draw the map's panel again (play_status) and show it */
@@ -88,12 +88,14 @@ typedef struct {
 	uint8_t mfirst;             /* the meter's first two frames (the meter, then the golfer's backswing) still to show, for play_shown */
 	fixed power, snap;
 	fixed range;                /* putter: yards at full power on a flat green */
+	uint8_t putt_tick;          /* cup pace mark in logical units from the snap line */
 	uint8_t mishit;
 	uint8_t score;              /* strokes for the hole, once it's done */
 	/* the flight */
 	uint32_t tf;
 	int16_t shown;              /* path point drawn last, -1 for none */
 	uint8_t have_shot;
+	uint8_t result_pending;     /* the platform is preparing the next view */
 	char msg1[21], msg2[21];
 	/* the round, or 0 for a hole played alone */
 	Round *round;
@@ -102,6 +104,9 @@ typedef struct {
 	uint8_t card_from;          /* the view it was opened from, PLAY_SCENE or PLAY_MAP */
 	Shot shot;
 	Surface geo;                /* the surface's size and scale as last drawn, for taps */
+	vec2 target;                /* where the aiming map's marker sits on the hole */
+	fixed target_range;         /* distance to keep while turning the target with the keys */
+	uint8_t target_set;         /* the player picked this point on the map */
 	RenderGolfer *golf;         /* the golfer in the scene, set by the platform; 0 for none */
 	/* computer golfers */
 	uint8_t cpu;                /* the skill of the player whose shot it is, CPU_HUMAN for a person */
@@ -117,7 +122,7 @@ typedef struct {
 	int16_t mrow;
 	int16_t mdrawn;             /* the last path point of the trail drawn on the map */
 	uint16_t mlive;             /* the readout last put on the panel */
-	RenderMap mg;               /* where the map put things */
+	RenderMap mg;               /* where the current map put things */
 	URect under;                /* the pixels under the ball on the map, kept in ubits */
 	uint8_t ubits[PLAY_UNDER];
 } Play;
@@ -149,6 +154,9 @@ int SEC_UI play_tap(Play *p, int16_t x, int16_t y, uint32_t now);
  * there's none). The golfer's pose follows the swing in s and bg. Call
  * after PL_RENDER or PL_SCENE, and while PL_ANIM is set. */
 int SEC_UI play_frame(Play *p, Surface *s, Surface *bg, uint32_t now);
+/* While the result holds, show its next action once the draw ahead is
+ * ready or there's no draw ahead for this shot. */
+void SEC_UI play_result_pending(Play *p, uint8_t pending);
 /* Call after the frame play_frame drew is on the screen. The swing or
  * putting meter's first frame draws only the meter and the second the
  * golfer's backswing; once each shows, the meter's clock is set back so
@@ -156,18 +164,15 @@ int SEC_UI play_frame(Play *p, Surface *s, Surface *bg, uint32_t now);
  * long they took to show and never steps back. The grace for a late power
  * press runs from when the full marker shows. */
 void SEC_UI play_shown(Play *p, uint32_t now);
-/* The panel on the map: hole, par and yards, and below them info if it
- * isn't 0 (the hole's name if it is), with the Card button in a round; or
- * a computer golfer's shot; or for a shot on the map the club, the carry
- * or total so far and the wind, then the result. */
-void SEC_UI play_status(Surface *s, const Play *p, const char *info);
+/* The panel on the map: target and club carry while aiming, the computer
+ * golfer's shot, or the live carry and total on the flight map. */
+void SEC_MENU play_status(Surface *s, const Play *p, const char *info);
 /* The panel while the scene is drawn for a new turn or hole: the hole, and
  * who plays. */
-void SEC_UI play_turn(Surface *s, const Play *p);
-/* The scorecard or the tournament leaderboard, over whatever is on s,
- * with the panel showing the hole. */
-void SEC_UI play_card(Surface *s, const Play *p);
-/* The hole map with the yardage by the aim line and the last shot's path;
+void SEC_MENU play_turn(Surface *s, const Play *p);
+/* The scorecard, leaderboard or club picker, over whatever is on s. */
+void SEC_MENU play_card(Surface *s, Play *p);
+/* The hole map with the aim line, target and last shot's path;
  * or, for a shot on the map, the map framed on the shot with its trail so
  * far and the ball. */
 void SEC_UI play_map(Surface *s, Play *p);

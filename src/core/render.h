@@ -137,6 +137,8 @@ void SEC_RENDER render_terra_use(void (*fn)(uint8_t op, void *job));
  * ball and a line from the ball to the pin. Text is left to the caller.
  * Returns 0, or -1 if the surface isn't 160 or 320 wide. */
 int SEC_RENDER render_map(Surface *s, const RenderView *v, RenderMap *out);
+/* The whole hole, with the line drawn to the chosen target. */
+int SEC_RENDER render_target_map(Surface *s, const RenderView *v, RenderMap *out, const vec2 *target);
 /* A part of the hole for render_map_box, in yards. */
 typedef struct {
 	fixed x0, y0, x1, y1;

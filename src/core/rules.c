@@ -51,6 +51,7 @@ void rules_mode(Round *r, uint8_t mode, const uint8_t *cpu, uint8_t h)
 	uint8_t i, k;
 
 	r->mode = mode < MODE_COUNT ? mode : MODE_STROKE;
+	r->tour_stage = r->mode == MODE_TOURN ? TOUR_FIRST : TOUR_SINGLE;
 	for (i = 0; i < r->players; i++) {
 		r->pl[i].cpu = cpu && cpu[i] < CPU_LEVELS ? cpu[i] : CPU_HUMAN;
 		if (r->pl[i].cpu)
@@ -126,7 +127,10 @@ void rules_advance(Round *r)
 			r->order[j] = r->order[j - 1];
 		r->order[j] = v;
 	}
-	if (h + 1 >= r->holes) r->over = 1;
+	if (h + 1 >= r->holes) {
+		if (r->tour_stage == TOUR_FIRST) r->tour_stage = TOUR_BREAK;
+		else r->over = 1;
+	}
 	else r->hole = (uint8_t)(h + 1);
 	if (r->mode == MODE_MATCH || r->mode == MODE_BEST) {
 		/* the match is over once one side can't be caught */
@@ -222,16 +226,73 @@ static const char field_names[RULES_FIELD][9] = {
 	"MacLeod", "Tanaka", "Kruger", "O'Brien", "Murray", "Berg", "Okafor", "Ferreira"
 };
 
-uint8_t rules_field_score(const Round *r, uint8_t g, uint8_t h)
+void rules_tour_course(Round *r, const Course *c)
 {
-	uint8_t v = (uint8_t)(mix(r->seed * 69069UL + (uint32_t)g * 2654435761UL + (uint32_t)h * 40503UL + 1UL) >> 24), k, par;
+	uint8_t h;
+	int16_t greens = c->green ? (int16_t)(c->green - GREEN_USUAL) * 3 : 0;
 
-	if (h >= r->holes) return 0;
-	par = r->pars[h];
+	r->tour_wind = c->wind;
+	for (h = 0; h < r->holes; h++) {
+		int16_t usual = r->pars[h] <= 3 ? 160 : 250 + (r->pars[h] - 3) * 130;
+		int16_t d = (int16_t)(((int32_t)c->yards[h] - usual) / 5) + greens;
+		r->tour_difficulty[h] = (int8_t)(d < -24 ? -24 : d > 32 ? 32 : d);
+	}
+}
+
+void rules_tour_next(Round *r)
+{
+	uint8_t i, h;
+
+	if (r->tour_stage != TOUR_BREAK) return;
+	for (i = 0; i < r->players; i++) {
+		r->tour_first[i] = (uint16_t)rules_strokes(r, i, 0, r->holes);
+		for (h = 0; h < r->holes; h++) r->pl[i].score[h] = 0;
+		r->order[i] = i;
+	}
+	r->hole = 0;
+	r->tour_stage = TOUR_SECOND;
+	reset_hole(r);
+}
+
+uint32_t rules_round_seed(const Round *r)
+{
+	return r->tour_stage == TOUR_SECOND ? r->seed ^ 0x9e3779b9UL : r->seed;
+}
+
+int16_t rules_tour_to_par(const Round *r, uint8_t i)
+{
+	int16_t score = rules_to_par(r, i);
+	if (r->tour_stage == TOUR_SECOND)
+		score += (int16_t)r->tour_first[i] - rules_par(r, 0, r->holes);
+	return score;
+}
+
+static int16_t SEC_CORE field_pressure(const Round *r, uint8_t h, uint32_t seed)
+{
+	uint8_t mph;
+	angle dir;
+
+	if (r->tour_stage == TOUR_SINGLE) return 0;
+	ball_wind(seed, (uint8_t)(h + 1), r->tour_wind, &mph, &dir);
+	return (int16_t)(r->tour_difficulty[h] + 2 * ((int16_t)mph - 10));
+}
+
+static uint8_t SEC_CORE field_score(const Round *r, uint8_t g, uint8_t h, uint32_t seed, int16_t pressure)
+{
+	int16_t v = (int16_t)(mix(seed * 69069UL + (uint32_t)g * 2654435761UL + (uint32_t)h * 40503UL + 1UL) >> 24);
+	uint8_t k, par = r->pars[h];
+
+	v += pressure;
 	for (k = 0; k < 5 && v >= field_odds[(g >> 1) & 3][k]; k++) {}
 	/* no eagles on a par 3: a hole in one is too rare to give out */
 	if (k == 0 && par <= 3) k = 1;
 	return (uint8_t)(par + k - 2);
+}
+
+uint8_t rules_field_score(const Round *r, uint8_t g, uint8_t h)
+{
+	uint32_t seed = rules_round_seed(r);
+	return h < r->holes ? field_score(r, g, h, seed, field_pressure(r, h, seed)) : 0;
 }
 
 const char *rules_field_name(uint8_t g)
@@ -239,16 +300,33 @@ const char *rules_field_name(uint8_t g)
 	return field_names[g < RULES_FIELD ? g : 0];
 }
 
+static void SEC_CORE field_totals(const Round *r, int16_t *totals, uint8_t done, uint32_t seed)
+{
+	uint8_t h, g;
+
+	for (h = 0; h < done; h++) {
+		int16_t pressure = field_pressure(r, h, seed);
+		for (g = 0; g < RULES_FIELD; g++)
+			totals[g] += (int16_t)field_score(r, g, h, seed, pressure) - r->pars[h];
+	}
+}
+
 uint8_t rules_board(const Round *r, BoardLine *lines)
 {
-	uint8_t n = 0, i, j, h, done = rules_done(r);
+	uint8_t n = 0, i, j, done = rules_done(r);
+	int16_t field[RULES_FIELD] = {0};
+	int16_t par = rules_par(r, 0, done);
 
+	field_totals(r, field, done, rules_round_seed(r));
+	if (r->tour_stage == TOUR_SECOND) field_totals(r, field, r->holes, r->seed);
 	for (i = 0; i < r->players + RULES_FIELD; i++) {
 		BoardLine b;
-		b.to_par = 0;
 		b.who = i < r->players ? i : (uint8_t)(RULES_PLAYERS + i - r->players);
-		for (h = 0; h < done; h++)
-			b.to_par += (int16_t)(i < r->players ? r->pl[i].score[h] : rules_field_score(r, (uint8_t)(b.who - RULES_PLAYERS), h)) - r->pars[h];
+		if (i < r->players) {
+			b.to_par = rules_strokes(r, i, 0, done) - par;
+			if (r->tour_stage == TOUR_SECOND)
+				b.to_par += (int16_t)r->tour_first[i] - rules_par(r, 0, r->holes);
+		} else b.to_par = field[b.who - RULES_PLAYERS];
 		/* insertion: ties keep the order they came in, players first */
 		for (j = n; j > 0 && lines[j - 1].to_par > b.to_par; j--) lines[j] = lines[j - 1];
 		lines[j] = b;
@@ -263,7 +341,7 @@ uint8_t rules_board(const Round *r, BoardLine *lines)
 
 uint32_t rules_shot_seed(const Round *r, uint8_t i)
 {
-	return mix(r->seed * 1103515245UL + (uint32_t)r->hole * 2654435761UL + (uint32_t)i * 40503UL +
+	return mix(rules_round_seed(r) * 1103515245UL + (uint32_t)r->hole * 2654435761UL + (uint32_t)i * 40503UL +
 	           (uint32_t)r->pl[i < RULES_PLAYERS ? i : 0].taken * 97UL + (uint32_t)r->balls * 7919UL + 12345UL);
 }
 
@@ -366,26 +444,40 @@ uint16_t rules_pack(const Round *r, uint8_t *buf)
 		*b++ = p->cpu;
 		for (h = 0; h < r->holes; h++) *b++ = p->score[h];
 	}
+	*b++ = (uint8_t)(r->holeout | (r->repeat << 1));
+	if (r->mode == MODE_TOURN) {
+		*b++ = r->tour_stage;
+		*b++ = r->tour_wind;
+		for (h = 0; h < r->holes; h++) *b++ = (uint8_t)(r->tour_difficulty[h] + 24);
+		for (i = 0; i < r->players; i++) {
+			*b++ = (uint8_t)(r->tour_first[i] >> 8);
+			*b++ = (uint8_t)r->tour_first[i];
+		}
+	}
 	return (uint16_t)(b - buf);
 }
 
 int rules_unpack(Round *r, const uint8_t *buf, uint32_t len)
 {
 	const uint8_t *b = buf;
-	uint8_t i, h, seen = 0, players, holes, v2, v3;
+	uint8_t i, h, seen = 0, players, holes, v2, v3, v4;
 	uint8_t *z = (uint8_t *)r;
-	uint16_t k, ver;
+	uint16_t k, ver, size;
 
 	if (len < 2 + 32 + 4 + 9) return -1;
 	ver = (uint16_t)((uint16_t)b[0] << 8 | b[1]);
 	if (ver < 1 || ver > RULES_SAVE_VERSION) return -1;
-	/* version 1 has no mode, practice count or computer golfers, 2 no tee set */
 	v2 = ver >= 2;
 	v3 = ver >= 3;
+	v4 = ver >= 4;
 	players = b[2 + 32 + 4];
 	holes = b[2 + 32 + 4 + 1];
 	if (players < 1 || players > RULES_PLAYERS || holes < 1 || holes > COURSE_MAX_HOLES) return -1;
-	if (len != 2 + 32 + 4 + 9 + (uint32_t)holes + (v2 ? 3 : 0) + v3 + (uint32_t)players * (RULES_NAME_MAX + 1 + 11 + v2 + holes)) return -1;
+	size = (uint16_t)(2 + 32 + 4 + 9 + holes + (v2 ? 3 : 0) + v3 + v4 + players * (RULES_NAME_MAX + 1 + 11 + v2 + holes));
+	if (len < size) return -1;
+	if (ver >= 5 && b[2 + 32 + 4 + 9 + holes] == MODE_TOURN)
+		size = (uint16_t)(size + 2 + holes + 2 * players);
+	if (len != size) return -1;
 
 	for (k = 0; k < sizeof(Round); k++) z[k] = 0;
 	b += 2;
@@ -436,6 +528,31 @@ int rules_unpack(Round *r, const uint8_t *buf, uint32_t len)
 		if (p->ball.x < -(64L << 16) || p->ball.y < -(64L << 16) ||
 		    p->ball.x > ((fixed)(HOLE_MAX_WIDTH + 64) << 16) || p->ball.y > ((fixed)(HOLE_MAX_LENGTH + 64) << 16)) return -1;
 		for (h = 0; h < holes; h++) p->score[h] = *b++;
+	}
+	if (v4) {
+		uint8_t options = *b++;
+		if (options > 3 || ((options & 2) && r->mode != MODE_GREEN)) return -1;
+		r->holeout = options & 1;
+		r->repeat = options >> 1;
+	}
+	if (ver >= 5 && r->mode == MODE_TOURN) {
+		r->tour_stage = *b++;
+		r->tour_wind = *b++;
+		if (r->tour_stage > TOUR_SECOND || r->tour_wind > 40) return -1;
+		for (h = 0; h < holes; h++) {
+			if (*b > 56) return -1;
+			r->tour_difficulty[h] = (int8_t)((int16_t)*b++ - 24);
+		}
+		for (i = 0; i < players; i++) {
+			uint16_t total = (uint16_t)((uint16_t)b[0] << 8 | b[1]);
+			b += 2;
+			if (r->tour_stage == TOUR_SECOND ? total < holes || total > (uint16_t)(holes * 255) : total != 0)
+				return -1;
+			r->tour_first[i] = total;
+		}
+		if (r->tour_stage == TOUR_FIRST && r->over) return -1;
+		if (r->tour_stage == TOUR_BREAK && (r->over || r->hole != holes - 1 || rules_done(r) != holes))
+			return -1;
 	}
 	/* every player holed means the hole was over and rules_advance had run */
 	for (i = 0; i < players && r->pl[i].holed; i++) ;

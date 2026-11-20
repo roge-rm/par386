@@ -55,6 +55,7 @@ static UInt32 gHeapStart;      /* free dynamic heap at launch */
 #define kCpuPref     3
 #define kRecPref     4
 #define kShotPref    5
+#define kGimmePref   6
 static Records gRecords;
 static Boolean gPlaying;
 static Play gPlay;
@@ -647,9 +648,9 @@ static void SEC_MENU SaveRound(void)
 
 	if (!gPlaying) return;
 	play_settle(&gPlay);
-	if (gRound.over) {
-		/* a finished round may set course records; a second save of it sets none */
+	if (gRound.over || gRound.tour_stage == TOUR_BREAK)
 		if (rec_round(&gRecords, &gRound, gRound.tee)) RecordsSave();
+	if (gRound.over) {
 		DeleteSave();
 		return;
 	}
@@ -805,6 +806,7 @@ static Boolean SEC_MENU PlayStart(Boolean resume)
 		seed = TimGetSeconds();
 #endif
 		rules_init(&gRound, gCourseNames[gFront.course], gFront.players, c.hole_count, c.par, seed);
+		gRound.holeout = gFront.holeout;
 		/* the range is played on the first par 5, the green on the first hole */
 		{
 			UInt8 h = 0, k;
@@ -813,6 +815,7 @@ static Boolean SEC_MENU PlayStart(Boolean resume)
 					if (c.par[k] >= 5) { h = k; break; }
 			rules_mode(&gRound, gFront.mode, gFront.cpu, h);
 		}
+		if (gRound.mode == MODE_TOURN) rules_tour_course(&gRound, &c);
 		/* practice from the first tee set */
 		/* a card course's tee sets are known now: the players line and the record show the set played */
 		front_course_tees(&gFront, gFront.course, &c);
@@ -1012,6 +1015,8 @@ static void PlayFrame(void)
 		ScreenFadeDrop();
 		return;
 	}
+	if (gPlay.state == PS_FLY || gPlay.state == PS_RESULT)
+		play_result_pending(&gPlay, gNext < 2);
 	if (gPlay.view == PLAY_MAP) {
 		/* a shot on the map, or a computer golfer's result there: on to whatever comes next */
 #ifdef DEBUG
@@ -1464,6 +1469,10 @@ static void SceneRender(void)
  * or a quick computer golfer's result on the map. */
 static void PlayBegin(void)
 {
+	if (gPlay.view == PLAY_CARD) {
+		PlayAct(PL_CARD);
+		return;
+	}
 	if (gPlay.view == PLAY_MAP) {
 		PlayAct(PL_MAP | PL_ANIM);
 		return;
@@ -1496,6 +1505,7 @@ static void PlayAct(int f)
 			Redraw();
 			return;
 		}
+		if (gRound.tour_stage == TOUR_SECOND && !gRound.hole) SaveRound();
 		play_start(&gPlay, &gHole, &gGrid, &gRound);
 		PlayBegin();
 	} else if (f & PL_CARD) {
@@ -1504,7 +1514,7 @@ static void PlayAct(int f)
 		if (ScreenKept() && gBgPic == PIC_SCENE) ScreenRestoreAll();
 		play_card(&gS, &gPlay);
 		ScreenShowAll();
-		if (gPlay.card != CARD_VIEW) SaveRound();
+		if (gPlay.card == CARD_HOLE || gPlay.card == CARD_FINAL) SaveRound();
 	} else if ((f & PL_MAP) && gPlay.onmap && !gFadeBack && gPlay.mprep == 2 && ScreenSpareHas()) {
 		/* a shot going over to the map: its map is ready on the spare surface;
 		 * the ball flies on over it while it fades in */
@@ -1595,6 +1605,7 @@ static void Act(int r)
 	if (r & FR_SOUND) AudioSetMode(gFront.sound);
 	if (r & FR_CPU) PrefSetAppPreferences(kCreator, kCpuPref, 1, &gFront.quick, 1, true);
 	if (r & FR_SHOT) PrefSetAppPreferences(kCreator, kShotPref, 1, &gFront.shotmap, 1, true);
+	if (r & FR_GIMMES) PrefSetAppPreferences(kCreator, kGimmePref, 1, &gFront.holeout, 1, true);
 	if (r & (FR_PLAY | FR_CONTINUE)) {
 		if (PlayStart((r & FR_CONTINUE) != 0)) {
 			PlayBegin();
@@ -1803,8 +1814,11 @@ static void EventLoop(void)
 #endif
 			key = (c == vchrMenu || c == chrBackspace || c == chrEscape) ? KEY_BACK : MapKey(&e);
 			/* held keys repeat for aiming and clubs only, or they'd queue up clicks and toggles */
-			if ((e.data.keyDown.modifiers & autoRepeatKeyMask) && key != KEY_LEFT && key != KEY_RIGHT &&
-			    key != KEY_UP && key != KEY_DOWN) continue;
+			if (e.data.keyDown.modifiers & autoRepeatKeyMask) {
+				/* Each coarse aim move redraws the hole map. */
+				if (gPlay.view == PLAY_MAP) continue;
+				if (key != KEY_LEFT && key != KEY_RIGHT && key != KEY_UP && key != KEY_DOWN) continue;
+			}
 			if (key != KEY_NONE) {
 				PlayInput(false, 0, 0, key);
 				continue;
@@ -1895,6 +1909,10 @@ UInt32 PilotMain(UInt16 cmd, void *cmdPBP, UInt16 launchFlags)
 		size = 1;
 		if (PrefGetAppPreferences(kCreator, kShotPref, &q, &size, true) == noPreferenceFound || size != 1 || q > 1) q = 1;
 		gFront.shotmap = q;
+		q = 0;
+		size = 1;
+		if (PrefGetAppPreferences(kCreator, kGimmePref, &q, &size, true) == noPreferenceFound || size != 1 || q > 1) q = 0;
+		gFront.holeout = q;
 	}
 	RecordsLoad();
 	FindCourses();

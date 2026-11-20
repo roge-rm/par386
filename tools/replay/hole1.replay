@@ -33,10 +33,10 @@
 29040 snapshot "{out}/s2-result.png"
 38240 snapshot "{out}/p1-aim.png"
 # The map, with the green view's draw time (S, ms) on its strip, and back.
-38440 pen-down 119 153
+38440 pen-down 144 153
 38500 pen-up
 39240 snapshot "{out}/p1-map.png"
-39440 pen-down 80 60
+39440 pen-down 80 154
 39500 pen-up
 # The first putt.
 40240 pen-down 20 150
@@ -47,10 +47,10 @@
 42160 snapshot "{out}/p1-roll.png"
 44760 snapshot "{out}/p1-result.png"
 # The map again for the putting meter and roll frame times, and back.
-47360 pen-down 119 153
+47360 pen-down 144 153
 47420 pen-up
 48360 snapshot "{out}/p2-map.png"
-48560 pen-down 80 60
+48560 pen-down 80 154
 48620 pen-up
 51360 snapshot "{out}/p2-aim.png"
 # The second, and in.

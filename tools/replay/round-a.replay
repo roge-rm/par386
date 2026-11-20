@@ -24,7 +24,7 @@
 45090 pen-down 119 153
 45150 pen-up
 46590 snapshot "{out}/a-map.png"
-47090 pen-down 140 156
+47090 pen-down 116 156
 47150 pen-up
 48590 snapshot "{out}/a-card.png"
 49090 pen-down 80 116

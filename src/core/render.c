@@ -1259,11 +1259,18 @@ static void SEC_RENDER dot(const R *r, int16_t x, int16_t y, int16_t n, uint8_t 
 		}
 }
 
-static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out, int16_t y0, int16_t y1);
+static int SEC_RENDER map_rows(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out, int16_t y0, int16_t y1, const vec2 *target);
+static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out, int16_t y0, int16_t y1, const vec2 *target);
+static void SEC_RENDER gline(const R *r, int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint8_t c);
 
 int render_map(Surface *s, const RenderView *v, RenderMap *out)
 {
 	return render_map_box(s, v, 0, out);
+}
+
+int render_target_map(Surface *s, const RenderView *v, RenderMap *out, const vec2 *target)
+{
+	return map_rows(s, v, 0, out, 0, 0x7FFF, target) < 0 ? -1 : 0;
 }
 
 int render_map_box(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out)
@@ -1273,11 +1280,16 @@ int render_map_box(Surface *s, const RenderView *v, const MapBox *box, RenderMap
 
 int render_map_rows(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out, int16_t y0, int16_t y1)
 {
+	return map_rows(s, v, box, out, y0, y1, 0);
+}
+
+static int SEC_RENDER map_rows(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out, int16_t y0, int16_t y1, const vec2 *target)
+{
 	Surface h;
 	int k;
-	if (!half_of(s, &h)) return map_draw(s, v, box, out, y0, y1);
+	if (!half_of(s, &h)) return map_draw(s, v, box, out, y0, y1, target);
 	/* at half size: rows of the half view, all doubled at the end */
-	k = map_draw(&h, v, box, out, (int16_t)(y0 >> 1), y1 >= 0x7FFE ? 0x7FFF : (int16_t)((y1 + 1) >> 1));
+	k = map_draw(&h, v, box, out, (int16_t)(y0 >> 1), y1 >= 0x7FFE ? 0x7FFF : (int16_t)((y1 + 1) >> 1), target);
 	if (k <= 0) return k;
 	double_up(s);
 	/* where things are on s */
@@ -1291,7 +1303,7 @@ int render_map_rows(Surface *s, const RenderView *v, const MapBox *box, RenderMa
 	return 1;
 }
 
-static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out, int16_t y0, int16_t y1)
+static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out, int16_t y0, int16_t y1, const vec2 *target)
 {
 	R r;
 	const Hole *h = v->hole;
@@ -1337,6 +1349,7 @@ static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *bo
 	for (i = 0; i < SURF_COUNT; i++)
 		col[i] = (uint8_t)(PAL_TERRAIN + i * PAL_RAMP_N + PAL_RAMP_N / 2);
 	col[SURF_OOB] = PAL_TERRAIN + SURF_OOB * PAL_RAMP_N + 1;
+	if (target && r.lg < 2) col[SURF_WATER] = PAL_WATER + 7;
 	/* the grid column under each screen column, 0xFF off the hole */
 	x0 = (ypp >> 1) + (left < 0 ? (fixed)-left * ypp : 0);
 	for (x = 0; x < r.w; x++) {
@@ -1378,6 +1391,27 @@ static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *bo
 
 #define MX(wx) ((int16_t)(left + (wx) / ypp))
 #define MY(wy) ((int16_t)(top + (((fixed)h->length << 16) - (wy)) / ypp))
+	if (target && h->shapes) {
+		const uint8_t *p = h->shapes;
+		uint8_t bank = r.lg < 2 ? PAL_BLACK : PAL_WATER + 1;
+		/* Trace the banks at the map's scale, independent of the surface grid. */
+		for (i = 0; i < h->shape_count; i++) {
+			uint8_t n = p[1];
+			if (p[0] == SURF_WATER) {
+				const uint8_t *first = p + 2, *end = first + (uint16_t)n * 4, *vtx;
+				int16_t x1 = MX((fixed)be16(end - 4) * 16384L);
+				int16_t y1 = MY((fixed)be16(end - 2) * 16384L);
+				for (vtx = first; vtx < end; vtx += 4) {
+					x = MX((fixed)be16(vtx) * 16384L);
+					y = MY((fixed)be16(vtx + 2) * 16384L);
+					gline(&r, x1, y1, x, y, bank);
+					x1 = x;
+					y1 = y;
+				}
+			}
+			p += 2 + (uint16_t)n * 4;
+		}
+	}
 	/* trees, bushes and gorse as dark dots, rocks, walls and houses grey */
 	for (i = 0; i < h->object_count; i++) {
 		hole_object(h, i, &o);
@@ -1392,7 +1426,7 @@ static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *bo
 	dot(&r, x - sc, y - sc, 3 * sc, PAL_BLACK);
 	dot(&r, x, y, sc, PAL_WHITE);
 
-	/* the aim line from the ball to the pin, dashed black and white; not on a framed map */
+	/* The line to the target or pin, on the whole-hole map. */
 	out->bx = MX(v->ball.x);
 	out->by = MY(v->ball.y);
 	out->px = MX(h->pins[v->pin & 3].x);
@@ -1402,8 +1436,19 @@ static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *bo
 	out->top = top;
 	out->ypp = ypp;
 	out->length = (fixed)h->length << 16;
-	if (!box) {
-		int16_t dx = out->px - out->bx, dy = out->py - out->by;
+	if (target) {
+		int16_t x1 = MX(target->x), y1 = MY(target->y);
+		if (fix_abs(x1 - out->bx) < fix_abs(y1 - out->by)) {
+			gline(&r, out->bx - 1, out->by, x1 - 1, y1, PAL_BLACK);
+			gline(&r, out->bx + 1, out->by, x1 + 1, y1, PAL_BLACK);
+		} else {
+			gline(&r, out->bx, out->by - 1, x1, y1 - 1, PAL_BLACK);
+			gline(&r, out->bx, out->by + 1, x1, y1 + 1, PAL_BLACK);
+		}
+		gline(&r, out->bx, out->by, x1, y1, PAL_WHITE);
+	} else if (!box) {
+		int16_t dx = out->px - out->bx;
+		int16_t dy = out->py - out->by;
 		int16_t ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
 		int16_t n = ax > ay ? ax : ay, k;
 		for (k = 2 * sc; k < n; k++) {
@@ -1456,17 +1501,16 @@ static fixed SEC_RENDER ground_z(const Hole *h, fixed x, fixed y)
 	return h->base + mulf(hb_at(h, x, y) * 256, h->step);
 }
 
-/* The green view's camera. Everything scales with the putt's length (at
- * least 4 and at most 40 yards), so the ball always shows low in the middle
- * and the pin a third of the way down: GREEN_BACK of it behind the ball,
- * GREEN_UP of it above, looking down by GREEN_PITCH. */
-#define GREEN_PITCH 6300         /* 34.6 degrees */
-#define GREEN_BACK  14746        /* 0.9, 2.14 */
-#define GREEN_ZK    6            /* heights shown this many times as steep */
+/* The green camera backs away and rises as the putt gets longer. */
+#define GREEN_PITCH 5100         /* 28 degrees */
+#define GREEN_BACK  18022        /* 1.1, 2.14 */
+#define GREEN_UP    11469        /* 0.7, 2.14 */
+#define GREEN_ZK    3            /* height exaggeration */
 #define GREEN_FOCAL 200
-#define GREEN_ROW   72           /* the row straight ahead on 160 wide screens */
+#define GREEN_ROW   94           /* the row straight ahead on 160 wide screens */
 #define GREEN_NEAR  (4L << 16)
 #define GREEN_FAR   (40L << 16)
+#define GREEN_ROUGH_LIGHT (3 * 16)
 
 static fixed SEC_RENDER green_cam(const Surface *s, const RenderView *v, RenderCam *c)
 {
@@ -1489,7 +1533,7 @@ static fixed SEC_RENDER green_cam(const Surface *s, const RenderView *v, RenderC
 	c->zref = ground_z(h, pin.x, pin.y);
 	zb = ground_z(h, v->ball.x, v->ball.y);
 	c->zk = GREEN_ZK;
-	c->camz = c->zref + (zb - c->zref) * GREEN_ZK + len;
+	c->camz = c->zref + (zb - c->zref) * GREEN_ZK + mulq(len, GREEN_UP);
 	c->f = (int16_t)(GREEN_FOCAL * s->scale);
 	c->cx = s->w / 2;
 	c->yh = (int16_t)(GREEN_ROW * s->scale + fit(s, &vh));
@@ -1537,15 +1581,33 @@ typedef struct {
 	RenderCam c;
 	RenderView v;
 	Surface s;                  /* the surface asked for */
-	uint8_t half, line, done;
+	uint8_t half, guide, done;
 	GPt rows[2][GRID_N], *far, *near;
-	fixed len, sp;
-	int16_t k, k0, k1, n;       /* the next row of cells, the first and last, and the cells either side */
+	fixed len, sp, back, up;     /* putt length, cell size, camera setback and height */
+	int16_t k, k0, k1, wide;    /* row to draw, the near and far bounds, and where to coarsen */
 	int32_t hbb;
-	uint32_t past;              /* cells with lines in the row of cells past this one */
+	uint16_t green_past;        /* green cells in the row past this one */
 	TerraTris tt;               /* triangles waiting to be filled */
 	TerraTri tl[TERRA_TRIS_MAX];
 } GJob;
+
+/* Close cells show the green edge. Cells farther away cover more ground. */
+static fixed SEC_RENDER green_row(const GJob *j, int16_t k)
+{
+	if (k > j->wide) k = (int16_t)(j->wide + 4 * (k - j->wide));
+	return (fixed)k * j->sp;
+}
+
+static fixed SEC_RENDER green_cell(const GJob *j, int16_t i, int16_t k)
+{
+	int16_t slot = (int16_t)(2 * i + 1);
+	int16_t dist = slot < 0 ? (int16_t)-slot : slot;
+
+	/* Spread the outer columns to reach the sides of the view. */
+	if (dist > 11) dist = (int16_t)(11 + (dist - 11) * 3);
+	if (k > j->wide) dist = (int16_t)(dist + dist * (k - j->wide) / 4);
+	return (fixed)(slot < 0 ? -dist : dist) * (j->sp / 2);
+}
 
 /* Fills the triangles waiting in j->tl. */
 static void SEC_RENDER tris_flush(GJob *j)
@@ -1587,7 +1649,7 @@ int render_green_begin(Surface *s, const RenderView *v, void *work)
 	R *r;
 	const Hole *h = v->hole;
 	fixed len, sp;
-	int16_t x, y, n;
+	int16_t x, y;
 	uint8_t half = (uint8_t)half_of(s, &hs);
 
 	d = half ? &hs : s;
@@ -1602,29 +1664,34 @@ int render_green_begin(Surface *s, const RenderView *v, void *work)
 	r->rb = d->rowBytes;
 	r->w = d->w;
 	r->lg = (uint8_t)(d->depth == 8 ? 3 : d->depth == 4 ? 2 : d->depth == 2 ? 1 : 0);
-	j->line = d->depth == 8 ? PAL_GREEN : PAL_BLACK;
+	j->guide = d->depth == 8 ? PAL_GREEN + 7 : PAL_BLACK;
 	j->len = len = green_cam(d, v, &j->c);
+	j->back = mulq(len, GREEN_BACK);
+	j->up = mulq(len, GREEN_UP);
 	j->hbb = hb_at(h, v->ball.x, v->ball.y);
 
-	/* black, then the grid over it */
+	/* Rough fills the far edge where the close terrain runs out. */
 	for (y = 0; y < d->h; y++) {
+		uint8_t colour = PAL_ROUGH + GREEN_ROUGH_LIGHT / 16;
 		uint8_t *p = r->bits + MULU16(y, r->rb);
-		for (x = 0; x < (int16_t)r->rb; x++) p[x] = 0xFF;
+		if (r->lg == 1) colour = pal_pat2[((uint16_t)colour << 2) | (y & 3)];
+		else if (r->lg == 2) {
+			colour = (uint8_t)((255 - pal_grey[colour] + 8) / 17);
+			colour |= (uint8_t)(colour << 4);
+		} else if (r->lg == 0) colour = 0;
+		if (y >= r->vh) colour = 0xff;
+		for (x = 0; x < (int16_t)r->rb; x++) p[x] = colour;
 	}
 
-	/* cells of half a yard, 1, 2, 4 or 8, so there are at most 16 along, from
-	 * 0.4 of the length behind the ball to 2.6 past it, and as many across;
-	 * the ball and the pin's line sit in the middle of a cell */
+	/* Cells of half a yard, 1, 2, 4 or 8 keep the view's cost bounded. */
 	sp = FIX_HALF;
-	while (len * 3 > sp * 16) sp <<= 1;
+	while (len * 2 > sp * 16) sp <<= 1;
 	j->sp = sp;
-	j->k0 = (int16_t)-((len * 2 / 5 + sp - 1) / sp);
-	j->k1 = (int16_t)((len * 13 / 5 + sp - 1) / sp);
-	n = (int16_t)((len * 7 / 5 + sp - 1) / sp);
-	if (n > GRID_N / 2) n = GRID_N / 2;
-	j->n = n;
+	j->k0 = (int16_t)-((len / 2 + sp - 1) / sp);
+	j->wide = (int16_t)((len * 3 / 2 + sp - 1) / sp);
+	j->k1 = (int16_t)(j->wide + 7);
 	j->k = j->k1;
-	j->past = 0;
+	j->green_past = 0;
 	j->tt.bits = r->bits;
 	j->tt.tri = j->tl;
 	j->tt.bayer = bayer;
@@ -1649,26 +1716,24 @@ int render_green_step(void *work, RenderClock clk, uint32_t until)
 	const RenderCam *cp = &j->c;
 	RenderCam c = *cp;
 	GPt *far = j->far, *near = j->near, *t;
-	fixed len = j->len, sp = j->sp, a, up, depth, down;
+	fixed len = j->len, a, up, depth, down;
 	vec2 pin = h->pins[v->pin & 3];
-	int16_t k, k0 = j->k0, k1 = j->k1, i, n = j->n, px, py;
+	int16_t k, k0 = j->k0, k1 = j->k1, i, n = GRID_N / 2, px, py;
 	int32_t hbb = j->hbb;
-	uint32_t lined, past = j->past;
-	uint8_t line = j->line;
 
 	if (j->done) return 1;
 	/* each row of points from the far end, then the cells between it and the row past it */
 	for (k = j->k; k >= k0; k--) {
 		/* the points of row k, along the aim from the ball */
-		a = (fixed)k * sp;
+		a = green_row(j, k);
 		for (i = -n; i <= n; i++) {
 			GPt *g = &near[i + n];
-			fixed cx = (fixed)i * sp + sp / 2;
+			fixed cx = green_cell(j, i, k);
 			fixed wx = v->ball.x + mulq(a, c.fx) + mulq(cx, c.rx), wy = v->ball.y + mulq(a, c.fy) + mulq(cx, c.ry);
 			int32_t hb = hb_at(h, wx, wy);
-			fixed along = a + ((fixed)c.back << 16);
+			fixed along = a + j->back;
 			g->hb = (uint16_t)hb;
-			up = mulf((hb - hbb) * 256, h->step) * GREEN_ZK - len;
+			up = mulf((hb - hbb) * 256, h->step) * GREEN_ZK - j->up;
 			depth = mulq(along, c.pc) - mulq(up, c.ps);
 			down = -(mulq(along, c.ps) + mulq(up, c.pc));
 			if (depth < FIX_HALF) {
@@ -1685,40 +1750,83 @@ int render_green_step(void *work, RenderClock clk, uint32_t until)
 			g->y += c.yh;
 		}
 		if (k < k1) {
-			/* the cells between this row and the one past it, left to right, then
-			 * the lines round the ones on the green or fringe, so no fill covers them */
-			lined = 0;
+			uint16_t green = 0;
+			fixed fa = green_row(j, (int16_t)(k + 1));
+			fixed ca = (a + fa) / 2, da = (fa - a) / 6;
+			fixed rowx = v->ball.x + mulq(ca, c.fx), rowy = v->ball.y + mulq(ca, c.fy);
+			fixed farx = mulq(da, c.fx), fary = mulq(da, c.fy);
+			int16_t light_step = (int16_t)(j->sp >> (k >= j->wide ? 6 : 8));
 			for (i = 0; i < 2 * n; i++) {
 				GPt *f0 = &far[i], *f1 = &far[i + 1], *n0 = &near[i], *n1 = &near[i + 1];
-				fixed ca = a + sp / 2, cc = (fixed)(i - n) * sp + sp, rise;
-				uint8_t sf;
-				int16_t lv;
+				int16_t col = (int16_t)(i - n);
+				fixed cleft, cright, cc, cx, cy, rise;
+				uint8_t sf, far_sf, near_sf;
+				int32_t lv;
 				if (f0->x == NO_PT || f1->x == NO_PT || n0->x == NO_PT || n1->x == NO_PT) continue;
-				sf = surface_at(v->grid, v->ball.x + mulq(ca, c.fx) + mulq(cc, c.rx), v->ball.y + mulq(ca, c.fy) + mulq(cc, c.ry));
-				if (sf >= SURF_COUNT) sf = SURF_OOB;
+				/* A cell entirely off one edge has no fill or guide lines to draw. */
+				if ((f0->x < 0 && f1->x < 0 && n0->x < 0 && n1->x < 0) ||
+				    (f0->x >= r->w && f1->x >= r->w && n0->x >= r->w && n1->x >= r->w) ||
+				    (f0->y < 0 && f1->y < 0 && n0->y < 0 && n1->y < 0) ||
+				    (f0->y >= r->vh && f1->y >= r->vh && n0->y >= r->vh && n1->y >= r->vh)) continue;
+				cleft = green_cell(j, col, k);
+				cright = green_cell(j, (int16_t)(col + 1), (int16_t)(k + 1));
+				cc = (cleft + cright) / 2;
+				cx = rowx + mulq(cc, c.rx);
+				cy = rowy + mulq(cc, c.ry);
+				sf = surface_at(v->grid, cx, cy);
+				if (sf >= SURF_COUNT || sf == SURF_OOB) sf = SURF_ROUGH;
 				/* lit from the left and behind: the rise to the right and half the rise away, per cell */
 				rise = mulf((((int32_t)f1->hb + n1->hb - f0->hb - n0->hb) + (((int32_t)f0->hb + f1->hb - n0->hb - n1->hb) >> 1)) * 128, h->step);
-				lv = (int16_t)(LIGHT_FLAT + ((((rise * 256) / (sp >> 8)) >> 4) * 64 >> 8));
+				lv = LIGHT_FLAT + (rise / light_step) * 4;
+				if (sf == SURF_GREEN || ((sf == SURF_FRINGE || sf == SURF_FAIRWAY) && k < j->wide)) lv += (k & 1) ? 16 : 8;
+				/* Soften the distant rough and blend the last row into the backdrop. */
+				if (k == k1 - 1 && sf != SURF_GREEN) {
+					sf = SURF_ROUGH;
+					lv = GREEN_ROUGH_LIGHT;
+				} else if (sf == SURF_ROUGH && k >= j->wide) {
+					lv = (lv + GREEN_ROUGH_LIGHT * 3) / 4;
+				} else if (sf != SURF_GREEN) {
+					/* Quieter slope shading away from the putting surface. */
+					lv = (lv + LIGHT_FLAT) / 2;
+				}
+				if (sf == SURF_GREEN && r->lg < 2 && lv < 96) lv = 96;
 				if (lv < 0) lv = 0;
 				if (lv > PAL_RAMP_N * 16 - 16) lv = PAL_RAMP_N * 16 - 16;
-				tri(j, f0, f1, n1, (uint8_t)(PAL_TERRAIN + sf * PAL_RAMP_N), lv);
-				tri(j, f0, n1, n0, (uint8_t)(PAL_TERRAIN + sf * PAL_RAMP_N), lv);
-				if (sf == SURF_GREEN || sf == SURF_FRINGE) lined |= 1UL << i;
+				far_sf = near_sf = sf;
+				/* Sample both halves of large sand-edge cells. The putting grid
+				 * keeps its original green cells and the same two triangles. */
+				if (k < k1 - 1 && sf != SURF_GREEN && sf <= SURF_BUNKER &&
+				    (j->sp >= (2L << 16) || k >= j->wide || col < -5 || col > 4)) {
+					fixed dc = (cright - cleft) / 6;
+					fixed dx = farx + mulq(dc, c.rx), dy = fary + mulq(dc, c.ry);
+					uint8_t a = surface_at(v->grid, cx + dx, cy + dy);
+					uint8_t b = surface_at(v->grid, cx - dx, cy - dy);
+					if ((a == SURF_BUNKER || b == SURF_BUNKER) && a != SURF_GREEN &&
+					    b != SURF_GREEN && a <= SURF_BUNKER && b <= SURF_BUNKER) {
+						far_sf = a;
+						near_sf = b;
+					}
+				}
+				tri(j, f0, f1, n1, (uint8_t)(PAL_TERRAIN + far_sf * PAL_RAMP_N), (int16_t)lv);
+				tri(j, f0, n1, n0, (uint8_t)(PAL_TERRAIN + near_sf * PAL_RAMP_N), (int16_t)lv);
+				if (sf == SURF_GREEN) green |= (uint16_t)(1U << i);
 			}
 			tris_flush(j);
-			/* each edge once: across the far side if this cell or the one past it
-			 * is lined (the fill just covered it), along the sides, and the near
-			 * side on the nearest row */
-			for (i = 0; i <= 2 * n; i++) {
-				uint32_t here = lined | (lined << 1);
-				if (i < 2 * n && ((lined | past) & (1UL << i)) && far[i].x != NO_PT && far[i + 1].x != NO_PT)
-					gline(r, far[i].x, far[i].y, far[i + 1].x, far[i + 1].y, line);
-				if ((here & (1UL << i)) && far[i].x != NO_PT && near[i].x != NO_PT)
-					gline(r, far[i].x, far[i].y, near[i].x, near[i].y, line);
-				if (k == k0 && i < 2 * n && (lined & (1UL << i)))
-					gline(r, near[i].x, near[i].y, near[i + 1].x, near[i + 1].y, line);
+			/* Guide lines at every other mesh edge, only on the green. */
+			if (green || j->green_past) {
+				uint32_t sides = (uint32_t)green | ((uint32_t)green << 1);
+				uint16_t across = (k & 1) ? 0 : (uint16_t)(green | j->green_past);
+				sides &= 0x15555UL;
+				for (i = 0; across || sides; i++) {
+					if ((across & 1) && far[i].x != NO_PT && far[i + 1].x != NO_PT)
+						gline(r, far[i].x, far[i].y, far[i + 1].x, far[i + 1].y, j->guide);
+					if ((sides & 1) && far[i].x != NO_PT && near[i].x != NO_PT)
+						gline(r, far[i].x, far[i].y, near[i].x, near[i].y, j->guide);
+					across >>= 1;
+					sides >>= 1;
+				}
 			}
-			past = lined;
+			j->green_past = green;
 		}
 		t = far;
 		far = near;
@@ -1727,7 +1835,6 @@ int render_green_step(void *work, RenderClock clk, uint32_t until)
 			j->k = (int16_t)(k - 1);
 			j->far = far;
 			j->near = near;
-			j->past = past;
 			return 0;
 		}
 	}
@@ -1745,15 +1852,19 @@ int render_green_step(void *work, RenderClock clk, uint32_t until)
 				int32_t q = MULS16(ax, ax) + 4 * MULS16(ay, ay), rr = 16L * u * u;
 				if (q >= rr || px + i < 0 || px + i >= r->w || py + jj < 0 || py + jj >= r->vh) continue;
 				put(r, pixp(r, px + i, py + jj), px + i, py + jj,
-				    MULS16(ax + u, ax + u) + 4 * MULS16(ay + u, ay + u) < rr ? PAL_BLACK : PAL_WHITE);
+			    q < 9L * u * u ? PAL_BLACK : PAL_WHITE);
 			}
 		if (render_point(&c, pin.x, pin.y, ground_z(h, pin.x, pin.y) + pole, &tx, &top, &depth)) {
-			gline(r, px, py - u, tx, top, line == PAL_GREEN ? PAL_GREY + 7 : PAL_BLACK);
+			if (r->lg < 2) gline(r, px + 1, py - u, tx + 1, top, PAL_WHITE);
+			gline(r, px, py - u, tx, top, r->lg == 3 ? PAL_GREY + 7 : PAL_BLACK);
 			for (jj = 0; jj < 4 * u; jj++)
 				for (i = 1; i <= 6 * u; i++)
-					if (tx + i >= 0 && tx + i < r->w && top + jj >= 0 && top + jj < r->vh)
-						put(r, pixp(r, tx + i, top + jj), tx + i, top + jj,
-						    (uint8_t)(jj >= 3 * u || i == 6 * u ? PAL_FLAG : PAL_FLAG + 2));
+					if (tx + i >= 0 && tx + i < r->w && top + jj >= 0 && top + jj < r->vh) {
+						int border = jj < u || jj >= 3 * u || i > 5 * u;
+						uint8_t ink = (uint8_t)(r->lg < 2 ? (border ? PAL_BLACK : PAL_WHITE) :
+						                        (border ? PAL_FLAG : PAL_FLAG + 2));
+						put(r, pixp(r, tx + i, top + jj), tx + i, top + jj, ink);
+					}
 		}
 	}
 	if (j->half) double_up(&j->s);

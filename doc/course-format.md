@@ -97,7 +97,7 @@ aim 62 240
 turn 90                       # optional, degrees, makes a version 2 header
 tee Blue 60 12 [yards]        # yards left out: tee to aim to the middle of the pins
 pin 140 405                   # four of these
-poly fairway 50,50 78,50 84,120 ...
+poly fairway 56,51 67,49 76,52 ...
 rect tee 52 6 68 22
 ellipse bunker 38 236 7 10 [points] [degrees]
 object pine 16 60 [variant] [scale]

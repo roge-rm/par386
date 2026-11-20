@@ -360,12 +360,13 @@ static int SEC_MENU courses_screen(Front *f)
 
 /* The settings screen's lines: the sound setting, the computer golfers'
  * shots (a quick result on the map, or the full scene and flight), where
- * full shots fly (the map or the scene), then Back. */
+ * full shots fly, the gimme rule for new rounds, then Back. */
 static void SEC_MENU settings_menu(Front *f)
 {
 	const char *a = "Sound: ", *b = f->sound == SOUND_FX ? "Effects" : f->sound == SOUND_OFF ? "Off" : "On";
 	const char *c = "|CPU: ", *d = f->quick ? "Quick" : "Full";
-	const char *e = f->shotmap ? "|Shot view: Map|Back" : "|Shot view: 3D|Back";
+	const char *e = f->shotmap ? "|Shot view: Map" : "|Shot view: 3D";
+	const char *g = f->holeout ? "|Hole out|Back" : "|Gimmies: 2 ft|Back";
 	uint8_t n = 0, sel = f->screen == SCR_SETTINGS ? f->menu.sel : 0;
 
 	while (*a) f->settings_list[n++] = *a++;
@@ -373,9 +374,10 @@ static void SEC_MENU settings_menu(Front *f)
 	while (*c) f->settings_list[n++] = *c++;
 	while (*d) f->settings_list[n++] = *d++;
 	while (*e) f->settings_list[n++] = *e++;
+	while (*g) f->settings_list[n++] = *g++;
 	f->settings_list[n] = 0;
 	f->screen = SCR_SETTINGS;
-	ui_menu_init(&f->menu, f->settings_list, 16, 36, 128, 20);
+	ui_menu_init(&f->menu, f->settings_list, 16, 36, 128, 18);
 	f->menu.sel = sel;
 }
 
@@ -396,6 +398,11 @@ static int SEC_MENU open_item(Front *f, uint8_t i)
 			f->shotmap ^= 1;
 			settings_menu(f);
 			return FR_REDRAW | FR_SHOT;
+		}
+		if (i == 3) {
+			f->holeout ^= 1;
+			settings_menu(f);
+			return FR_REDRAW | FR_GIMMES;
 		}
 		front_clubhouse(f, f->saved);
 		f->menu.sel = (uint8_t)(MAIN_SETTINGS + (f->saved ? 1 : 0));
@@ -526,7 +533,7 @@ static int SEC_MENU key_in(Front *f, uint8_t key)
 		if (f->screen == SCR_GAMES) return open_item(f, MODE_RANGE);
 		if (f->screen == SCR_PRACTICE) return open_item(f, 2);
 		if (f->screen == SCR_COURSES) return open_item(f, (uint8_t)(f->menu.count - 1));
-		if (f->screen == SCR_SETTINGS) return open_item(f, 3);
+		if (f->screen == SCR_SETTINGS) return open_item(f, (uint8_t)(f->menu.count - 1));
 		return 0;
 	}
 	return 0;

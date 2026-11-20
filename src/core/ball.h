@@ -21,6 +21,7 @@
 #define BALL_ROLL_EVERY  4      /* and every 4 on the ground (1/8 s) */
 #define BALL_PATH_MAX    192
 #define BALL_PUTT_MAX    45     /* yards, the putter's longest range */
+#define BALL_PUTT_GRADE  11     /* yards of flat-green pace per yard of rise */
 
 enum {
 	CLUB_DR, CLUB_3W, CLUB_5W, CLUB_3I, CLUB_4I, CLUB_5I, CLUB_6I, CLUB_7I,
