@@ -128,6 +128,10 @@ int SEC_RENDER render_scene_begin(Surface *s, const RenderView *v, const RenderA
 int SEC_RENDER render_scene_step(void *work, RenderClock clock, uint32_t until);
 /* Sets the clock render_scene times its stages with, or 0 for none. */
 void SEC_RENDER render_clock(RenderClock fn);
+/* The terrain's depth steps, the green's triangles and the sky rows go
+ * through fn from now on instead of terra.h's loops, or back to them with
+ * NULL: the platform's faster code, given the same job (TERRA_* op). */
+void SEC_RENDER render_terra_use(void (*fn)(uint8_t op, void *job));
 /* Draws the whole hole from above into the view area, scaled to fit with
  * the tee at the bottom: surfaces, trees as dots, the tee, the pin, the
  * ball and a line from the ball to the pin. Text is left to the caller.

@@ -7,7 +7,7 @@
 #   make tables      makes src/core/trigtab.h, fonttab.h, pal.h and paltab.h again (the output is committed)
 #   make art         makes the title and menu pictures and the renderer's sprites in build/art/ (part of the PRC)
 #   make sounds      makes the sampled sounds in build/snd/ (part of the PRC)
-#   make arm-test    checks the ARM 16-bit conversion's entry against the plain one on the host
+#   make arm-test    checks the ARM entries (16-bit conversion, renderer loops) against the plain C on the host
 #   make ui-test     draws the title and menu with the core UI kit on the host, to PNGs
 #   make render-test draws the test hole from 3 places and compares with host/ref/
 #   make course-render draws every hole of Auld Kirk from the tee, the landing area and near the green
@@ -43,7 +43,7 @@ CFLAGS   = -O2 -Wall -Wno-unknown-pragmas $(DEFS) $(INCLUDES) -Isrc/core -Isrc/p
 LDFLAGS  = -L$(SDK)/lib/m68k-palmos-coff
 
 PALMSRCS = main screen audio arm
-CORESRCS = fixed trig vec hole gfx ui front render play ball rules card sound cpu records to16
+CORESRCS = fixed trig vec hole gfx ui front render play ball rules card sound cpu records to16 terra
 OBJS     = $(addprefix $(BUILD)/,$(addsuffix .o,$(PALMSRCS) $(CORESRCS)))
 
 all: build/$(PRC) courses
@@ -107,12 +107,14 @@ $(SND)/snd.rcp: tools/mksound.py
 $(SND)/snd.ro: $(SND)/snd.rcp
 	pilrc -q -ro $(SND)/snd.rcp $@
 
-# The ARM code for OS 5 (src/arm/): one flat blob, the armc resource. It runs
-# where it lies, so armcheck fails on any relocation but a pc-relative branch,
-# and on data. Every build has it; EXTRA=-DNO_ARM only leaves it unused.
+# The ARM code for OS 5 (src/arm/): flat blobs, armc resources 1000 (the
+# 16-bit conversion) and 1001 (the renderer's loops). Each runs where it
+# lies, so armcheck fails on any relocation but a pc-relative branch, and
+# on data. Every build has them; EXTRA=-DNO_ARM only leaves them unused.
 ARMCC    = arm-palmos-gcc
 ARMFLAGS = -O2 -march=armv4t -mthumb-interwork -ffreestanding -fno-builtin -Wall -Isrc/core -Isrc/arm
-ARMOBJS  = build/arm/to16arm.o build/arm/to16.o
+ARMOBJS_1000 = build/arm/to16arm.o build/arm/to16.o
+ARMOBJS_1001 = build/arm/terraarm.o build/arm/terra.o
 
 build/arm:
 	mkdir -p build/arm
@@ -123,17 +125,22 @@ build/arm/%.o: src/arm/%.c src/arm/*.h src/core/*.h | build/arm
 build/arm/%.o: src/core/%.c src/core/*.h | build/arm
 	@echo ARMCC $<; $(ARMCC) $(ARMFLAGS) -c $< -o $@
 
-build/arm/armc.bin: $(ARMOBJS) src/arm/armc.ld
-	@for o in $(ARMOBJS); do \
-		if arm-palmos-readelf -r $$o | grep -E '^[0-9a-f]{8} ' | grep -v R_ARM_PC24; then \
-			echo "armcheck: $$o has a relocation the blob can't take"; exit 1; fi; done
-	arm-palmos-ld -nostdlib -T src/arm/armc.ld $(ARMOBJS) -o build/arm/armc.elf
-	@if arm-palmos-objdump -h build/arm/armc.elf | grep -E ' \.data +0*[1-9a-f]'; then \
+# armc-ID.bin from the objects in ARMOBJS_ID, the entry first
+define ARMBLOB
+build/arm/armc-$(1).bin: $$(ARMOBJS_$(1)) src/arm/armc.ld
+	@for o in $$(ARMOBJS_$(1)); do \
+		if arm-palmos-readelf -r $$$$o | grep -E '^[0-9a-f]{8} ' | grep -v R_ARM_PC24; then \
+			echo "armcheck: $$$$o has a relocation the blob can't take"; exit 1; fi; done
+	arm-palmos-ld -nostdlib -T src/arm/armc.ld $$(ARMOBJS_$(1)) -o build/arm/armc-$(1).elf
+	@if arm-palmos-objdump -h build/arm/armc-$(1).elf | grep -E ' \.data +0*[1-9a-f]'; then \
 		echo "armcheck: the blob has data"; exit 1; fi
-	arm-palmos-objcopy -O binary -j .text build/arm/armc.elf $@
+	arm-palmos-objcopy -O binary -j .text build/arm/armc-$(1).elf $$@
+endef
+$(eval $(call ARMBLOB,1000))
+$(eval $(call ARMBLOB,1001))
 
-build/arm/arm.ro: build/arm/armc.bin
-	echo 'DATA "armc" ID 1000 "build/arm/armc.bin"' > build/arm/arm.rcp
+build/arm/arm.ro: build/arm/armc-1000.bin build/arm/armc-1001.bin
+	printf 'DATA "armc" ID 1000 "build/arm/armc-1000.bin"\nDATA "armc" ID 1001 "build/arm/armc-1001.bin"\n' > build/arm/arm.rcp
 	pilrc -q -ro build/arm/arm.rcp $@
 
 build/$(PRC): src/par386.def $(BUILD)/par386 $(BUILD)/par386.ro $(ART)/art.ro $(ART)/obj.ro $(SND)/snd.ro build/arm/arm.ro
@@ -296,13 +303,14 @@ rules-test: build/rulestest build/courses/Par386-Test.pdb $(ART)/art.rcp
 cpu-round: build/rulestest build/courses/$(CRPDB)
 	build/rulestest --cpu build/courses/$(CRPDB) 8 $(or $(TEE),0)
 
-build/armtest: host/armtest.c src/arm/to16arm.c $(HOSTSRC) src/core/*.h src/arm/*.h | $(BUILD)
-	$(HOSTCC) -Isrc/arm host/armtest.c src/arm/to16arm.c $(HOSTSRC) -lm -o $@
+build/armtest: host/armtest.c src/arm/to16arm.c src/arm/terraarm.c $(HOSTSRC) src/core/*.h src/arm/*.h | $(BUILD)
+	$(HOSTCC) -Isrc/arm host/armtest.c src/arm/to16arm.c src/arm/terraarm.c $(HOSTSRC) -lm -o $@
 
-# Runs the 16-bit conversion through the ARM entry (built for the host, with
-# its big endian job) and the plain path, and checks they match.
-arm-test: build/armtest
-	build/armtest
+# Runs the 16-bit conversion and the renderer's loops through the ARM
+# entries (built for the host, with their big endian jobs) and the plain
+# path, and checks they match.
+arm-test: build/armtest build/courses/Par386-Test.pdb $(ART)/obj.rcp
+	build/armtest build/courses/Par386-Test.pdb $(ART)
 
 tables:
 	python3 tools/mktrig.py
