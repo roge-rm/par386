@@ -41,7 +41,7 @@ On the AlphaSmart Dana, the 560×160 layout shows the course between a small hol
 
 Standard landscape puts the hole and shot details in the bottom bar, which becomes a full-width meter during the swing.
 
-Frond checks have covered the IIIx, TX, Zire 72, Sony Clié models and the Dana. Physical-device checks are tracked in the [handoff](HANDOFF.md#before-the-next-release).
+Frond checks have covered the IIIx, TX, Zire 72, Sony Clié models and the Dana.
 
 ## Install
 
@@ -140,8 +140,6 @@ You need prc-tools-remix, `arm-palmos-gcc`, PilRC, the Palm OS SDK 5r3 at `../pa
 - `make release` builds the release PRC and the course files.
 - `make host-test` builds and tests the game core with GCC, ASan and UBSan.
 - `make courses` compiles the courses into `build/courses/`. See the [course format](doc/course-format.md) to make your own.
-
-See the [plan](PLAN.md) for development milestones.
 
 ## Licence
 
