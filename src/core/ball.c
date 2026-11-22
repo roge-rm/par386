@@ -277,7 +277,7 @@ static fixed SEC_BALL ratio(fixed a, fixed b)
 
 static uint8_t SEC_BALL surf(const ShotIn *in, fixed x, fixed y)
 {
-	uint8_t s = surface_at(in->grid, x, y);
+	uint8_t s = hole_surface(in->hole, in->grid, x, y);
 	return s < SURF_COUNT ? s : SURF_OOB;
 }
 
@@ -300,16 +300,44 @@ static vec2 SEC_BALL unit(vec2 a, vec2 b, fixed *l)
 	return vec2_make(fix_div(d.x, *l), fix_div(d.y, *l));
 }
 
+static int SEC_BALL dry_ground(const Hole *h, const SurfaceGrid *g, fixed x, fixed y)
+{
+	uint8_t surface = hole_surface(h, g, x, y);
+	return surface < SURF_COUNT && surface != SURF_WATER && surface != SURF_OOB;
+}
+
+vec2 ball_water_relief(const Hole *h, const SurfaceGrid *g, vec2 pin, vec2 cross, vec2 fallback)
+{
+	fixed l;
+	vec2 d = unit(pin, cross, &l);
+	int16_t k;
+	uint8_t dry = 0;
+
+	if (l < YD(1)) return fallback;
+	for (k = 1; k <= 120; k++) {
+		vec2 p = vec2_make(cross.x + d.x * k, cross.y + d.y * k);
+		if (!dry_ground(h, g, p.x, p.y)) {
+			if (dry) break;
+			continue;
+		}
+		if (!h->putting_curves) return p;
+		if (!dry++) fallback = p;
+		/* Give the player room to stand when there is clear ground behind the bank. */
+		if (dry >= 3 &&
+		    dry_ground(h, g, p.x + d.y, p.y - d.x) &&
+		    dry_ground(h, g, p.x - d.y, p.y + d.x)) return p;
+	}
+	return fallback;
+}
+
 /* Drops a ball that went in the water at wet, last on dry ground at dry:
  * first back along the ball's line to where it crossed into the water,
- * then on the line from the pin through that point, going back from the
- * pin until the ground is dry and in bounds. */
+ * then back on the line from the pin through that point. */
 static vec2 SEC_BALL drop(const ShotIn *in, vec2 wet, vec2 dry)
 {
 	vec2 d, p, cross = dry;
 	fixed l;
 	int16_t k;
-	uint8_t s;
 
 	d = unit(wet, dry, &l);
 	for (k = 1; k <= (int16_t)(l >> 16); k++) {
@@ -319,14 +347,7 @@ static vec2 SEC_BALL drop(const ShotIn *in, vec2 wet, vec2 dry)
 			break;
 		}
 	}
-	d = unit(in->pin, cross, &l);
-	if (l < YD(1)) return in->pos;
-	for (k = 1; k <= 120; k++) {
-		p = vec2_make(cross.x + d.x * k, cross.y + d.y * k);
-		s = surf(in, p.x, p.y);
-		if (s != SURF_WATER && s != SURF_OOB) return p;
-	}
-	return in->pos;
+	return ball_water_relief(in->hole, in->grid, in->pin, cross, in->pos);
 }
 
 /* Whether the ball moving from (x0, y0) to (x1, y1) passes within the cup's

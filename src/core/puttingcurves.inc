@@ -17,7 +17,7 @@ struct PuttingCurves {
 	const uint8_t *contour, *shape;
 	uint8_t *green_rows;
 	uint8_t remaining, shape_index, material, phase;
-	int16_t y, end, light_row;
+	int16_t y, end, light_row, edge_row;
 	int16_t green_left, green_right, green_top, green_bottom;
 	uint16_t edges, next, active;
 	CurveEdge edge[CURVE_EDGES];
@@ -207,7 +207,7 @@ static void SEC_CARD curve_span(GJob *j, int16_t x, int16_t end)
 	const R *r = &j->r;
 	uint8_t *row = r->bits + MULU16(w->y, r->rb);
 	uint8_t sf = w->material, base = (uint8_t)(PAL_TERRAIN + sf * PAL_RAMP_N);
-	int16_t mid = sf == SURF_FRINGE || sf == SURF_WATER ? 48 : 64;
+	int16_t mid = sf == SURF_FRINGE ? 48 : 64;
 	if (x >= end) return;
 	if (r->lg == 3) {
 		uint8_t *cmd = w->spans + w->shade.count * CURVE_SPAN_BYTES;
@@ -221,12 +221,21 @@ static void SEC_CARD curve_span(GJob *j, int16_t x, int16_t end)
 		if (++w->shade.count == CURVE_SPAN_BATCH) curve_flush(w);
 		return;
 	}
+	if (sf == SURF_WATER && r->lg == 1) {
+		terra_water_packed(row, w->shade.noise, x, end, w->y);
+		return;
+	}
 	{
 		int16_t cell = (int16_t)(x >> CURVE_LIGHT_SHIFT), yf = (int16_t)(w->y & 15);
 		const int8_t *samples = w->light + MULU16(w->y >> CURVE_LIGHT_SHIFT, CURVE_LIGHT_STRIDE) + cell;
 		const uint8_t *pattern = pal_pat2 + ((uint16_t)base << 2) + (w->y & 3);
 		int16_t a = curve_light_y(samples, yf);
 		int green = sf == SURF_GREEN;
+		int grass = sf < SURF_GREEN || sf == SURF_TEE;
+		uint16_t band = (uint16_t)(w->y >> 4);
+		const int8_t *near = w->shade.noise + ((band & 15) << 4);
+		const int8_t *far = w->shade.noise + (((band + 1) & 15) << 4);
+		if (grass) a += near[cell & 15] * (16 - yf) + far[cell & 15] * yf;
 		if (green) {
 			mid = 96;
 			a /= 2;
@@ -237,6 +246,10 @@ static void SEC_CARD curve_span(GJob *j, int16_t x, int16_t end)
 			uint8_t *p = row + (x >> 2);
 			if (stop > end) stop = end;
 			if (green) b /= 2;
+			if (grass) {
+				uint16_t node = (uint16_t)((cell + 1) & 15);
+				b += near[node] * (16 - yf) + far[node] * yf;
+			}
 			step = (int16_t)(b - a);
 			light = (int16_t)(mid * 256 + a * 16 + step * (x & 15));
 			if (x & 3) {
@@ -350,6 +363,19 @@ static void SEC_CARD curve_green_bounds(PuttingCurves *w, const R *r)
 	}
 }
 
+static int SEC_CARD curve_covers_hazard(const Hole *h, uint8_t index)
+{
+	const SurfaceBounds *shape = &h->shape_bounds[index];
+	uint8_t n;
+
+	for (n = 0; n < h->hazard_count && h->hazard_shapes[n] < index; n++) {
+		const SurfaceBounds *hazard = &h->shape_bounds[h->hazard_shapes[n]];
+		if (shape->x0 <= hazard->x1 && hazard->x0 <= shape->x1 &&
+		    shape->y0 <= hazard->y1 && hazard->y0 <= shape->y1) return 1;
+	}
+	return 0;
+}
+
 static int SEC_CARD curve_surfaces(GJob *j, RenderClock clk, uint32_t until)
 {
 	const Hole *h = j->v.hole;
@@ -401,13 +427,17 @@ static int SEC_CARD curve_surfaces(GJob *j, RenderClock clk, uint32_t until)
 			w->contour += 3 + n * 4;
 			w->remaining--;
 		} else if ((w->material >= SURF_GREEN && w->material <= SURF_WATER) ||
-		           (h->base_surface >= SURF_GREEN && h->base_surface <= SURF_WATER)) {
+		           (h->base_surface >= SURF_GREEN && h->base_surface <= SURF_WATER) ||
+		           curve_covers_hazard(h, w->shape_index)) {
 			curve_polygon(j, w->shape + 2, w->shape[1], 14);
 		}
 		w->shape += 2 + w->shape[1] * 4;
 		w->shape_index++;
 		if (late(clk, until)) return 0;
 	}
+	if (edge_blend_enabled(j->r.lg == 3) &&
+	    !blend_edges(&j->r, (uint8_t *)(w + 1), -1, &w->edge_row, clk, until))
+		return 0;
 	return 1;
 }
 
@@ -482,7 +512,9 @@ uint32_t SEC_CARD render_green_curves_size(const Surface *s, const RenderView *v
 	    (s->depth != 2 && s->depth != 8) || (s->depth == 2 && s->scale != 1) ||
 	    s->fullview || (s->half && s->scale == 2) ||
 	    fit(s, &h) < 0) return 0;
-	return sizeof(GJob) + sizeof(PuttingCurves) + (s->depth == 2 ? MULU16(h, CURVE_GREEN_STRIDE) : 0);
+	return sizeof(GJob) + sizeof(PuttingCurves) +
+	       (s->depth == 2 ? MULU16(h, CURVE_GREEN_STRIDE) :
+	        edge_blend_enabled(s->depth == 8) ? MULU16(s->w, EDGE_ROWS) : 0);
 }
 
 int SEC_CARD render_green_curves_begin(Surface *s, const RenderView *v, void *work)
@@ -497,7 +529,7 @@ int SEC_CARD render_green_curves_begin(Surface *s, const RenderView *v, void *wo
 	w->shape_index = w->phase = 0;
 	w->material = v->hole->base_surface;
 	if (w->material < SURF_GREEN || w->material > SURF_WATER) w->material = SURF_ROUGH;
-	w->y = w->end = w->light_row = 0;
+	w->y = w->end = w->light_row = w->edge_row = 0;
 	w->shade.bits = j->r.bits;
 	w->shade.light = w->light;
 	w->shade.bayer = bayer;

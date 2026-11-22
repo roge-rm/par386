@@ -7,4 +7,5 @@ tee Gold
 holes 18
 scenery 5         # the bush backdrop: acacias, a far escarpment and a koppie under a warm sky
 wind 9            # light to moderate
+terrain-mesh all putting bunkers water
 terrain-mesh 8 putting bunkers

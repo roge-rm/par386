@@ -499,6 +499,7 @@ def main():
         "holes %d\n" % len(HOLES) +
         "scenery 3         # the bay backdrop: the sea, the volcano and wooded hills\n"
         "wind 8            # sheltered by the trees, lighter than the usual 10\n"
+        "terrain-mesh all putting bunkers water\n"
         "terrain-mesh 1 putting bunkers\n")
     total, pars, tot_t = 0, 0, [0, 0]
     for n, d in enumerate(HOLES, 1):

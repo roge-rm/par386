@@ -159,7 +159,7 @@ fixed hole_putt_len(const Hole *h, const SurfaceGrid *g, vec2 a, vec2 b, fixed l
 
 	if (!h->green || h->green == GREEN_USUAL) return len;
 	for (k = 1; k < 16; k += 2)
-		if (surface_at(g, a.x + dx * k, a.y + dy * k) == SURF_GREEN) n++;
+		if (hole_surface(h, g, a.x + dx * k, a.y + dy * k) == SURF_GREEN) n++;
 	on = (len >> 3) * n;
 	return len - on + on / h->green * GREEN_USUAL;
 }
@@ -283,13 +283,30 @@ static int SEC_DANA read_sand_atlas(Reader *r, Hole *h)
 	return 1;
 }
 
+static void SEC_CORE bounds_add(SurfaceBounds *b, uint16_t x, uint16_t y)
+{
+	if (x < b->x0) b->x0 = x;
+	if (y < b->y0) b->y0 = y;
+	if (x > b->x1) b->x1 = x;
+	if (y > b->y1) b->y1 = y;
+}
+
+static inline int SEC_DANA hazard_surface(uint8_t surface)
+{
+	return surface == SURF_BUNKER || surface == SURF_WATER;
+}
+
 static int SEC_DANA read_putting_curves(Reader *r, Hole *h)
 {
 	const uint8_t *curves = r->p + r->pos, *shape = h->shapes;
+	SurfaceBounds green = {UINT16_MAX, UINT16_MAX, 0, 0};
+	SurfaceBounds hazards = green;
 	uint16_t total = 0, next = 0;
 	uint8_t count = rd8(r), i;
+	int hazard_base = hazard_surface(h->base_surface);
 	if (!count || count > h->shape_count || r->len > 16384) return 0;
 	for (i = 0; i < count && !r->err; i++) {
+		SurfaceBounds bounds = {UINT16_MAX, UINT16_MAX, 0, 0};
 		uint8_t index = rd8(r);
 		uint16_t n = rd16(r), j;
 		if (index < next || index >= h->shape_count || n < 3 || n > HOLE_CURVE_VERT_MAX ||
@@ -305,8 +322,26 @@ static int SEC_DANA read_putting_curves(Reader *r, Hole *h)
 		for (j = 0; j < n; j++) {
 			uint16_t x = rd16(r), y = rd16(r);
 			if (x > (h->width << 4) || y > (h->length << 4)) return 0;
+			bounds_add(&bounds, x >> (4 + SURF_CELL_SHIFT), y >> (4 + SURF_CELL_SHIFT));
+		}
+		h->shape_bounds[index] = bounds;
+	}
+	h->hazard_count = 0;
+	for (i = 0, shape = h->shapes; i < h->shape_count; i++, shape += 2 + (uint16_t)shape[1] * 4) {
+		const SurfaceBounds *b = &h->shape_bounds[i];
+		if (shape[0] == SURF_GREEN || shape[0] == SURF_FRINGE) {
+			bounds_add(&green, b->x0, b->y0);
+			bounds_add(&green, b->x1, b->y1);
+		}
+		/* On a sand or water base, the land shapes can define a bank too. */
+		if (hazard_base || hazard_surface(shape[0])) {
+			h->hazard_shapes[h->hazard_count++] = i;
+			bounds_add(&hazards, b->x0, b->y0);
+			bounds_add(&hazards, b->x1, b->y1);
 		}
 	}
+	h->green_bounds = green;
+	h->hazard_bounds = hazards;
 	h->putting_curves = curves;
 	return 1;
 }
@@ -375,11 +410,16 @@ int hole_parse(Hole *h, const uint8_t *buf, uint32_t len)
 	if (h->shape_count > HOLE_MAX_SHAPES) ok = 0;
 	h->shapes = r.p + r.pos;
 	for (i = 0; ok && !r.err && i < h->shape_count; i++) {
+		SurfaceBounds bounds = {UINT16_MAX, UINT16_MAX, 0, 0};
 		if (rd8(&r) >= SURF_COUNT) ok = 0;
 		n = rd8(&r);
 		if (n < 3 || n > HOLE_MAX_VERTS) ok = 0;
-		for (j = 0; ok && !r.err && j < n; j++)
-			rdpoint(&r, h, &ok);
+		for (j = 0; ok && !r.err && j < n; j++) {
+			vec2 point = rdpoint(&r, h, &ok);
+			if (version == 6)
+				bounds_add(&bounds, point.x >> (16 + SURF_CELL_SHIFT), point.y >> (16 + SURF_CELL_SHIFT));
+		}
+		if (version == 6) h->shape_bounds[i] = bounds;
 	}
 
 	h->object_count = rd16(&r);
@@ -603,6 +643,93 @@ uint8_t surface_at(const SurfaceGrid *g, fixed x, fixed y)
 	return s;
 }
 
+static int SEC_CARD contour_contains(const uint8_t *p, uint16_t n, uint8_t shift, fixed x, fixed y)
+{
+	const uint8_t *end = p + n * 4, *prev = end - 4;
+	int16_t ay = GET16(prev + 2), row = (int16_t)(y >> shift);
+	int inside = 0;
+
+	for (; p < end; p += 4) {
+		int16_t by = GET16(p + 2);
+		if ((ay <= row) != (by <= row)) {
+			int16_t ax = GET16(prev), bx = GET16(p);
+			int64_t a = (int64_t)(x - ((fixed)ax << shift)) * (by - ay);
+			int64_t b = (int64_t)(y - ((fixed)ay << shift)) * (bx - ax);
+			if (by > ay ? a < b : a > b) inside ^= 1;
+		}
+		prev = p;
+		ay = by;
+	}
+	return inside;
+}
+
+static inline int SEC_CARD bounds_contains(const SurfaceBounds *b, uint16_t x, uint16_t y)
+{
+	return x >= b->x0 && y >= b->y0 && x <= b->x1 && y <= b->y1;
+}
+
+static int SEC_CARD exact_cell(const Hole *h, uint16_t x, uint16_t y)
+{
+	uint8_t n;
+
+	if (bounds_contains(&h->green_bounds, x, y)) return 1;
+	if (bounds_contains(&h->hazard_bounds, x, y))
+		for (n = 0; n < h->hazard_count; n++)
+			if (bounds_contains(&h->shape_bounds[h->hazard_shapes[n]], x, y)) return 1;
+	return 0;
+}
+
+static uint8_t SEC_CARD contour_surface(const Hole *h, fixed x, fixed y, uint16_t cx, uint16_t cy)
+{
+	const uint8_t *shape, *curve;
+	uint8_t i, left, surface;
+
+	/* A cell can cross a contour even when its centre is on the other side.
+	 * Use the same shape order and contour replacements as the renderer. */
+	shape = h->shapes;
+	curve = h->putting_curves;
+	left = *curve++;
+	surface = h->base_surface;
+	for (i = 0; i < h->shape_count; i++) {
+		uint8_t type = shape[0], shift = 14;
+		uint16_t points = shape[1];
+		const uint8_t *p = shape + 2;
+		shape = p + points * 4;
+		if (left && *curve == i) {
+			points = GET16(curve + 1);
+			p = curve + 3;
+			curve = p + points * 4;
+			left--;
+			shift = 12;
+		}
+		if (type != surface && bounds_contains(&h->shape_bounds[i], cx, cy) &&
+		    contour_contains(p, points, shift, x, y)) surface = type;
+	}
+	return surface;
+}
+
+uint8_t hole_surface(const Hole *h, const SurfaceGrid *g, fixed x, fixed y)
+{
+	uint16_t cx, cy;
+	fixed xmax, ymax;
+	uint8_t surface;
+	int off;
+
+	if (!h->putting_curves) return surface_at(g, x, y);
+	xmax = (fixed)h->width << FIX_SHIFT;
+	ymax = (fixed)h->length << FIX_SHIFT;
+	off = x < 0 || y < 0 || x >= xmax || y >= ymax;
+	if (off) {
+		/* Just inside the boundary, where a wet edge continues into the sea. */
+		x = x < 0 ? 0 : x >= xmax ? xmax - 1 : x;
+		y = y < 0 ? 0 : y >= ymax ? ymax - 1 : y;
+	}
+	cx = (uint16_t)(x >> (FIX_SHIFT + SURF_CELL_SHIFT));
+	cy = (uint16_t)(y >> (FIX_SHIFT + SURF_CELL_SHIFT));
+	surface = exact_cell(h, cx, cy) ? contour_surface(h, x, y, cx, cy) : surface_at(g, x, y);
+	return off && surface != SURF_WATER ? SURF_OOB : surface;
+}
+
 uint8_t hole_hazards(const Hole *h, const SurfaceGrid *g, vec2 ball, angle aim, HazardCarry *out, uint8_t cap)
 {
 	vec2 step = vec2_dir(aim);
@@ -612,7 +739,7 @@ uint8_t hole_hazards(const Hole *h, const SurfaceGrid *g, vec2 ball, angle aim, 
 
 	if (!g || !g->cells) return 0;
 	while (count < cap && ball.x >= 0 && ball.x < xmax && ball.y >= 0 && ball.y < ymax) {
-		uint8_t s = surface_at(g, ball.x, ball.y);
+		uint8_t s = hole_surface(h, g, ball.x, ball.y);
 		if (s != SURF_WATER && s != SURF_BUNKER && s != SURF_OOB) s = SURF_ROUGH;
 		if (s != prev) {
 			if (prev != SURF_ROUGH && yards - first >= 2) {

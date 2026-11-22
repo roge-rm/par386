@@ -128,6 +128,7 @@ static void tris(const uint8_t *b)
 	t.lg = b[TT_LG];
 	t.noise = (const int8_t *)P32(b, TT_NOISE);
 	t.mow_phase = S16(b, TT_MOW_PHASE);
+	t.reflection = (const uint8_t *)P32(b, TT_REFLECTION);
 	t.turf = 0;
 	if (t.n < 0) t.n = 0;
 	if (t.n > TERRA_TRIS_MAX) t.n = TERRA_TRIS_MAX;
@@ -298,6 +299,20 @@ static void mesh_project(uint8_t *b)
 	b[TMP_PROJECTED] = projected;
 }
 
+static void edges(const uint8_t *b)
+{
+	TerraEdges t;
+	t.bits = (uint8_t *)P32(b, 0);
+	t.marks = (uint8_t *)P32(b, 4);
+	t.rb = be16(b + 8);
+	t.w = be16(b + 10);
+	t.vh = be16(b + 12);
+	t.horizon = S16(b, 14);
+	t.y = be16(b + 16);
+	t.end = be16(b + 18);
+	terra_edges(&t);
+}
+
 unsigned long TO16ARM_ENTRY terraarm_entry(const void *emul, void *user, void *call68k)
 {
 	const uint8_t *u = (const uint8_t *)user;
@@ -312,5 +327,6 @@ unsigned long TO16ARM_ENTRY terraarm_entry(const void *emul, void *user, void *c
 	else if (op == TERRA_MAP) map(b);
 	else if (op == TERRA_CURVE) curve_shade(b);
 	else if (op == TERRA_MESH_PROJECT) mesh_project(b);
+	else if (op == TERRA_EDGES) edges(b);
 	return 0;
 }

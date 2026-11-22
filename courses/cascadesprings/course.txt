@@ -7,4 +7,5 @@ tee Meadow
 holes 18
 scenery 6         # the Rockies backdrop: snow-capped peaks over wooded slopes
 wind 8            # light to moderate
+terrain-mesh all putting bunkers water
 terrain-mesh 13 putting bunkers

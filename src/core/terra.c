@@ -9,6 +9,137 @@
 #define COUNT(e) (e)
 #endif
 
+typedef struct {
+	const int8_t *near, *far, *glint;
+	int16_t mix;
+	uint16_t tilt;
+} WaterLight;
+
+static inline WaterLight water_light(const int8_t *noise, uint16_t y)
+{
+	/* The reflected light is stretched across the surface. */
+	uint16_t phase = y < 176 ? y * 2 : (uint16_t)(352 + y - 176);
+	uint16_t band = phase >> 3;
+	WaterLight light;
+
+	light.near = noise + ((band & 15) << 4);
+	light.far = noise + (((band + 1) & 15) << 4);
+	light.glint = noise + ((((y >> 1) ^ (y >> 5)) & 15) << 4);
+	light.mix = (int16_t)(phase & 7);
+	light.tilt = y >> 4;
+	return light;
+}
+
+/* Sample points are screen-aligned so adjoining spans see the same light. */
+static inline int16_t water_reflection(const WaterLight *t, uint16_t x)
+{
+	uint16_t cell = ((x + t->tilt) >> 5) & 15;
+	uint16_t next = (cell + 1) & 15;
+	int16_t a = (int16_t)(t->near[cell] * (8 - t->mix) + t->far[cell] * t->mix);
+	int16_t b = (int16_t)(t->near[next] * (8 - t->mix) + t->far[next] * t->mix);
+	int16_t f = (int16_t)(((x + t->tilt) >> 2) & 7);
+	int16_t glint = t->glint[((x >> 4) + (t->tilt >> 1)) & 15];
+
+	return (int16_t)(((a * (8 - f) + b * f) >> 5) + (glint > 3 ? (glint - 3) * 3 : 0));
+}
+
+static inline int16_t water_colour(const WaterLight *t, const uint8_t *sky, uint16_t x, uint16_t last)
+{
+	int16_t shade = water_reflection(t, x);
+	if (sky) {
+		uint16_t at = x < last ? x : last;
+		shade += (int16_t)((sky[at] - 160) >> 3);
+	}
+	return shade;
+}
+
+static void SEC_CARD water_colour_span(uint8_t *row, const int8_t *noise, const uint8_t *dither,
+                                        const uint8_t *sky, uint16_t last,
+                                        int16_t x, int16_t end, int16_t y)
+{
+	WaterLight t = water_light(noise, (uint16_t)y);
+	int16_t shade = (int16_t)(104 - (y * 3 >> 4));
+	int16_t reflection = water_colour(&t, sky, (uint16_t)(x & ~3), last);
+
+	if (shade < 43) shade = 43;
+	while (x < end) {
+		int16_t next = (int16_t)((x + 4) & ~3);
+		int16_t stop = next < end ? next : end;
+		int16_t target = water_colour(&t, sky, (uint16_t)next, last);
+		int16_t step = (int16_t)(target - reflection);
+		int16_t light = (int16_t)((shade + reflection) * 4 + step * (x & 3));
+		for (; x < stop; x++, light += step) {
+			int16_t level = (int16_t)(((light >> 2) + dither[x & 3]) >> 4);
+			if (level < 0) level = 0;
+			if (level > PAL_RAMP_N - 1) level = PAL_RAMP_N - 1;
+			row[x] = (uint8_t)(PAL_WATER + level);
+		}
+		reflection = target;
+	}
+}
+
+void terra_water_packed(uint8_t *row, const int8_t *noise, int16_t x, int16_t end, int16_t y)
+{
+	WaterLight t = water_light(noise, (uint16_t)(2 * y));
+	while (x < end) {
+		int16_t stop = (int16_t)((x + 4) & ~3);
+		uint8_t ink, mask, *p = row + (x >> 2);
+		int16_t reflection = water_reflection(&t, (uint16_t)((x & ~3) * 2));
+
+		if (stop > end) stop = end;
+		/* Broken highlights and a light stipple in the darker water. */
+		ink = 0xaa;
+		if (reflection > 4 && ((y + (x >> 4)) & 3) == 0)
+			ink = 0x55;
+		else if (reflection < -5)
+			ink = y & 1 ? 0xab : 0xba;
+		mask = (uint8_t)((255U >> ((x & 3) * 2)) & (255U << (((4 - stop) & 3) * 2)));
+		*p = (uint8_t)((*p & ~mask) | (ink & mask));
+		x = stop;
+	}
+}
+
+static inline int16_t grass_patch(const int8_t *noise, uint16_t cell, uint16_t row)
+{
+	return noise[((row & 15) << 4) + (cell & 15)];
+}
+
+static void SEC_CARD packed_run(uint8_t *row, int16_t x, int16_t end, uint8_t ink)
+{
+	uint8_t *p = row + (x >> 2), *last = row + ((end - 1) >> 2);
+	uint8_t left = (uint8_t)(255U >> ((x & 3) * 2));
+	uint8_t right = (uint8_t)(255U << (((4 - end) & 3) * 2));
+
+	if (p == last) {
+		uint8_t mask = (uint8_t)(left & right);
+		*p = (uint8_t)((*p & ~mask) | (ink & mask));
+	} else {
+		*p = (uint8_t)((*p & ~left) | (ink & left));
+		for (p++; p < last; p++) *p = ink;
+		*p = (uint8_t)((*p & ~right) | (ink & right));
+	}
+}
+
+static void SEC_CARD compact_grass_span(const TerraTris *t, uint8_t *row, uint8_t base,
+                                       int16_t light, int16_t x, int16_t end, int16_t y)
+{
+	const int8_t *noise = t->noise;
+	const uint8_t *pattern = t->pat2 + (base << 2) + (y & 3);
+	uint16_t band = y >> 3, fy = y & 7;
+	while (x < end) {
+		uint16_t cell = x >> 3;
+		int16_t stop = (int16_t)((cell + 1) << 3);
+		int16_t patch = (int16_t)(grass_patch(noise, cell, band) * (8 - fy) +
+		                           grass_patch(noise, cell, band + 1) * fy);
+		int16_t shade = (int16_t)((light + 8 + (patch >> 2)) >> 4);
+		if (shade < 0) shade = 0;
+		if (shade >= PAL_RAMP_N) shade = PAL_RAMP_N - 1;
+		if (stop > end) stop = end;
+		packed_run(row, x, stop, pattern[shade * 4]);
+		x = stop;
+	}
+}
+
 void terra_curve_shade(const TerraCurveShade *t)
 {
 	const uint8_t *cmd = t->spans;
@@ -24,10 +155,15 @@ void terra_curve_shade(const TerraCurveShade *t)
 		const int8_t *far = near + CURVE_LIGHT_STRIDE;
 		int16_t yf = (int16_t)(y & 15), sf = cmd[6];
 		int16_t base = PAL_TERRAIN + sf * PAL_RAMP_N;
-		int16_t mid = sf == SURF_FRINGE || sf == SURF_WATER ? 48 : 64;
-		int textured = sf == SURF_GREEN || sf == SURF_FRINGE || sf == SURF_BUNKER;
+		int16_t mid = sf == SURF_FRINGE ? 48 : 64;
+		int grass = sf < SURF_GREEN || sf == SURF_TEE;
+		int textured = grass || sf == SURF_GREEN || sf == SURF_FRINGE || sf == SURF_BUNKER;
 		uint16_t grain_shift = sf == SURF_FRINGE;
 
+		if (sf == SURF_WATER) {
+			water_colour_span(row, t->noise, pattern, 0, 0, x, end, y);
+			continue;
+		}
 		while (x < end) {
 			uint16_t cell = x >> CURVE_LIGHT_SHIFT;
 			uint16_t stop = (uint16_t)((cell + 1) << CURVE_LIGHT_SHIFT);
@@ -38,6 +174,13 @@ void terra_curve_shade(const TerraCurveShade *t)
 			if (sf == SURF_GREEN) {
 				a /= 2;
 				b /= 2;
+			}
+			if (grass) {
+				uint16_t band = y >> 4;
+				a += grass_patch(t->noise, cell, band) * (16 - yf) +
+				     grass_patch(t->noise, cell, band + 1) * yf;
+				b += grass_patch(t->noise, cell + 1, band) * (16 - yf) +
+				     grass_patch(t->noise, cell + 1, band + 1) * yf;
 			}
 			step = (int16_t)(b - a);
 			light = (int16_t)(mid * 256 + a * 16 + step * (x & 15));
@@ -708,7 +851,7 @@ static void SEC_CARD turf_span(const TurfPaint *t, const int8_t *tex, const uint
 	int16_t grain = base == PAL_FRINGE ? 32 : base == PAL_GREEN ? 16 : 0;
 	/* Fade the stretched grass mottle from halfway down the view. */
 	int16_t close = (int16_t)((y - (vh >> 1)) >> 2);
-	int16_t foreground = grain || close < 0 ? 0 : close > TURF_MIX_MAX ? TURF_MIX_MAX : close;
+	int16_t foreground = grain || close < 0 ? 0 : close > TURF_MIX_MAX / 2 ? TURF_MIX_MAX / 2 : close;
 
 	for (; x <= end; x++) {
 		int32_t level = lv + (light >> 8) + dither[x & 3];
@@ -726,21 +869,21 @@ static void SEC_CARD turf_span(const TurfPaint *t, const int8_t *tex, const uint
 				if (mow_mix > mix) mix = mow_mix;
 			}
 		}
-		if (t->coarse && mix < TURF_MIX_MAX) {
+		if (t->coarse) {
 			int16_t coarse = turf_mottle(tex, u, v, t->coarse_x, t->coarse_y);
-			int16_t grass = (int16_t)((coarse * t->coarse * 5) >> 6);
+			int16_t grass = (int16_t)((coarse * t->coarse * 7) >> 6);
 			if (t->fine) {
 				uint16_t ux = (uint16_t)((u >> t->fine_x) & 15);
 				uint16_t vy = (uint16_t)((v >> t->fine_y) & 15);
-				grass += (int16_t)(((tex[(vy << 4) + ux] + 1) * t->fine * 3) >> 6);
+				grass += (int16_t)(((tex[(vy << 4) + ux] + 1) * t->fine * 4) >> 6);
 			}
-			level += grass - ((grass * mix + 16) >> TURF_MIX_SHIFT);
+			level += grass - ((grass * mix + 32) >> (TURF_MIX_SHIFT + 1));
 		}
 		if ((mix || grain) && tex) {
 			/* Keep the grain fine on the short grass and near the ball. */
 			uint16_t nx = (uint16_t)((x + 3 * (y >> 4)) & 15);
 			uint16_t ny = (uint16_t)((y + 5 * (x >> 4)) & 15);
-			level += ((tex[(ny << 4) + nx] + 1) * (mix + grain)) >> (TURF_MIX_SHIFT + 1);
+			level += ((tex[(ny << 4) + nx] + 1) * (mix + grain)) >> TURF_MIX_SHIFT;
 		}
 		level >>= 4;
 		if (level < 0) level = 0;
@@ -835,18 +978,16 @@ void terra_tris(const TerraTris *tt)
 			xr += dr;
 			if (xa > xb) continue;
 			row = tt->bits + MULU16(y, tt->rb);
-			if (compact) {
-				/* 2 bits: the level's pattern row, whole bytes in the middle */
-				uint8_t pat = compact[y & 3], m;
-				uint8_t *p = row + (xa >> 2), *pe = row + (xb >> 2);
-				m = (uint8_t)(0xFF >> ((xa & 3) << 1));
-				if (p == pe) m &= (uint8_t)(0xFF << ((3 - (xb & 3)) << 1));
-				*p = (uint8_t)((*p & ~m) | (pat & m));
-				if (p != pe) {
-					for (p++; p < pe; p++) *p = pat;
-					m = (uint8_t)(0xFF << ((3 - (xb & 3)) << 1));
-					*p = (uint8_t)((*p & ~m) | (pat & m));
-				}
+			if (base == PAL_WATER && tt->noise && lg == 1) {
+				terra_water_packed(row, tt->noise, xa, xb + 1, y);
+			} else if (base == PAL_WATER && tt->noise && lg == 3) {
+				water_colour_span(row, tt->noise, bayer + ((y & 3) << 2),
+				                  tt->reflection, w - 1, xa, xb + 1, y);
+			} else if (compact) {
+				if (tt->noise && y > 90 && ((base >= PAL_ROUGH && base <= PAL_DEEP_ROUGH) || base == PAL_TEE))
+					compact_grass_span(tt, row, base, lv, xa, xb + 1, y);
+				else
+					packed_run(row, xa, xb + 1, compact[y & 3]);
 			} else if (lg == 3) {
 				const uint8_t *tb = bayer + ((y & 3) << 2);
 				if (shaded && base == PAL_SAND)
@@ -1058,6 +1199,112 @@ void terra_map(const TerraMap *t)
 			}
 			if (lg == 3) p[x] = c;
 			else PUT(t, p + ((uint16_t)x >> (3 - lg)), x, y, c);
+		}
+	}
+}
+
+#define EDGE_WATER 1
+#define EDGE_SAND 2
+#define EDGE_COLLAR 3
+#define EDGE_MAX 8
+
+static inline uint8_t edge_material(uint8_t c)
+{
+	if (c >= PAL_ROUGH && c < PAL_PATH) return (uint8_t)((c - PAL_ROUGH) >> 3);
+	if (c >= PAL_TEE && c < PAL_TEE + PAL_RAMP_N) return SURF_ROUGH;
+	return SURF_COUNT;
+}
+
+static inline uint8_t edge_kind(uint8_t a, uint8_t b)
+{
+	if (a == b || a == SURF_COUNT || b == SURF_COUNT) return 0;
+	if (a <= SURF_FRINGE || b <= SURF_FRINGE) {
+		if (a == SURF_WATER || b == SURF_WATER) return EDGE_WATER;
+		if (a == SURF_BUNKER || b == SURF_BUNKER) return EDGE_SAND;
+		if (a + b == SURF_GREEN + SURF_FRINGE && a != b) {
+			if (a == SURF_GREEN || b == SURF_GREEN) return EDGE_COLLAR;
+		}
+	}
+	return 0;
+}
+
+static void SEC_UI edge_mark(const TerraEdges *t, int16_t x, int16_t y,
+                               int16_t dx, int16_t dy, uint8_t sf, uint8_t kind)
+{
+	int16_t reach = kind == EDGE_COLLAR ? 4 : kind == EDGE_WATER ? EDGE_MAX : EDGE_MAX - 1;
+	int16_t depth = t->horizon < 0 ? 128 : y - t->horizon;
+	int16_t k;
+
+	if (depth < 64) reach = (int16_t)(1 + ((reach - 1) * (depth < 0 ? 0 : depth) >> 6));
+	if (t->w == 160) reach = (int16_t)((reach + 1) >> 1);
+	for (k = reach; k && x >= 0 && x < t->w && y >= 0 && y < t->vh; k--, x += dx, y += dy) {
+		uint8_t *mark;
+		if (edge_material(t->bits[MULU16(y, t->rb) + x]) != sf) break;
+		if (y < t->y || y >= t->end) continue;
+		mark = t->marks + MULU16(y - t->y, t->w) + x;
+		if (k > (*mark >> 2)) *mark = (uint8_t)((k << 2) | kind);
+	}
+}
+
+void terra_edges(const TerraEdges *t)
+{
+	int16_t x, y, start = (int16_t)t->y - EDGE_MAX + 1;
+	int16_t stop = (int16_t)t->end + EDGE_MAX;
+	uint16_t n = (uint16_t)MULU16(t->end - t->y, t->w);
+	uint8_t *mark;
+
+	for (mark = t->marks; n; n--) *mark++ = 0;
+	if (start < 1) start = 1;
+	if (stop > t->vh) stop = t->vh;
+	for (y = start; y < stop; y++) {
+		const uint8_t *row = t->bits + MULU16(y, t->rb), *above = row - t->rb;
+		for (x = 0; x < t->w; x++) {
+			uint8_t a = row[x], b = above[x], kind;
+			if (((a - PAL_TERRAIN) ^ (b - PAL_TERRAIN)) & 0xf8) {
+				uint8_t sa = edge_material(a), sb = edge_material(b);
+				kind = edge_kind(sa, sb);
+				if (kind) {
+					edge_mark(t, x, y, 0, 1, sa, kind);
+					edge_mark(t, x, y - 1, 0, -1, sb, kind);
+				}
+			}
+		}
+	}
+	for (mark = t->marks, y = t->y; y < t->end; y++) {
+		uint8_t *row = t->bits + MULU16(y, t->rb);
+		for (x = 1; x < t->w; x++) {
+			uint8_t a = row[x], b = row[x - 1];
+			if (((a - PAL_TERRAIN) ^ (b - PAL_TERRAIN)) & 0xf8) {
+				uint8_t sa = edge_material(a), sb = edge_material(b);
+				uint8_t kind = edge_kind(sa, sb);
+				if (kind) {
+					edge_mark(t, x, y, 1, 0, sa, kind);
+					edge_mark(t, x - 1, y, -1, 0, sb, kind);
+				}
+			}
+		}
+		for (x = 0; x < t->w; x++, mark++) {
+			uint8_t kind = *mark & 3, c = row[x], sf;
+			int16_t shade, amount, grain;
+			uint16_t at;
+			if (!kind) continue;
+			sf = edge_material(c);
+			at = (uint16_t)(x * 29U + y * 53U);
+			grain = (int16_t)((at ^ (at >> 4) ^ (at >> 9)) & 15);
+			amount = (int16_t)((*mark >> 2) * 4);
+			if (kind == EDGE_WATER) {
+				if (sf == SURF_WATER) amount >>= 1;
+				else amount = -amount;
+			} else if (kind == EDGE_SAND) {
+				amount = sf == SURF_BUNKER ? -amount : (grain < 6 ? amount : amount >> 2);
+			} else {
+				amount = sf == SURF_GREEN ? -(amount >> 1) : amount >> 1;
+			}
+			shade = (int16_t)((c - PAL_TERRAIN) & 7);
+			shade += (amount + grain) >> 4;
+			if (shade < 0) shade = 0;
+			if (shade > 7) shade = 7;
+			row[x] = (uint8_t)((c - ((c - PAL_TERRAIN) & 7)) + shade);
 		}
 	}
 }

@@ -18,7 +18,7 @@
 
 /* What the ARM entry is asked to run, the first 2 bytes of its argument
  * block, a pointer to the job in the next 4. */
-enum { TERRA_ROW, TERRA_TRIS, TERRA_SKY, TERRA_MAP, TERRA_CURVE, TERRA_MESH_PROJECT };
+enum { TERRA_ROW, TERRA_TRIS, TERRA_SKY, TERRA_MAP, TERRA_CURVE, TERRA_MESH_PROJECT, TERRA_EDGES };
 
 /* One depth step of the terrain march, every column (render.c terrain). */
 typedef struct TerraRow {
@@ -162,6 +162,7 @@ typedef struct TerraTris {
 	const TerraTurf *turf;      /* 30: optional parallel vertex data for 8-bit turf */
 	const int8_t *noise;        /* 34: signed 16 x 16 grain tile */
 	int16_t mow_phase;          /* 38: fairway band origin in yards */
+	const uint8_t *reflection;  /* 40: one row of sky luma, or null */
 } TerraTris;
 
 #define TT_BITS 0
@@ -177,7 +178,8 @@ typedef struct TerraTris {
 #define TT_TURF 30
 #define TT_NOISE 34
 #define TT_MOW_PHASE 38
-#define TT_SIZE 40
+#define TT_REFLECTION 40
+#define TT_SIZE 44
 #define TT_TURF_SIZE 24
 
 /* The baked fairway shade encodes the 12-yard band's polarity. */
@@ -368,11 +370,23 @@ static __inline__ int8_t mesh_light_sample(const int8_t *light, uint16_t w, uint
 	far = near + w;
 	a = (int32_t)near[0] * 256 + MULS16(near[1] - near[0], fx);
 	b = (int32_t)far[0] * 256 + MULS16(far[1] - far[0], fx);
-	return (int8_t)((a + (MULS16(b - a, fy) >> 8) + 128) >> 8);
+	/* Halve the row difference so it fits a signed 16-bit multiply. */
+	return (int8_t)((a + (MULS16((b - a) >> 1, fy) >> 7) + 128) >> 8);
 }
+
+#define EDGE_ROWS 6
+typedef struct {
+	uint8_t *bits, *marks;
+	uint16_t rb, w, vh;
+	int16_t horizon;
+	uint16_t y, end;
+} TerraEdges;
+
+void SEC_UI terra_edges(const TerraEdges *t);
 
 void SEC_CORE terra_row(TerraRow *t);
 void SEC_CARD terra_tris(const TerraTris *t);
+void SEC_DANA terra_water_packed(uint8_t *row, const int8_t *noise, int16_t x, int16_t end, int16_t y);
 void SEC_CORE terra_sky(TerraSky *t);
 void SEC_CORE terra_map(const TerraMap *t);
 void SEC_CORE terra_curve_shade(const TerraCurveShade *t);

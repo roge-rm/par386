@@ -312,6 +312,7 @@ def main():
         (folder / "course.txt").write_text(
             f"name {name}\n" + "".join(f"tee {tee}\n" for tee in TEES)
             + f"holes {len(holes)}\nscenery {scenery}\nwind {wind}\ngreen {green}\n"
+            + "terrain-mesh all putting bunkers water\n"
             + f"terrain-mesh {CURVED_HOLES[slug]} putting bunkers\n")
         for n, spec in enumerate(holes, 1):
             write_hole(folder, n, scenery, spec)

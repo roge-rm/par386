@@ -21,6 +21,7 @@
  * there's one divide per depth step and a few per object, none per pixel.
  * Big tables are const (paltab.h) and sprites stay in their resources. */
 #include "render.h"
+#include "ball.h"
 #include "pal.h"
 #include "paltab.h"
 #include "profile.h"
@@ -111,7 +112,7 @@ typedef struct {
 	int16_t k;                  /* objects still to draw */
 } Job;
 
-enum { JS_GATHER, JS_TERRAIN, JS_SKY, JS_OBJECTS, JS_GOLFER, JS_DOUBLE, JS_DONE, JS_MESH };
+enum { JS_GATHER, JS_TERRAIN, JS_SKY, JS_OBJECTS, JS_GOLFER, JS_DOUBLE, JS_DONE, JS_MESH, JS_EDGES };
 
 /* Whether a slice's time is up. */
 static int SEC_RENDER late(RenderClock clk, uint32_t until)
@@ -1010,6 +1011,31 @@ static void SEC_RENDER water_boxes(R *r, const Hole *h)
 }
 
 static void (*terra_fn)(uint8_t op, void *job);
+
+static inline int SEC_DANA edge_blend_enabled(int colour)
+{
+#ifdef __palmos__
+	return colour && terra_fn;
+#else
+	return colour;
+#endif
+}
+
+static int SEC_DANA blend_edges(const R *r, uint8_t *marks, int16_t horizon,
+                                int16_t *next, RenderClock clk, uint32_t until)
+{
+	TerraEdges t = {r->bits, marks, r->rb, r->w, r->vh, horizon, 0, 0};
+	while (*next < r->vh) {
+		t.y = (uint16_t)*next;
+		t.end = (uint16_t)(*next + EDGE_ROWS);
+		if (t.end > t.vh) t.end = t.vh;
+		if (terra_fn) terra_fn(TERRA_EDGES, &t);
+		else terra_edges(&t);
+		*next = (int16_t)t.end;
+		if (late(clk, until)) return 0;
+	}
+	return 1;
+}
 
 void render_terra_use(void (*fn)(uint8_t op, void *job))
 {
@@ -1968,6 +1994,17 @@ int render_scene_visual(Surface *s, const RenderView *v, const RenderArt *a, voi
 	return 0;
 }
 
+static int16_t SEC_RENDER scene_ball_row(Job *j)
+{
+	R *r = &j->r;
+	int16_t m;
+	uint8_t sh;
+
+	if (j->mesh) return j->mesh->ball_y;
+	kz(r, r->stepf, (uint32_t)j->back, &m, &sh);
+	return (int16_t)(r->yh + (MULS16(dz6(r->camb, j->bh), m) >> sh));
+}
+
 int render_scene_step(void *work, RenderClock clk, uint32_t until)
 {
 	Job *j = (Job *)work;
@@ -1980,6 +2017,17 @@ int render_scene_step(void *work, RenderClock clk, uint32_t until)
 	do {
 		if (j->stage == JS_MESH) {
 			x = (int16_t)mesh_paint(j, clk, until, pal_pat2, bayer, pal_grey);
+			t = lap(r->st, RS_TERRAIN, t);
+			if (!x) {
+				if (j->stage != JS_MESH) continue;
+				return 0;
+			}
+			j->y = 0;
+			j->stage = edge_blend_enabled(r->lg == 3) ? JS_EDGES : JS_OBJECTS;
+			continue;
+		}
+		if (j->stage == JS_EDGES) {
+			x = (int16_t)blend_edges(r, r->row, r->yh, &j->y, clk, until);
 			t = lap(r->st, RS_TERRAIN, t);
 			if (!x) return 0;
 			j->stage = JS_OBJECTS;
@@ -2025,17 +2073,17 @@ int render_scene_step(void *work, RenderClock clk, uint32_t until)
 			j->stage = JS_GOLFER;
 			break;
 		case JS_GOLFER:
-			{
-				int16_t m;
-				uint8_t sh;
-				kz(r, r->stepf, (uint32_t)j->back, &m, &sh);
-				bx = r->cx;
-				by = (int16_t)(r->yh + (MULS16(dz6(r->camb, j->bh), m) >> sh));
-			}
+			bx = j->mesh ? j->mesh->ball_x : r->cx;
+			by = scene_ball_row(j);
 			if (a->golfer) {
 				RenderGolfer *g = a->golfer;
 				golfer_box(r, g, bx, by);
 				g->mesh_style = j->mesh != 0;
+				if (j->mesh) {
+					g->camera_raise = j->mesh->ball_raise;
+					g->camera_shift = vec2_sub(j->mesh->address, j->v.ball);
+					g->camera_back = (int16_t)(j->back >> FIX_SHIFT);
+				}
 				if (g->mesh_style) golfer_contact(r, g, bx, by);
 				if (g->w && g->under) {
 					under_io(r, g, 1, 0);
@@ -3131,6 +3179,7 @@ static int SEC_RENDER green_begin(Surface *s, const RenderView *v, void *work, u
 	j->tt.turf = 0;
 	j->tt.noise = 0;
 	j->tt.mow_phase = 0;
+	j->tt.reflection = 0;
 	j->far = j->rows[0];
 	j->near = j->rows[1];
 	return 0;

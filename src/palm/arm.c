@@ -40,7 +40,7 @@ typedef char TerraRowOffs[AT(TerraRow, grey, TR_GREY) && AT(TerraRow, dpys, TR_D
 	&& AT(TerraRow, spans, TR_SIZE) ? 1 : -1];
 typedef char TerraTrisOffs[AT(TerraTris, grey, TT_GREY) && AT(TerraTris, rb, TT_RB) && AT(TerraTris, n, TT_N)
 	&& AT(TerraTris, lg, TT_LG) && AT(TerraTris, turf, TT_TURF) && AT(TerraTris, noise, TT_NOISE)
-	&& AT(TerraTris, mow_phase, TT_MOW_PHASE) && AT(TerraTurf, depth, 18)
+	&& AT(TerraTris, mow_phase, TT_MOW_PHASE) && AT(TerraTris, reflection, TT_REFLECTION) && AT(TerraTurf, depth, 18)
 	&& sizeof(TerraTris) == TT_SIZE && sizeof(TerraTri) == 16 && sizeof(TerraTurf) == TT_TURF_SIZE ? 1 : -1];
 typedef char TerraSkyOffs[AT(TerraSky, grey, TS_GREY) && AT(TerraSky, pos, TS_POS) && AT(TerraSky, w, TS_W)
 	&& AT(TerraSky, bw, TS_BW) && AT(TerraSky, lg, TS_LG) && AT(TerraSky, px, TS_SIZE) ? 1 : -1];
@@ -50,6 +50,10 @@ typedef char TerraCurveOffs[AT(TerraCurveShade, light, TC_LIGHT) && AT(TerraCurv
 	&& AT(TerraCurveShade, spans, TC_SPANS) && AT(TerraCurveShade, rb, TC_RB)
 	&& AT(TerraCurveShade, count, TC_COUNT) && AT(TerraCurveShade, noise, TC_NOISE)
 	&& sizeof(TerraCurveShade) == TC_SIZE ? 1 : -1];
+typedef char TerraEdgesOffs[AT(TerraEdges, bits, 0) && AT(TerraEdges, marks, 4)
+	&& AT(TerraEdges, rb, 8) && AT(TerraEdges, w, 10) && AT(TerraEdges, vh, 12)
+	&& AT(TerraEdges, horizon, 14) && AT(TerraEdges, y, 16)
+	&& AT(TerraEdges, end, 18) && sizeof(TerraEdges) == 20 ? 1 : -1];
 
 typedef char TerraMeshOffs[AT(TerraMeshProject, light, TMP_LIGHT) &&
 	AT(TerraMeshProject, origin_side, TMP_ORIGIN_SIDE) && AT(TerraMeshProject, low, TMP_LOW) &&

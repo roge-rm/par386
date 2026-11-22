@@ -53,7 +53,7 @@ static fixed SEC_CORE power_for(int32_t share)
 static uint8_t SEC_CORE wet(const CpuView *v, angle a, int32_t yards)
 {
 	fixed d = (fixed)yards << 16;
-	uint8_t s = surface_at(v->grid, v->ball.x + fix_mulq14(d, icos(a)), v->ball.y + fix_mulq14(d, isin(a)));
+	uint8_t s = hole_surface(v->hole, v->grid, v->ball.x + fix_mulq14(d, icos(a)), v->ball.y + fix_mulq14(d, isin(a)));
 	return s == SURF_WATER || s == SURF_OOB;
 }
 
@@ -65,7 +65,8 @@ static int32_t SEC_CORE water(const CpuView *v, angle a, int32_t end, int32_t *n
 	*near = 0;
 	for (d = 20; d < end; d += 4) {
 		fixed f = (fixed)d << 16;
-		if (surface_at(v->grid, v->ball.x + fix_mulq14(f, icos(a)), v->ball.y + fix_mulq14(f, isin(a))) != SURF_WATER) continue;
+		if (hole_surface(v->hole, v->grid, v->ball.x + fix_mulq14(f, icos(a)),
+		                 v->ball.y + fix_mulq14(f, isin(a))) != SURF_WATER) continue;
 		if (!*near) *near = d;
 		far = d + 4;
 	}

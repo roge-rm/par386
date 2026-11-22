@@ -474,6 +474,8 @@ def main():
         "name Auld Kirk\n" + "".join("tee %s\n" % t for t in TEES) +
         "holes %d\n" % len(HOLES) +
         "scenery 1         # the links backdrop: sea, hills and the kirk\n"
+        "terrain-mesh all putting bunkers water dunes\n"
+        "terrain-mesh 1 putting bunkers dunes\n"
         "terrain-mesh 16 putting\n"
         "terrain-mesh 17 putting dunes\n")
     total, pars = 0, 0

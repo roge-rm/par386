@@ -39,7 +39,7 @@ def corners(width, length, outlines, col_step, row_step, green_step):
     return [-APRON, 0, *range(col_step, width, col_step), width, width + APRON], sorted(rows)
 
 
-def sweep(outlines, xs, ys, length, dense, grass_height_step, mow_origin, dune_step):
+def sweep(outlines, xs, ys, length, dense, grass_height_step, mow_origin, dune_step, flat_water=False):
     """Overlay shape contours and tile cuts into non-overlapping trapezoids."""
     edges = [(ys[0], ys[-1], 0, x, -1) for x in xs]
     sand_step = 24 if outlines[0][0] == SAND else 12
@@ -76,8 +76,9 @@ def sweep(outlines, xs, ys, length, dense, grass_height_step, mow_origin, dune_s
 
     sand_cuts = set()
     # Only outlined hazards need the close cuts used for lips and shores.
+    hazards = (SAND,) if flat_water else (SAND, WATER)
     for sf, poly in outlines[1:]:
-        if sf in (SAND, WATER):
+        if sf in hazards:
             yp = [p[1] for p in poly]
             sand_cuts.update(range(int(min(yp)) + 1, int(max(yp)), dense))
     cuts.update(sand_cuts)
@@ -112,9 +113,9 @@ def sweep(outlines, xs, ys, length, dense, grass_height_step, mow_origin, dune_s
         on_mowing_cut = mowing_row in mowing_cuts and abs(lo - mowing_row) < EPS
         for key in visible:
             sf, tx, ty = key[2:]
-            height_cuts = sand_height_cuts if sf in (SAND, WATER) else grass_height_cuts
+            height_cuts = sand_height_cuts if sf in hazards else grass_height_cuts
             if ((lo in height_cuts and 0 < ty < len(ys) - 2) or
-                (lo in sand_cuts and sf in (SAND, WATER)) or
+                (lo in sand_cuts and sf in hazards) or
                 (lo in dune_cuts and sf in (OUT, DEEP_ROUGH) and 0 <= xs[tx] < DUNE_REACH) or
                 (on_mowing_cut and sf == FAIRWAY)):
                 upcoming[key] = lo
@@ -155,7 +156,7 @@ def triangulate(poly):
         yield tuple(poly)
 
 
-def tessellate(edges, spans, joins, xs, ys, step, sand_step, dense):
+def tessellate(edges, spans, joins, xs, ys, step, sand_step, water_step):
     rows, sides, patches = {}, {}, []
     xsq = [x * UNITS for x in xs]
     ysq = [y * UNITS for y in ys]
@@ -200,7 +201,7 @@ def tessellate(edges, spans, joins, xs, ys, step, sand_step, dense):
         for y, l, r in ((y0, a, b), (y1, c, d)):
             row = rows.setdefault(y, set())
             row.update((l, r))
-            spacing = sand_step if sf == SAND else dense if sf == WATER else step
+            spacing = sand_step if sf == SAND else water_step if sf == WATER else step
             if tx in (0, len(xs) - 2) and ty in (0, len(ys) - 2):
                 spacing = APRON
             spacing *= UNITS
@@ -251,12 +252,12 @@ def simplify_outline(poly, tolerance):
     return reduced if len(reduced) >= 3 else poly
 
 
-def round_cut(poly, tolerance):
-    """Round mown edges locally, including the corners of each end cap."""
+def round_cut(poly, tolerance, bounds=None):
+    """Round each corner locally, within the two neighbouring edges."""
     rounded = []
     for a, b, c in zip(poly[-1:] + poly[:-1], poly, poly[1:] + poly[:1]):
         start, end = hypot(a[0] - b[0], a[1] - b[1]), hypot(c[0] - b[0], c[1] - b[1])
-        if not start or not end:
+        if not start or not end or (bounds and (b[0] in (0, bounds[0]) or b[1] in (0, bounds[1]))):
             rounded.append(b)
             continue
         reach = min(2.5, start / 4, end / 4)
@@ -265,6 +266,40 @@ def round_cut(poly, tolerance):
         rounded.extend(tuple((1-t)**2 * head[i] + 2*t*(1-t) * b[i] + t*t * tail[i]
                              for i in range(2)) for t in (0, .25, .5, .75, 1))
     return simplify_outline(rounded, tolerance)
+
+
+def snap_shallow_edges(outlines, width, length):
+    """Keep shallow hazard crossings from merging along a quantised row."""
+    hazards = []
+    for surface, points in outlines:
+        if surface in (SAND, WATER):
+            xs, ys = zip(*points)
+            hazards.append((min(xs), max(xs), min(ys), max(ys)))
+    if not hazards:
+        return outlines
+
+    result = [outlines[0]]
+    for surface, points in outlines[1:]:
+        adjusted = list(points)
+        for i, ((ax, ay), (bx, by)) in enumerate(zip(points, points[1:] + points[:1])):
+            rise = abs(by - ay)
+            if rise == 0 or rise > 3 / 8 or abs(bx - ax) <= 32 * rise:
+                continue
+            left, right = sorted((ax, bx))
+            low, high = sorted((ay, by))
+            if not any(left <= x1 and x0 <= right and low <= y1 and y0 <= high
+                       for x0, x1, y0, y1 in hazards):
+                continue
+            # Hold vertices at the course boundary to keep the apron joined.
+            fixed_a = ax in (0, width) or ay in (0, length)
+            fixed_b = bx in (0, width) or by in (0, length)
+            if fixed_b or (not fixed_a and ay > by):
+                if not fixed_a:
+                    adjusted[i] = (ax, by)
+            else:
+                adjusted[(i + 1) % len(points)] = (bx, ay)
+        result.append((surface, adjusted))
+    return result
 
 
 def bilinear(samples, w, h, x, y):
@@ -277,7 +312,40 @@ def bilinear(samples, w, h, x, y):
     return a * (1 - sy) + b * sy
 
 
-def water_levels(groups, terrain):
+def water_apron(outlines, width, length):
+    """Carry water past the four course edges into the viewing apron."""
+    if not any(sf == WATER for sf, _ in outlines):
+        return
+    dimensions = (width, length)
+    for axis, size in enumerate(dimensions):
+        along = 1 - axis
+        extent = dimensions[along]
+        for edge, outside in ((0, -APRON), (size, size + APRON)):
+            events = {}
+            for i, (_, poly) in enumerate(outlines):
+                for a, b in zip(poly, poly[1:] + poly[:1]):
+                    if a[axis] == edge == b[axis] and a[along] != b[along]:
+                        events.setdefault(a[along], []).append(i)
+                        events.setdefault(b[along], []).append(i)
+            active = set()
+            merged = []
+            cuts = sorted(events)
+            for start, end in zip(cuts, cuts[1:]):
+                for i in events[start]:
+                    active.symmetric_difference_update((i,))
+                if active and outlines[max(active)][0] == WATER:
+                    if merged and start == merged[-1][1]:
+                        merged[-1][1] = end
+                    else:
+                        merged.append([start, end])
+            for start, end in merged:
+                start = -APRON if start == 0 else start
+                end = extent + APRON if end == extent else end
+                quad = [(edge, start), (outside, start), (outside, end), (edge, end)]
+                yield WATER, [(y, x) for x, y in quad] if axis else quad
+
+
+def water_levels(groups, terrain, bounds=None):
     """Keep each connected body level and share its shore with the land mesh."""
     parents = {}
     edges = Counter()
@@ -302,26 +370,52 @@ def water_levels(groups, terrain):
     for (a, b), count in edges.items():
         if count == 1:
             banks.setdefault(root(a), set()).update((a, b))
-    levels = {p: median(terrain(x / UNITS, y / UNITS) for x, y in shore) for p, shore in banks.items()}
+    levels = {}
+    for p, shore in banks.items():
+        on_course = [v for v in shore if bounds and 0 <= v[0] <= bounds[0] * UNITS
+                     and 0 <= v[1] <= bounds[1] * UNITS]
+        levels[p] = median(terrain(x / UNITS, y / UNITS) for x, y in (on_course or shore))
     return {p: levels[root(p)] for p in parents}
 
 
 def bake(width, length, nx, ny, cell, base, z0, slope, heights, shapes, sand, compact=False,
-         layout=None, putting=(), putting_tolerance=0, dunes=False, round_mown=False):
+         layout=None, putting=(), putting_tolerance=0, dunes=False, round_mown=False,
+         round_natural=False, grass_spacing=0, natural_tolerance=None, round_mown_edges=True,
+         shared_hazards=False):
     col_step, row_step, dense, first_cut_tol = layout or (
         (64, 54, 8, 0.5) if compact else (44, 36, 4, 0.5))
     boundary = [(0, 0), (width, 0), (width, length), (0, length)]
     outlines = [(base, boundary)]
+    hazards = []
     for i, (sf, polygon) in enumerate(shapes):
         points = [(x / UNITS, y / UNITS) for x, y in polygon]
-        if round_mown and sf in (FIRST_CUT, FAIRWAY):
-            points = round_cut(points, first_cut_tol if compact else 0.3)
+        preserve = False
+        if shared_hazards:
+            xs, ys = zip(*polygon)
+            left, right, low, high = min(xs), max(xs), min(ys), max(ys)
+            preserve = base in (SAND, WATER) or any(
+                left <= x1 and x0 <= right and low <= y1 and y0 <= high
+                for x0, x1, y0, y1 in hazards)
+            if sf in (SAND, WATER):
+                preserve = True
+                hazards.append((left, right, low, high))
+        if preserve:
+            # Later materials can form part of a hazard's edge.
+            pass
+        elif round_mown and round_mown_edges and sf in (FIRST_CUT, FAIRWAY):
+            points = round_cut(points, first_cut_tol if compact or grass_spacing else 0.3)
+        elif (round_natural and natural_tolerance != 0 and i not in putting
+              and sf in (ROUGH, DEEP_ROUGH, SAND, WATER)):
+            tolerance = (0.45 if compact else 0.18) if natural_tolerance is None else natural_tolerance
+            points = round_cut(points, tolerance, (width, length))
         else:
             tolerance = (putting_tolerance if i in putting else
                          0.18 if sf in (GREEN, FRINGE, SAND, WATER) else
                          first_cut_tol if sf == FIRST_CUT else 0.5)
             points = simplify_outline(points, tolerance)
         outlines.append((sf, points))
+    if shared_hazards:
+        outlines = snap_shallow_edges(outlines, width, length)
     if round_mown:
         mow_origin = min((y // UNITS for sf, poly in shapes if sf == FAIRWAY for _, y in poly),
                          default=0)
@@ -331,21 +425,27 @@ def bake(width, length, nx, ny, cell, base, z0, slope, heights, shapes, sand, co
     green_step = 6 if base == SAND else 9
     xs, ys = corners(width, length, outlines, col_step, row_step, green_step)
     grass_height_step, spacing = (72, 64) if compact else (36, 32)
+    if grass_spacing:
+        grass_height_step = max(grass_height_step, grass_spacing)
+        spacing = max(spacing, grass_spacing)
     sand_spacing = (24 if compact else 16) if base == SAND else dense
     dune_step = 0
     if dunes:
         # Sample the beach and both dune crests along the left edge.
         xs = sorted(set(xs) | {x for x in (8, 24, 40, 48) if x < width})
         dune_step = 32 if compact else 24
+    apron = list(water_apron(outlines, width, length)) if round_natural or shared_hazards else []
+    outlines.extend(apron)
+    water_spacing = 32 if round_natural else dense
     groups = tessellate(*sweep(outlines, xs, ys, length, dense, grass_height_step,
-                               mow_origin, dune_step),
-                       xs, ys, spacing, sand_spacing, dense)
+                               mow_origin, dune_step, flat_water=round_natural),
+                       xs, ys, spacing, sand_spacing, water_spacing)
 
     @lru_cache(maxsize=None)
     def terrain(x, y):
         return z0 + slope * bilinear(heights, nx, ny, x / cell, y / cell)
 
-    water = water_levels(groups, terrain)
+    water = water_levels(groups, terrain, (width, length) if apron else None)
     shared_sand = any(shapes[i][0] == SAND for i in putting)
     # Shared vertices follow the heightmap where a green or fringe covers sand.
     green_turf = {p for faces in groups.values() for face, sf in faces
@@ -427,21 +527,19 @@ def bake(width, length, nx, ny, cell, base, z0, slope, heights, shapes, sand, co
             return round(max(44, min(70, 53 + 0.75 * relief)))
         if dunes and sf == OUT and 0 <= x < DUNE_REACH and 0 <= y < length:
             return round(max(18, min(112, 68 + directional(ground, x, y, 4) * 112)))
-        sun = directional(ground, x, y, 0.75)
+        sun = directional(ground, x, y, 4 if compact else 0.75)
         if sf == FAIRWAY:
             dark = int((y - mow_origin) // MOW_YARDS) & 1
             band = -MOW_CONTRAST if dark else MOW_CONTRAST
-            shade = round(max(42, min(93, MOW_MID + band + sun * 10)))
-            if compact:
-                return shade
-            # Keep the baked shade on its band's side of MOW_MID for detailed rendering.
+            shade = round(max(42, min(93, MOW_MID + band + sun * (30 if compact else 10))))
+            # Keep the baked shade on its band's side of MOW_MID.
             return min(shade, MOW_MID - 1) if dark else max(shade, MOW_MID)
         if sf == FIRST_CUT:
-            return round(max(47, min(77, 62 + sun * 16)))
+            return round(max(47, min(77, 62 + sun * (32 if compact else 16))))
         if sf == ROUGH:
-            return round(max(55, min(83, 70 + sun * 16)))
+            return round(max(55, min(83, 70 + sun * (32 if compact else 16))))
         if sf == DEEP_ROUGH:
-            return round(max(84, min(108, 94 + sun * 16)))
+            return round(max(84, min(108, 94 + sun * (32 if compact else 16))))
         return round(max(47, min(82, 62 + sun * 16)))
 
     result = []
@@ -480,8 +578,59 @@ def encode(tiles):
     return header + body
 
 
+class MeshEdgeError(ValueError):
+    """A tile face has an unmatched edge."""
+
+
+def match_collinear_edges(tiles):
+    """Split a long side where its neighbours already share collinear vertices."""
+    uses = Counter()
+    for _, vertices, triangles in tiles:
+        for a, b, c, _, _ in triangles:
+            for i, j in ((a, b), (b, c), (c, a)):
+                uses[tuple(sorted((vertices[i], vertices[j])))] += 1
+    ends = {}
+    for (a, b), count in uses.items():
+        if count == 1:
+            ends.setdefault(a, set()).add(b)
+
+    cuts = {}
+    for a, targets in ends.items():
+        for b in targets:
+            side = []
+            p = a
+            while inside := [q for q in ends.get(p, ()) if p < q < b and not turn(a, b, q)]:
+                p = min(inside)
+                side.append(p)
+            if side and b in ends.get(p, ()):
+                cuts[a, b] = side
+                cuts[b, a] = side[::-1]
+    if not cuts:
+        raise MeshEdgeError("no matching subdivisions for terrain edges")
+
+    for box, vertices, triangles in tiles:
+        pool = list(vertices)
+        indices = {p: i for i, p in enumerate(pool)}
+        result = []
+        for a, b, c, surface, shade in triangles:
+            face = [vertices[i] for i in (a, b, c)]
+            outline = []
+            for u, v in zip(face, face[1:] + face[:1]):
+                outline.extend((u, *cuts.get((u, v), ())))
+            if len(outline) == 3:
+                result.append((a, b, c, surface, shade))
+                continue
+            for point in outline:
+                if point not in indices:
+                    indices[point] = len(pool)
+                    pool.append(point)
+            result.extend((*map(indices.__getitem__, tri), surface, shade) for tri in triangulate(outline))
+        yield box, pool, result
+
+
 def bake_record(width, length, nx, ny, cell, base, z0, slope, heights, shapes, sand,
-                compact=False, putting=(), dunes=False, round_mown=False):
+                compact=False, putting=(), dunes=False, round_mown=False, round_natural=False,
+                shared_hazards=False):
     """Pack a validated mesh, retrying crowded tiles and thin first-cut wedges."""
     layouts = ((60, 46, 8, 0.5), (64, 54, 8, 0.75)) if compact else (
         (44, 36, 5, 0.5), (42, 36, 5, 0.5), (44, 36, 5, 0.75))
@@ -489,19 +638,49 @@ def bake_record(width, length, nx, ny, cell, base, z0, slope, heights, shapes, s
     tolerances = (0,)
     if putting:
         tolerances = (1 / 8, 1 / 16, 0) if compact else (0, 1 / 16, 1 / 8)
-    for tolerance in tolerances:
-        for layout in (None, *layouts):
+    attempts = [(layout, tolerance, 0, None, True) for tolerance in tolerances for layout in (None, *layouts)]
+    if round_natural or shared_hazards:
+        # Reduce long hazard strips and subdivide busy greens before giving up their outlines.
+        layouts = ((50, 48, 10, 0.65), (42, 48, 12, 0.65), (34, 54, 14, 0.8)) if compact else (
+            (42, 42, 6, 0.45), (36, 48, 8, 0.55), (32, 54, 10, 0.65), (30, 60, 12, 0.8))
+        tolerances = (1 / 8, 1 / 16) if compact else (1 / 16, 1 / 8)
+        spacing = 64 if compact else 48
+        attempts = [(None, tolerances[0], 0, None, True)] + [
+            (layout, tolerance, spacing, natural_tolerance, True)
+            for natural_tolerance in (None, 0.55, 0)
+            for tolerance in tolerances for layout in layouts
+        ] + attempts
+        # Preserve the authored mown edge when added curves form narrow crossings.
+        attempts += [(None, tolerance, 0, None, False) for tolerance in tolerances] + [
+            ((36, 48, 8, 0.55), 1 / 8, spacing, None, False)
+        ]
+    if shared_hazards:
+        attempts += [
+            (layout, 1 / 8, 128, 0, False)
+            for layout in ((42, 42, 16, 0.65), (32, 42, 24, 0.75), (28, 32, 24, 0.8))
+        ]
+    for layout, tolerance, grass_spacing, natural_tolerance, round_mown_edges in attempts:
+        try:
+            tiles = bake(width, length, nx, ny, cell, base, z0, slope, heights, shapes,
+                         sand, compact=compact, layout=layout, putting=putting,
+                         putting_tolerance=tolerance, dunes=dunes, round_mown=round_mown,
+                         round_natural=round_natural, grass_spacing=grass_spacing,
+                         natural_tolerance=natural_tolerance, round_mown_edges=round_mown_edges,
+                         shared_hazards=shared_hazards)
+            data = encode(tiles)
             try:
-                data = encode(bake(width, length, nx, ny, cell, base, z0, slope, heights, shapes,
-                                   sand, compact=compact, layout=layout, putting=putting,
-                                   putting_tolerance=tolerance, dunes=dunes, round_mown=round_mown))
                 validate(data, width, length)
-                if tolerance:
-                    print("Shared putting contours simplified by up to %.3g yards" % tolerance)
-                return data
-            except ValueError as error:
-                if first_error is None:
-                    first_error = error
+            except MeshEdgeError:
+                if not (round_natural or shared_hazards):
+                    raise
+                data = encode(list(match_collinear_edges(tiles)))
+                validate(data, width, length)
+            if tolerance:
+                print("Shared putting contours simplified by up to %.3g yards" % tolerance)
+            return data
+        except ValueError as error:
+            if first_error is None:
+                first_error = error
     raise first_error
 
 
@@ -579,6 +758,6 @@ def validate(data, width, length):
     for (a, b), uses in edges.items():
         outer = (a[0] == b[0] and a[0] in (xmin, xmax)) or (a[1] == b[1] and a[1] in (ymin, ymax))
         if uses != (1 if outer else 2):
-            raise ValueError(f"nonmatching edge at {a[:2]} to {b[:2]}")
+            raise MeshEdgeError(f"nonmatching edge at {a[:2]} to {b[:2]}")
     if area != 2 * (xmax - xmin) * (ymax - ymin):
         raise ValueError("mesh does not fill the terrain bounds")

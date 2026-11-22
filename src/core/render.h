@@ -36,6 +36,9 @@ enum { POSE_ADDRESS, POSE_BACK, POSE_TOP, POSE_FINISH, POSE_IMPACT, RENDER_POSES
 typedef struct {
 	RenderData pose[RENDER_POSES];
 	uint8_t *under;             /* one byte a pixel, at the drawing scale */
+	fixed camera_raise;         /* offset from the heightmap camera, in yards */
+	vec2 camera_shift;          /* offset for the dry address, in yards */
+	int16_t camera_back;        /* actual mesh camera setback, in yards */
 	int16_t bx, by;             /* the ball point, drawing pixels */
 	int16_t x, y, w, h;         /* the box kept in under, drawing pixels; w is 0 if none */
 	uint8_t half;               /* drawn at half size and doubled (Surface.half) */

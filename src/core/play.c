@@ -267,7 +267,7 @@ static void SEC_UI green_spot(Play *p)
 		d = (fixed)(3 + (rs >> 24) % 12) << 16;
 		a = (angle)(rs >> 8);
 		at = vec2_make(to.x + fix_mulq14(d, icos(a)), to.y + fix_mulq14(d, isin(a)));
-		if (surface_at(p->rv.grid, at.x, at.y) == SURF_GREEN) break;
+		if (hole_surface(p->rv.hole, p->rv.grid, at.x, at.y) == SURF_GREEN) break;
 	}
 	if (k == 12) at = vec2_make(to.x - (2L << 16), to.y - (7L << 16));
 	p->rv.ball = at;
@@ -372,14 +372,28 @@ void play_start(Play *p, const Hole *h, const SurfaceGrid *g, Round *r)
 		p->board = 1;
 		return;
 	}
-	/* A course update can reclaim a saved ball's sand as green or fringe. */
+	/* Refresh saved lies when an edge has moved. */
 	for (i = 0; i < r->players; i++) {
 		RoundPlayer *rp = &r->pl[i];
 		uint8_t sf;
 
-		if (!rp->taken || rp->holed || (rp->lie != LIE_BUNKER && rp->lie != LIE_PLUGGED)) continue;
-		sf = surface_at(g, rp->ball.x, rp->ball.y);
-		if (sf == SURF_GREEN || sf == SURF_FRINGE) rp->lie = ball_lie(sf);
+		if (!rp->taken || rp->holed || rp->lie == LIE_TEE) continue;
+		sf = hole_surface(h, g, rp->ball.x, rp->ball.y);
+		if (h->putting_curves) {
+			if (sf == SURF_WATER) {
+				/* Keep the saved stroke count when correcting a wet lie. */
+				rp->ball = ball_water_relief(h, g, pin(p), rp->ball, h->tees[h->tee].pos);
+				rp->lie = ball_lie(hole_surface(h, g, rp->ball.x, rp->ball.y));
+			} else if (sf != SURF_OOB && (sf != SURF_BUNKER || rp->lie != LIE_PLUGGED) &&
+			           (sf == SURF_GREEN || sf == SURF_FRINGE || sf == SURF_BUNKER ||
+			            rp->lie == LIE_GREEN || rp->lie == LIE_FRINGE ||
+			            rp->lie == LIE_BUNKER || rp->lie == LIE_PLUGGED)) {
+				rp->lie = ball_lie(sf);
+			}
+		} else if ((sf == SURF_GREEN || sf == SURF_FRINGE) &&
+		           (rp->lie == LIE_BUNKER || rp->lie == LIE_PLUGGED)) {
+			rp->lie = ball_lie(sf);
+		}
 	}
 	/* r->turn may still be the player who just hit; the rules pick who is next */
 	n = rules_next(r, pin(p));
@@ -796,7 +810,16 @@ int play_key(Play *p, uint8_t key, uint32_t now)
 static void SEC_UI camera(Play *p, const Surface *s)
 {
 	p->geo = *s;
-	if (!p->cam_ok) render_camera(s, &p->rv, &p->cam);
+	if (!p->cam_ok) {
+		render_camera(s, &p->rv, &p->cam);
+		if (!p->rv.green && p->golf && p->golf->mesh_style) {
+			fixed forward = (p->cam.back - (fixed)p->golf->camera_back) * FIX_ONE;
+			p->cam.camx += p->golf->camera_shift.x + fix_mulq14(forward, p->cam.fx);
+			p->cam.camy += p->golf->camera_shift.y + fix_mulq14(forward, p->cam.fy);
+			p->cam.camz += p->golf->camera_raise;
+			p->cam.back = p->golf->camera_back;
+		}
+	}
 	p->cam_ok = 1;
 }
 
@@ -1091,24 +1114,55 @@ static int16_t SEC_MENU landing_point(const Play *p)
 	return p->club != CLUB_PT && k > 0 && k < p->shot.n && k <= p->shown ? k : -1;
 }
 
-/* The ball stays at least two logical pixels wide in the distance. */
+/* Scanline widths in native pixels keep the ball round at either scale. */
+static void SEC_MENU ball_disc(Surface *s, int16_t x, int16_t y, uint8_t close, uint8_t rim)
+{
+	const uint8_t near1[] = { 3, 5, 5, 5, 3 };
+	const uint8_t near2[] = { 4, 6, 8, 10, 10, 10, 10, 8, 6, 4 };
+	const uint8_t far1[] = { 2, 4, 4, 2 };
+	const uint8_t far2[] = { 4, 6, 8, 8, 8, 8, 6, 4 };
+	const uint8_t *rows;
+	int16_t j, u = s->scale, size = (close ? 5 : 4) * u;
+
+	rows = close ? (u == 1 ? near1 : near2) : (u == 1 ? far1 : far2);
+	for (j = 0; j < size; j++) {
+		int16_t w = rows[j], left = x + (size - w) / 2;
+
+		over(s, left, y + j, w, 1, rim);
+		if (j > 0 && j < size - 1) {
+			uint8_t light = j >= size - 3 && u > 1 ? UIC_BALL_LT : UIC_WHITE;
+
+			over(s, left + 1, y + j, w - 2, 1, light);
+		}
+	}
+}
+
+/* Bring the first few flight samples out from the drawn address point. */
+static void SEC_MENU flight_address(const Play *p, int16_t k, int16_t *x, int16_t *y)
+{
+	int16_t ax, ay;
+	fixed depth, z;
+
+	if (k < 0 || k >= 4 || p->rv.green || !p->golf || !p->golf->mesh_style) return;
+	z = hole_height(p->rv.hole, p->rv.ball.x, p->rv.ball.y);
+	if (!render_point(&p->cam, p->rv.ball.x, p->rv.ball.y, z, &ax, &ay, &depth)) return;
+	*x += (p->golf->bx - ax) * (4 - k) / 4;
+	*y += (p->golf->by - ay) * (4 - k) / 4;
+}
+
 static void SEC_MENU ball_at(Play *p, Surface *s, uint8_t save, fixed x, fixed y, fixed z)
 {
-	int16_t sx, sy, u = s->scale;
+	uint8_t close = p->rv.green;
+	int16_t sx, sy, pad = (close ? 2 : 1) * s->scale, size = (close ? 5 : 4) * s->scale;
+	uint8_t rim = s->depth >= 8 && close ? UIC_BALL_DK : UIC_BLACK;
 	fixed depth;
 
 	if (!render_point(&p->cam, x, y, z, &sx, &sy, &depth)) return;
-	if (p->rv.green) {
-		uint8_t dark = s->depth >= 8 ? UIC_BALL_DK : UIC_BLACK;
-		flight_patch(p, s, save, sx - 2 * u, sy - 2 * u, 5 * u, 5 * u);
-		over(s, sx - 2 * u, sy - u, 5 * u, 3 * u, dark);
-		over(s, sx - u, sy - 2 * u, 3 * u, 5 * u, dark);
-		over(s, sx - u, sy - u, 3 * u, 3 * u, UIC_WHITE);
-		return;
-	}
-	flight_patch(p, s, save, sx - u, sy - u, 4 * u, 4 * u);
-	over(s, sx - u, sy - u, 4 * u, 4 * u, UIC_BLACK);
-	over(s, sx, sy, 2 * u, 2 * u, UIC_WHITE);
+	flight_address(p, p->shown, &sx, &sy);
+	sx -= pad;
+	sy -= pad;
+	flight_patch(p, s, save, sx, sy, size, size);
+	ball_disc(s, sx, sy, close, rim);
 }
 
 /* The ball at path point shown, with its recent airborne trail. */
@@ -1122,6 +1176,7 @@ static void SEC_MENU draw_ball(Play *p, Surface *s, uint8_t save)
 		if (j < 0 || j >= p->shot.fly_n || p->club == CLUB_PT) continue;
 		path_pt(p, j, &x, &y, &z);
 		if (render_point(&p->cam, x, y, z, &sx, &sy, &depth)) {
+			flight_address(p, j, &sx, &sy);
 			flight_patch(p, s, save, sx, sy, u, u);
 			over(s, sx, sy, u, u, grey ? UIC_BALL_LT : UIC_BLACK);
 		}
@@ -2170,8 +2225,8 @@ static void SEC_UI map_ball(Play *p, Surface *s)
 	under_io(p, s, 0);
 	if (p->under.w <= 0) return;
 	map_xy(p, k, &x, &y);
-	mput(p, s, x - 2 * u, y - 2 * u, 5 * u, 5 * u, UIC_BLACK);
-	mput(p, s, x - u, y - u, 3 * u, 3 * u, UIC_WHITE);
+	ball_disc(s, x - 2 * u, y - 2 * u, 1, UIC_BLACK);
+	dirty(p, p->under.x, p->under.y, p->under.w, p->under.h);
 }
 
 /* Show carry up to first contact, then total. Draw only when it changes. */

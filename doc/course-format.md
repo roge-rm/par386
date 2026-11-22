@@ -18,15 +18,18 @@ Points in records are in quarter yards (u16), and must lie on the hole (0 to wid
 
 ### Full-shot terrain
 
-Use `terrain-mesh N` in course.txt to bake detailed and compact meshes for hole N from its shapes and heightmap. An optional visual contour file supplies the full-shot outlines at sixteenth-yard precision. The compiler also bakes putting curves from the gameplay shapes around the pins. A dump saves the meshes and curves as sidecars for an exact rebuild.
+Use `terrain-mesh N` in course.txt to bake detailed and compact meshes for hole N from its shapes and heightmap. An optional visual contour file supplies full-shot outlines at sixteenth-yard precision. The compiler bakes curves for greens and fringes around the pins and for bunkers and water throughout the hole. Both quality levels use the shared hazard outlines for play and rendering. A dump saves the meshes and curves as sidecars for an exact rebuild.
 
-Use `terrain-mesh N putting` to share the green, fringe and water curves with both mesh qualities. Each curve replaces its corresponding shape in course order. The compact mesh tries simplifying those outlines within one eighth of a yard to keep the draw fast.
+Each shared curve replaces its corresponding shape in course order. The full-shot meshes can simplify green and fringe edges within one eighth of a yard where they do not border a hazard. Open water continues past the course boundary where the visible shoreline reaches it.
 
-Use `terrain-mesh N putting bunkers` to share the green, fringe and bunker curves near the pins and keep the authored water outlines. The mesh also rounds the fairway and first cut and starts the mowing pattern at the front of the fairway.
+Use `terrain-mesh N putting bunkers` to round the fairway and first cut, and start the mowing pattern at the front of the fairway.
 
 Use `terrain-mesh N putting dunes` for links holes with dunes along the left edge. The mesh samples the existing heights more closely and uses stronger shading around the dunes.
+Use `terrain-mesh N putting bunkers dunes` to combine both options.
 
-Mark the near-green visual polygons with `poly SURFACE putting` to share the course's putting contours with the detailed mesh. The compiler inserts the putting contours in gameplay order at the first marked polygon. It uses the marked polygons as written for the compact mesh and for builds without putting curves.
+Use `terrain-mesh all putting bunkers water` to bake both mesh qualities for every hole and round the rough edges away from hazards. Individual `terrain-mesh N` lines override the course default. Add `dunes` to the default for links courses with dunes along the left edge.
+
+Mark the near-green visual polygons with `poly SURFACE putting` to use the course's putting contours in both detail levels. Use `terrain-mesh N VISUAL.txt hazards` to also replace the sidecar's remaining bunkers and water with the course shapes. The compiler places the replacements in gameplay order. It uses the visual polygons as written when the hole has no putting curves.
 
 The `MSH2` directory stores two u16 record indices per hole, detailed then compact. Nonzero indices start at N + 2, where N is the number of holes, and run in directory order. A zero detailed index means the hole has no mesh. A zero compact index uses the detailed mesh. Courses with only detailed meshes use the older `MSH1` directory, which stores one index per hole.
 

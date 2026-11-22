@@ -81,6 +81,9 @@ typedef struct {
  * lips out; one that stops over the cup drops. */
 void SEC_BALL ball_shot(const ShotIn *in, Shot *out);
 
+/* Dry ground back on the line from the cup through the water crossing. */
+vec2 SEC_BALL ball_water_relief(const Hole *h, const SurfaceGrid *g, vec2 pin, vec2 cross, vec2 fallback);
+
 /* The lie for a surface the ball stopped on (bunkers give LIE_BUNKER). */
 uint8_t SEC_BALL ball_lie(uint8_t surface);
 /* Short names for the status strip, at most 8 characters. */

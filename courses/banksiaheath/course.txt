@@ -8,7 +8,7 @@ holes 18
 scenery 4         # the sandbelt backdrop: low sandy hills in the heat haze
 wind 12           # a moderate breeze
 green 13          # firm, fast sandbelt greens
-terrain-mesh 1
+terrain-mesh 1 putting bunkers
 terrain-mesh 2
 terrain-mesh 3
 terrain-mesh 4
@@ -20,7 +20,7 @@ terrain-mesh 9
 terrain-mesh 10
 terrain-mesh 11
 terrain-mesh 12
-terrain-mesh 13 hole-13-visual.txt
+terrain-mesh 13 hole-13-visual.txt hazards
 terrain-mesh 14
 terrain-mesh 15
 terrain-mesh 16

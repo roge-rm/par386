@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "play.h"
 #include "render.h"
 
 static int fails, checks;
@@ -405,6 +406,173 @@ static void mesh_record(const uint8_t *rec, uint32_t len)
 	free(b);
 }
 
+static void green_edge(const uint8_t *rec, uint32_t len)
+{
+	/* A green that starts at y = 387.25 and ends at y = 415.5. */
+	uint8_t curve[] = {1, 0, 0, 4, 8, 80, 24, 52, 9, 16, 24, 52,
+	                  9, 16, 25, 248, 8, 80, 25, 248};
+	uint8_t *record, row[SURF_ROW_MAX];
+	const uint8_t *shape;
+	SurfaceGrid g;
+	Hole h;
+	Play play = {0};
+	Round round;
+
+	if (hole_parse(&h, rec, len) != HOLE_OK) { CHECK(0); return; }
+	if (h.putting_curves) len = (uint32_t)(h.putting_curves - rec);
+	shape = h.shapes;
+	while (curve[1] < h.shape_count && *shape != SURF_GREEN) {
+		curve[1]++;
+		shape += 2 + shape[1] * 4;
+	}
+	record = malloc(len + sizeof curve);
+	memcpy(record, rec, len);
+	record[1] = 6;
+	memcpy(record + len, curve, sizeof curve);
+	if (hole_parse(&h, record, len + sizeof curve) != HOLE_OK) { CHECK(0); free(record); return; }
+	surface_size(&h, &g);
+	rows_seen = rows_bad = 0;
+	surface_raster(&h, row, put_row, &g);
+	g.cells = grid;
+	CHECK(rows_bad == 0);
+	CHECK(at(&g, 140, 387.5) == SURF_FRINGE);
+	CHECK(hole_surface(&h, &g, Y(140), Y(387.25) - 1) == SURF_FRINGE);
+	CHECK(hole_surface(&h, &g, Y(140), Y(387.25)) == SURF_GREEN);
+	CHECK(hole_surface(&h, &g, Y(140), Y(387.5)) == SURF_GREEN);
+	CHECK(at(&g, 140, 415.75) == SURF_GREEN);
+	CHECK(hole_surface(&h, &g, Y(140), Y(415.75)) == SURF_FRINGE);
+	CHECK(hole_surface(&h, &g, Y(135), Y(235)) == SURF_WATER);
+	CHECK(hole_surface(&h, &g, Y(-1), Y(390)) == SURF_OOB);
+	rules_init(&round, "Test", 1, 1, &h.par, 1);
+	round.pl[0].taken = 1;
+	round.pl[0].ball = vec2_make(Y(140), Y(387.5));
+	round.pl[0].lie = LIE_FRINGE;
+	play_start(&play, &h, &g, &round);
+	CHECK(play.lie == LIE_GREEN && round.pl[0].lie == LIE_GREEN);
+	round.pl[0].ball.y = Y(415.75);
+	play_start(&play, &h, &g, &round);
+	CHECK(play.lie == LIE_FRINGE && round.pl[0].lie == LIE_FRINGE);
+	round.pl[0].ball.y = Y(399.5);
+	CHECK(at(&g, 140, 399.5) == SURF_GREEN);
+	play_start(&play, &h, &g, &round);
+	CHECK(play.lie == LIE_GREEN && round.pl[0].lie == LIE_GREEN);
+	free(record);
+}
+
+static void hazard_edges(const uint8_t *rec, uint32_t len)
+{
+#define POINT(x, y) ((x) >> 8), ((x) & 255), ((y) >> 8), ((y) & 255)
+#define RECT(x0, y0, x1, y1) POINT(x0, y0), POINT(x1, y0), POINT(x1, y1), POINT(x0, y1)
+	static const uint8_t shapes[] = {
+		4,
+		SURF_FAIRWAY, 4, RECT(121, 80, 200, 240),
+		SURF_WATER, 4, RECT(0, 361, 97, 441),
+		SURF_BUNKER, 4, RECT(281, 601, 337, 657),
+		SURF_FAIRWAY, 4, RECT(329, 633, 336, 649),
+	};
+	static const uint8_t curves[] = {
+		2,
+		1, 0, 4, RECT(0, 1448, 392, 1768),
+		2, 0, 4, RECT(1128, 2408, 1352, 2632),
+	};
+#undef RECT
+#undef POINT
+	uint8_t *record, row[SURF_ROW_MAX];
+	uint32_t head, objects, size;
+	HazardCarry carry;
+	SurfaceGrid g;
+	Hole h;
+	Play play = {0};
+	Round round;
+	ShotIn in = {0};
+	Shot shot;
+	vec2 saved;
+	fixed height_step;
+
+	if (hole_parse(&h, rec, len) != HOLE_OK) { CHECK(0); return; }
+	if (h.putting_curves) len = (uint32_t)(h.putting_curves - rec);
+	head = (uint32_t)(h.shapes - 1 - rec);
+	objects = (uint32_t)(h.objects - 2 - rec);
+	size = head + sizeof shapes + len - objects;
+	record = malloc(size + sizeof curves);
+	memcpy(record, rec, head);
+	memcpy(record + head, shapes, sizeof shapes);
+	memcpy(record + head + sizeof shapes, rec + objects, len - objects);
+	memcpy(record + size, curves, sizeof curves);
+	record[1] = 6;
+	if (hole_parse(&h, record, size + sizeof curves) != HOLE_OK) { CHECK(0); free(record); return; }
+	surface_size(&h, &g);
+	rows_seen = rows_bad = 0;
+	surface_raster(&h, row, put_row, &g);
+	g.cells = grid;
+	CHECK(rows_bad == 0);
+	CHECK(at(&g, 24.375, 100) == SURF_ROUGH);
+	CHECK(hole_surface(&h, &g, Y(24.375), Y(100)) == SURF_WATER);
+	CHECK(hole_surface(&h, &g, Y(24.5), Y(100)) == SURF_ROUGH);
+	CHECK(hole_surface(&h, &g, Y(-.5), Y(90.25)) == SURF_OOB);
+	CHECK(hole_surface(&h, &g, Y(-.5), Y(110.25)) == SURF_WATER);
+	CHECK(at(&g, 84.375, 160) == SURF_ROUGH);
+	CHECK(hole_surface(&h, &g, Y(84.375), Y(160)) == SURF_BUNKER);
+	CHECK(hole_surface(&h, &g, Y(83), Y(160)) == SURF_FAIRWAY);
+	CHECK(hole_hazards(&h, &g, vec2_make(Y(24.375), Y(85)), ANG_90, &carry, 1) == 1);
+	CHECK(carry.surface == SURF_WATER && carry.entry == 6 && carry.clear == 26);
+
+	in.hole = &h;
+	in.grid = &g;
+	in.pos = vec2_make(Y(24.5625), Y(100));
+	in.pin = h.pins[0];
+	in.aim = ANG_180;
+	in.range = Y(20);
+	in.power = FIX_ONE;
+	in.club = CLUB_PT;
+	in.lie = LIE_ROUGH;
+	height_step = h.step;
+	h.step = 0;
+	ball_shot(&in, &shot);
+	CHECK(shot.result == SHOT_WATER);
+	CHECK(hole_surface(&h, &g, shot.stop.x, shot.stop.y) == SURF_ROUGH);
+	in.pos = vec2_make(Y(84.5625), Y(156));
+	in.range = Y(3);
+	ball_shot(&in, &shot);
+	h.step = height_step;
+	CHECK(shot.result == SHOT_OK && shot.lie == LIE_BUNKER);
+
+	rules_init(&round, "Test", 1, 1, &h.par, 1);
+	round.pl[0].taken = 2;
+	round.pl[0].lie = LIE_ROUGH;
+	round.pl[0].ball = vec2_make(Y(24.375), Y(100));
+	play_start(&play, &h, &g, &round);
+	saved = round.pl[0].ball;
+	CHECK(hole_surface(&h, &g, saved.x, saved.y) == SURF_ROUGH && round.pl[0].taken == 2);
+	play_start(&play, &h, &g, &round);
+	CHECK(round.pl[0].ball.x == saved.x && round.pl[0].ball.y == saved.y && round.pl[0].taken == 2);
+	round.pl[0].ball = vec2_make(Y(84.375), Y(160));
+	play_start(&play, &h, &g, &round);
+	CHECK(play.lie == LIE_BUNKER && round.pl[0].lie == LIE_BUNKER);
+	round.pl[0].lie = LIE_PLUGGED;
+	play_start(&play, &h, &g, &round);
+	CHECK(play.lie == LIE_PLUGGED);
+	round.pl[0].ball.x = Y(83);
+	play_start(&play, &h, &g, &round);
+	CHECK(play.lie == LIE_FAIRWAY && round.pl[0].lie == LIE_FAIRWAY);
+
+	record[11] = SURF_BUNKER;
+	CHECK(hole_parse(&h, record, size + sizeof curves) == HOLE_OK);
+	rows_seen = rows_bad = 0;
+	surface_raster(&h, row, put_row, &g);
+	CHECK(at(&g, 30.125, 40) == SURF_FAIRWAY);
+	CHECK(hole_surface(&h, &g, Y(30.125), Y(40)) == SURF_BUNKER);
+	CHECK(hole_surface(&h, &g, Y(30.25), Y(40)) == SURF_FAIRWAY);
+
+	record[1] = 1;
+	record[11] = SURF_ROUGH;
+	CHECK(hole_parse(&h, record, size) == HOLE_OK);
+	rows_seen = rows_bad = 0;
+	surface_raster(&h, row, put_row, &g);
+	CHECK(hole_surface(&h, &g, Y(24.375), Y(100)) == SURF_ROUGH);
+	free(record);
+}
+
 int main(int argc, char **argv)
 {
 	Pdb a, b;
@@ -554,6 +722,8 @@ int main(int argc, char **argv)
 	header_versions(a.rec[0], a.len[0]);
 	fuzz(a.rec[1], a.len[1], 1);
 	mesh_record(a.rec[1], a.len[1]);
+	green_edge(a.rec[1], a.len[1]);
+	hazard_edges(a.rec[1], a.len[1]);
 
 	for (i = 0; i < a.count; i++) free(a.rec[i]);
 	for (i = 0; i < b.count; i++) free(b.rec[i]);

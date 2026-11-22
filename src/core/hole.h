@@ -78,6 +78,10 @@ typedef struct {
 	uint8_t mow_phase;          /* long mowing pattern's origin modulo 24 yd */
 } TerrainMesh;
 
+typedef struct {
+	uint16_t x0, y0, x1, y1;   /* surface grid cells */
+} SurfaceBounds;
+
 /* Points into the record it was parsed from, which must stay put. */
 typedef struct {
 	const uint8_t *heights;    /* hm_w * hm_h bytes, row 0 at y = 0 */
@@ -88,6 +92,8 @@ typedef struct {
 	const uint8_t *visual_shapes; /* optional visual contours, see course format */
 	const uint8_t *sand_atlas; /* optional bunker relief, see course format */
 	const uint8_t *putting_curves; /* optional putting contours, see course format */
+	SurfaceBounds green_bounds, hazard_bounds, shape_bounds[HOLE_MAX_SHAPES]; /* with contours */
+	uint8_t hazard_shapes[HOLE_MAX_SHAPES], hazard_count;
 	TerrainMesh terrain_mesh;  /* optional full-shot mesh, in its own record */
 	fixed base, step;          /* height of byte 0, height per byte step, yards */
 	vec2 aim;                  /* where the first shot aims */
@@ -144,6 +150,8 @@ void SEC_CORE surface_size(const Hole *h, SurfaceGrid *g);
 void SEC_DANA surface_raster(const Hole *h, uint8_t *row, SurfaceRowFn put, void *ctx);
 /* Surface at (x, y). Off the grid it's out of bounds, or water past a water cell on the edge. */
 uint8_t SEC_CORE surface_at(const SurfaceGrid *g, fixed x, fixed y);
+/* Gameplay surface, checking exact positions around greens and hazards when contours are present. */
+uint8_t SEC_CARD hole_surface(const Hole *h, const SurfaceGrid *g, fixed x, fixed y);
 
 typedef struct {
 	uint16_t entry, clear;     /* yards along the aim, clear is 0 when the hole ends in the hazard */

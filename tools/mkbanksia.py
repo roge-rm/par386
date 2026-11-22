@@ -455,7 +455,7 @@ def make_hole(n, d, out):
 def main():
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "courses/banksiaheath"
     out.mkdir(parents=True, exist_ok=True)
-    mesh_options = {6: " putting", 7: " putting", 13: " hole-13-visual.txt"}
+    mesh_options = {1: " putting bunkers", 6: " putting", 7: " putting", 13: " hole-13-visual.txt hazards"}
     (out / "course.txt").write_text(
         "# Banksia Heath, an Australian sandbelt course among heath and gum trees.\n"
         "# Made by tools/mkbanksia.py.\n"

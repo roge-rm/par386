@@ -6,4 +6,5 @@ holes 18
 scenery 7
 wind 11
 green 10
+terrain-mesh all putting bunkers water
 terrain-mesh 3 putting bunkers

@@ -28,20 +28,20 @@ Dan
 
 <table>
   <tr>
-    <td align="center"><img src="doc/images/dana-tee.png" width="560" alt="The Dana tee view with a hole map on the left and shot controls on the right" /><br>AlphaSmart Dana tee view</td>
+    <td align="center"><img src="doc/images/dana-tee.png" width="560" alt="The Saffron Dunes tee with a hole map on the left and shot controls on the right" /><br>Saffron Dunes tee on AlphaSmart Dana</td>
   </tr>
   <tr>
-    <td align="center"><img src="doc/images/dana-courses.png" width="560" alt="The Dana course list beside the Banksia Heath preview" /><br>AlphaSmart Dana course picker</td>
+    <td align="center"><img src="doc/images/dana-courses.png" width="560" alt="The Dana course list beside the Saffron Dunes preview" /><br>AlphaSmart Dana course picker</td>
   </tr>
 </table>
 
-Captured from the current source build on an emulated Tungsten TX, Palm IIIx and AlphaSmart Dana. [Frond emulator](https://github.com/roge-rm/frond)
+Captured on an emulated Tungsten TX, Palm IIIx and AlphaSmart Dana. [Frond emulator](https://github.com/roge-rm/frond)
 
 ## Devices
 
 One build runs on Palm OS 3.1 and up, from a Palm IIIx in greys to a Tungsten TX in colour. The title and menus fill the available display on supported tall and landscape colour screens. Older Palms play tones. Palm OS 5 devices with sound streams also play sampled strikes, landings, splashes and cup sounds. Settings offers On, Effects and Off.
 
-On updated holes, the game uses detailed terrain on ARM Palms such as the TX and compact terrain on older 68k models such as the IIIx. Both show the curved greens, fringes and bunkers where the course includes them. The TX uses native ARM code to speed up full-shot views.
+The included courses use detailed terrain on ARM Palms such as the TX and compact terrain on older 68k models such as the IIIx. Both show curved greens, fringes and bunkers. The TX uses native ARM code to speed up full-shot views.
 
 On the AlphaSmart Dana, the 560×160 layout shows the course between a small hole map and the shot controls. Tap the small map to aim, or open **Map** for a larger view from tee to green. The ball trail stays visible in the small map during the shot. The course picker shows the preview beside the list, round setup puts players beside the tee and hole options, and an 18-hole scorecard shows both nines together.
 
@@ -52,6 +52,8 @@ Frond checks have covered the IIIx, TX, Zire 72, Sony Clié models and the Dana.
 ## Install
 
 Download the ZIP from the [latest release](https://github.com/roge-rm/par386/releases/latest). Install `Par386.prc` and at least one course file (`Par386-*.pdb`) with HotSync. Update the course files along with the game to get the newest course visuals.
+
+The app is about 1.2 MB and each course uses about 1.2 to 1.7 MB. Older course files still load if your Palm has limited space.
 
 You can also copy course files to an SD card in `/PALM/Programs/Par386/`, `/PALM/Launcher/` or the root of the card. A card course is copied into Palm memory while you play it, so leave room for the whole course.
 

@@ -107,7 +107,7 @@ def name_bytes(where, s, lo, hi):
 def read_course(folder):
     path = os.path.join(folder, "course.txt")
     course = {"name": None, "tees": [], "holes": None, "scenery": None, "wind": None, "green": None,
-              "terrain_meshes": {}, "putting_curves": {}}
+              "terrain_meshes": {}, "putting_curves": {}, "terrain_default": None}
     for n, w in read_lines(path):
         where = "%s:%d" % (path, n)
         key, rest = w[0], " ".join(w[1:])
@@ -130,14 +130,27 @@ def read_course(folder):
             if course["green"] and not 6 <= course["green"] <= 14:
                 fail(where, "green speed 6 to 14, or 0 for the usual 10")
         elif key == "terrain-mesh":
-            if (len(w) not in (2, 3, 4) or not w[1].isascii() or not w[1].isdigit() or
-                    (len(w) == 4 and not (w[2] == "putting" and w[3] in ("dunes", "bunkers")) and
-                     not all(p.endswith(".mesh") for p in w[2:]))):
-                fail(where, "terrain-mesh HOLE [putting [dunes|bunkers] or VISUAL.txt or DETAILED.mesh [COMPACT.mesh]]")
+            sources = w[2:]
+            if sources[:1] == ["putting"]:
+                options = sources[1:]
+                valid_sources = len(options) == len(set(options)) and set(options) <= {"dunes", "bunkers", "water"}
+            else:
+                valid_sources = len(sources) <= 1 or (
+                    len(sources) == 2 and (all(p.endswith(".mesh") for p in sources) or
+                                          (sources[0].endswith(".txt") and sources[1] == "hazards")))
+            if w[1:2] == ["all"]:
+                if not valid_sources or sources[:1] != ["putting"]:
+                    fail(where, "terrain-mesh all putting [bunkers] [water] [dunes]")
+                if course["terrain_default"] is not None:
+                    fail(where, "duplicate default terrain mesh")
+                course["terrain_default"] = sources
+                continue
+            if len(w) < 2 or not w[1].isascii() or not w[1].isdigit() or not valid_sources:
+                fail(where, "terrain-mesh HOLE [putting [bunkers] [water] [dunes] or VISUAL.txt [hazards] or DETAILED.mesh [COMPACT.mesh]]")
             hole = int(w[1])
             if hole in course["terrain_meshes"]:
                 fail(where, "duplicate terrain mesh for hole %d" % hole)
-            course["terrain_meshes"][hole] = w[2:]
+            course["terrain_meshes"][hole] = sources
         elif key == "putting-curves":
             if len(w) != 3 or not w[1].isascii() or not w[1].isdigit():
                 fail(where, "putting-curves HOLE FILE")
@@ -157,6 +170,9 @@ def read_course(folder):
         fail(path, "terrain mesh names a hole outside the course")
     if any(not 1 <= n <= course["holes"] for n in course["putting_curves"]):
         fail(path, "putting curves name a hole outside the course")
+    if course["terrain_default"] is not None:
+        for n in range(1, course["holes"] + 1):
+            course["terrain_meshes"].setdefault(n, course["terrain_default"])
     return course
 
 
@@ -698,26 +714,36 @@ def curve_points(shape, steps, width, length):
     return points
 
 
-def bake_putting_curves(h, budget, surfaces):
+def bake_putting_curves(h, budget, surfaces, shared_hazards=False):
     shapes = []
     for i, (surface, points) in enumerate(h["shapes"]):
-        if surface not in surfaces:
+        hazard = shared_hazards and surface in (terrainmesh.SAND, terrainmesh.WATER)
+        if surface not in surfaces and not hazard:
             continue
         xs, ys = zip(*points)
-        if any(min(xs) - PUTTING_CURVE_RADIUS <= x <= max(xs) + PUTTING_CURVE_RADIUS and
-               min(ys) - PUTTING_CURVE_RADIUS <= y <= max(ys) + PUTTING_CURVE_RADIUS for x, y in h["pins"]):
-            shapes.append((i, points))
+        near_pin = any(min(xs) - PUTTING_CURVE_RADIUS <= x <= max(xs) + PUTTING_CURVE_RADIUS and
+                       min(ys) - PUTTING_CURVE_RADIUS <= y <= max(ys) + PUTTING_CURVE_RADIUS for x, y in h["pins"])
+        if near_pin or hazard:
+            shapes.append((i, points, near_pin, hazard))
     budget = min((budget - 1 - 3 * len(shapes)) // 4, MAX_CURVE_VERTS_TOTAL)
-    for steps in range(6, 1, -1):
-        if sum(min(steps, MAX_CURVE_VERTS // len(points)) * len(points) for _, points in shapes) <= budget:
+    for steps in range(4 if shared_hazards else 6, 0 if shared_hazards else 1, -1):
+        if not shared_hazards and sum(min(steps, MAX_CURVE_VERTS // len(points)) * len(points)
+                                      for _, points, _, _ in shapes) > budget:
+            continue
+        outlines = []
+        for i, points, near_pin, hazard in shapes:
+            samples = min(steps if near_pin else 2, MAX_CURVE_VERTS // len(points))
+            outline = curve_points(points, samples, h["width"], h["length"])
+            if shared_hazards:
+                outline = simplify_outline(outline, 4 if hazard else 2)
+            if len(outline) >= 3:
+                outlines.append((i, outline))
+        if sum(len(outline) for _, outline in outlines) <= budget:
             break
     else:
         return b""
-    curves = []
-    for i, shape in shapes:
-        points = curve_points(shape, min(steps, MAX_CURVE_VERTS // len(shape)), h["width"], h["length"])
-        if len(points) >= 3:
-            curves.append(struct.pack(">BH", i, len(points)) + b"".join(struct.pack(">HH", *p) for p in points))
+    curves = [struct.pack(">BH", i, len(points)) + b"".join(struct.pack(">HH", *p) for p in points)
+              for i, points in outlines]
     return bytes([len(curves)]) + b"".join(curves) if curves else b""
 
 
@@ -749,7 +775,8 @@ def read_putting_curves(data, h, indexed=False):
 
 
 def hole_record(folder, n, h, green_mesh=False, green_geometry=False, visual=None, baked_sand=False,
-                putting_curves=False, record_curves=None, curve_surfaces=CURVE_SURFACES):
+                putting_curves=False, record_curves=None, curve_surfaces=CURVE_SURFACES,
+                shared_hazards=False):
     path = os.path.join(folder, "hole-%02d.txt" % n)
     hm_path, cell = h["heightmap"]
     hm_w, hm_h, heights = load_heightmap(path, hm_path, cell, h["width"], h["length"])
@@ -785,7 +812,7 @@ def hole_record(folder, n, h, green_mesh=False, green_geometry=False, visual=Non
                     out = struct.pack(">H", HOLE_GEOMETRY_VERSION) + out[2:] + geometry
     elif putting_curves:
         if putting_curves is True:
-            curves = bake_putting_curves(h, MAX_RECORD - len(out), curve_surfaces)
+            curves = bake_putting_curves(h, MAX_RECORD - len(out), curve_surfaces, shared_hazards)
         else:
             path = os.path.join(folder, putting_curves)
             try:
@@ -851,13 +878,16 @@ def read_pdb(path):
     return name, kind, creator, [data[offs[i]:offs[i + 1]] for i in range(count)]
 
 
-def terrain_mesh_records(folder, n, h, sources, curves=None):
+def terrain_mesh_records(folder, n, h, sources, curves=None, require_compact=False):
     where = os.path.join(folder, "hole-%02d.txt" % n)
     source = sources[0] if sources else None
     shared_putting = source == "putting"
-    shared_bunkers = shared_putting and sources[1:] == ["bunkers"]
+    shared_bunkers = shared_putting and "bunkers" in sources[1:]
+    shared_water = shared_putting and "water" in sources[1:]
+    dunes = shared_putting and "dunes" in sources[1:]
     if shared_putting:
         source = None
+    shared_hazards = bool(curves) and (not source or sources[1:] == ["hazards"])
     path = os.path.join(folder, source) if source else where
     try:
         meshes = []
@@ -873,43 +903,43 @@ def terrain_mesh_records(folder, n, h, sources, curves=None):
             shapes = read_visual_shapes(path, h, putting_slots) if source else [
                 (sf, [(x * 4, y * 4) for x, y in points]) for sf, points in h["shapes"]
             ]
-            indexed = {}
-            if shared_putting:
-                if curves:
-                    indexed = {i: (sf, points) for i, sf, points in read_putting_curves(curves, h, indexed=True)
-                               if sf != terrainmesh.SAND or shared_bunkers}
-                if not indexed:
-                    fail(path, "terrain mesh needs a putting green, fringe or water contour")
+            indexed = {i: (sf, points) for i, sf, points in read_putting_curves(curves, h, indexed=True)} if curves else {}
+            if shared_putting and not indexed:
+                fail(path, "terrain mesh needs a putting green, fringe or water contour")
+            if not source:
                 shapes = [indexed.get(i, shape) for i, shape in enumerate(shapes)]
-            compact_putting = tuple(indexed)
+            putting = tuple(indexed) if not source else ()
+            if putting_slots and curves:
+                shared = list(indexed.values())
+                slots = set(putting_slots)
+                if shared_hazards:
+                    # Include the course hazards away from the green.
+                    hazard_types = {terrainmesh.SAND, terrainmesh.WATER}
+                    shared = [indexed.get(i, (sf, [(x * 4, y * 4) for x, y in points]))
+                              for i, (sf, points) in enumerate(h["shapes"])
+                              if i in indexed or sf in hazard_types]
+                    slots.update(i for i, (sf, _) in enumerate(shapes) if sf in hazard_types)
+                first = min(slots)
+                shapes = shapes[:first] + shared + [
+                    shape for i, shape in enumerate(shapes[first:], first) if i not in slots
+                ]
+                putting = range(first, first + len(shared))
             hm_path, cell = h["heightmap"]
             nx, ny, heights = load_heightmap(where, hm_path, cell, h["width"], h["length"])
             sand = ()
             if h["surface"] != terrainmesh.SAND and any(sf == terrainmesh.SAND for sf, _ in shapes):
                 atlas = sand_atlas(path, h, shapes, terrainmesh.MAX_BYTES)
                 sand = terrainmesh.sand_samples(atlas)
-            detailed, detailed_sand, putting = shapes, sand, compact_putting
-            if putting_slots and curves:
-                first = putting_slots[0]
-                slots = set(putting_slots)
-                shared = read_putting_curves(curves, h)
-                detailed = shapes[:first] + shared + [
-                    shape for i, shape in enumerate(shapes[first:], first) if i not in slots
-                ]
-                putting = range(first, first + len(shared))
-                if h["surface"] != terrainmesh.SAND and any(sf == terrainmesh.SAND for sf, _ in detailed):
-                    atlas = sand_atlas(path, h, detailed, terrainmesh.MAX_BYTES)
-                    detailed_sand = terrainmesh.sand_samples(atlas)
             for compact in (False, True):
                 try:
                     data = terrainmesh.bake_record(
                         h["width"], h["length"], nx, ny, cell, h["surface"],
                         round(h["base"] * 16) / 16, round(h["step"] * 4096) / 4096,
-                        heights, shapes if compact else detailed, sand if compact else detailed_sand,
-                        compact=compact, putting=compact_putting if compact else putting,
-                        dunes=shared_putting and sources[1:] == ["dunes"], round_mown=shared_bunkers)
+                        heights, shapes, sand, compact=compact, putting=putting,
+                        dunes=dunes, round_mown=shared_bunkers, round_natural=shared_water,
+                        shared_hazards=shared_hazards and (not source or bool(putting_slots)))
                 except (ValueError, struct.error) as e:
-                    if not compact:
+                    if not compact or require_compact:
                         raise
                     print("%s: compact terrain mesh skipped: %s" % (path, e), file=sys.stderr)
                 else:
@@ -921,32 +951,49 @@ def terrain_mesh_records(folder, n, h, sources, curves=None):
     return meshes
 
 
+def putting_surfaces(sources):
+    if sources[:1] == ["putting"] and "bunkers" in sources[1:] and "water" not in sources[1:]:
+        return range(terrainmesh.GREEN, terrainmesh.WATER)
+    return CURVE_SURFACES
+
+
 def build(folder, out, green_mesh=False, green_geometry=False, visual_hole=None, baked_sand=False):
     course = read_course(folder)
     if visual_hole and not 1 <= visual_hole[0] <= course["holes"]:
         fail(folder, "visual hole number out of range")
+    terrain_sources = course["terrain_meshes"]
+    default = course["terrain_default"]
+    if default is not None and (green_mesh or green_geometry or visual_hole):
+        # Implicit meshes use the same hole record slot as the experimental views.
+        visual_number = visual_hole[0] if visual_hole else 0
+        terrain_sources = {
+            n: sources for n, sources in terrain_sources.items()
+            if sources is not default or (not (green_mesh or green_geometry) and n != visual_number)
+        }
     holes = [read_hole(folder, n, course) for n in range(1, course["holes"] + 1)]
     records = [course_record(course, holes)]
-    curves = {n: True for n, sources in course["terrain_meshes"].items()
-              if not sources or not sources[0].endswith(".mesh")}
+    baked = {n for n, sources in terrain_sources.items() if not sources or not sources[0].endswith(".mesh")}
+    shared = {n for n in baked if not terrain_sources[n] or terrain_sources[n][0] == "putting" or
+              terrain_sources[n][1:] == ["hazards"]}
+    curves = dict.fromkeys(baked, True)
     curves.update(course["putting_curves"])
     record_curves = {}
     records += [hole_record(folder, n, h, green_mesh, green_geometry,
                             visual_hole[1] if visual_hole and n == visual_hole[0] else None, baked_sand,
                             curves.get(n, False), record_curves,
-                            curve_surfaces=(range(terrainmesh.GREEN, terrainmesh.WATER)
-                                            if course["terrain_meshes"].get(n) == ["putting", "bunkers"]
-                                            else CURVE_SURFACES))
+                            curve_surfaces=putting_surfaces(terrain_sources.get(n, ())),
+                            shared_hazards=n in shared)
                 for n, h in enumerate(holes, 1)]
     for i, r in enumerate(records):
         if len(r) > MAX_RECORD:
             raise CourseError("record %d is %d bytes, over 16 KB" % (i, len(r)))
-    if course["terrain_meshes"]:
+    if terrain_sources:
         indices = [0] * (2 * len(holes))
         meshes = []
-        for n, sources in sorted(course["terrain_meshes"].items()):
+        for n, sources in sorted(terrain_sources.items()):
             for quality, data in enumerate(terrain_mesh_records(folder, n, holes[n - 1], sources,
-                                                               record_curves.get(n))):
+                                                               record_curves.get(n),
+                                                               sources is default)):
                 indices[2 * (n - 1) + quality] = len(records) + 1 + len(meshes)
                 meshes.append(data)
         if any(indices[1::2]):

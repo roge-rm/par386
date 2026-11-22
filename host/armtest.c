@@ -341,6 +341,7 @@ static void via_terra(uint8_t op, void *job)
 		put32(b + TT_TURF, t->turf ? tturf : NULL);
 		put32(b + TT_NOISE, lowtab(t->noise, 256));
 		put16(b + TT_MOW_PHASE, (uint16_t)t->mow_phase);
+		put32(b + TT_REFLECTION, t->reflection);
 		call_entry(op, b);
 	} else if (op == TERRA_SKY) {
 		TerraSky *t = job;
@@ -392,6 +393,17 @@ static void via_terra(uint8_t op, void *job)
 		put16(b + TM_GS, t->gs);
 		put16(b + TM_GH, t->gh);
 		b[TM_LG] = t->lg;
+		call_entry(op, b);
+	} else if (op == TERRA_EDGES) {
+		const TerraEdges *t = job;
+		put32(b, t->bits);
+		put32(b + 4, t->marks);
+		put16(b + 8, t->rb);
+		put16(b + 10, t->w);
+		put16(b + 12, t->vh);
+		put16(b + 14, (uint16_t)t->horizon);
+		put16(b + 16, t->y);
+		put16(b + 18, t->end);
 		call_entry(op, b);
 	} else {
 		CHECK(0);
