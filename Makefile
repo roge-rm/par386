@@ -84,6 +84,7 @@ SCENE    = tools/mockup/r/scene_bg_960.png
 ART      = build/art
 
 $(SCENE): tools/mockup/render.py
+	mkdir -p $(@D)
 	python3 tools/mockup/render.py tools/mockup/r 960
 
 $(ART)/art.rcp: tools/mkart.py tools/mkpal.py tools/mockup/mock1b.py tools/mockup/mock1b2.py src/core/uicol.h tools/mkpreview.py tools/mkstyle.py tools/mkobj.py art/golfer/f13-40.png art/golfer/f13-80.png $(SCENE)
