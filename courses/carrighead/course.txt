@@ -7,3 +7,4 @@ tee Forward
 holes 18
 scenery 2         # the clifftop backdrop: the Atlantic, the far headland and its lighthouse
 wind 15           # off the Atlantic, harder than the usual 10
+terrain-mesh 11 putting bunkers

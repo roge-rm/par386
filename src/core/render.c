@@ -1,12 +1,9 @@
 /* The view from behind the ball (render.h).
  *
- * Camera: CAM_BACK yards behind the ball along the aim line, looking level
- * with the view shifted down so the horizon sits at row HORIZON (no pitch,
- * so verticals stay vertical). Its height puts the ball BALL_GAP rows above
- * the bottom of the view: about 4 yards on a square screen, more on a tall
- * one, where the horizon moves down by half the extra rows. That stands the
- * golfer in the foreground, 40 px tall on 160 wide screens, the size of the
- * sprite, with the hole in front of him.
+ * The camera looks level along the aim line, so verticals stay vertical.
+ * On longer shots it backs up and rises to show more ground ahead. Its
+ * height puts the ball BALL_GAP rows above the bottom of the view, with
+ * the golfer in the foreground at the sprite's size.
  *
  * Terrain is marched front to back in depth steps, every column at each
  * step, with a y-buffer per column (voxel-space style). Each sample fills
@@ -94,6 +91,8 @@ typedef struct {
  * work memory: where each stage got to. */
 typedef struct {
 	R r;
+	struct ContourWork *contours; /* optional projected shapes, after the normal work */
+	struct MeshWork *mesh;       /* optional tiled terrain */
 	TerraRow t;                 /* the terrain's depth step */
 	TerraSky ts;                /* a sky row */
 	RenderStats local;          /* the stats when the caller wants none */
@@ -102,7 +101,7 @@ typedef struct {
 	Surface d;                  /* the one drawn into: s, or its top left quarter at half size */
 	const RenderArt *a;
 	int32_t bh;                 /* the ground at the ball, heightmap byte steps */
-	fixed z, zl;                /* terrain: the next depth step and the last */
+	fixed back, z, zl;          /* camera setback and the terrain's next and last depth steps, yards */
 	uint16_t step;
 	uint8_t on;                 /* objects given their clip columns so far */
 	uint8_t stage;              /* JS_* */
@@ -112,7 +111,7 @@ typedef struct {
 	int16_t k;                  /* objects still to draw */
 } Job;
 
-enum { JS_GATHER, JS_TERRAIN, JS_SKY, JS_OBJECTS, JS_GOLFER, JS_DOUBLE, JS_DONE };
+enum { JS_GATHER, JS_TERRAIN, JS_SKY, JS_OBJECTS, JS_GOLFER, JS_DOUBLE, JS_DONE, JS_MESH };
 
 /* Whether a slice's time is up. */
 static int SEC_RENDER late(RenderClock clk, uint32_t until)
@@ -200,12 +199,24 @@ static int16_t SEC_RENDER fit(const Surface *s, int16_t *vh)
 	return (int16_t)((*vh - (160 - RENDER_STATUS) * sc) / 2);
 }
 
+/* Give the landing area more room from 65 to 161 yards from the pin.
+ * Leave room above the horizon for the tallest 40-row backdrop. */
+static int16_t SEC_RENDER scene_frame(const Surface *s, const RenderView *v, int16_t *vh, fixed *back)
+{
+	vec2 pin = v->hole->pins[v->pin & 3];
+	int16_t yards = (int16_t)(vec2_len(vec2_sub(pin, v->ball)) >> 16);
+	int16_t raise = yards <= 65 ? 0 : yards >= 161 ? 8 : (yards - 65) / 12;
+
+	*back = CAM_BACK + ((fixed)(raise / 2) << 16);
+	return (int16_t)((HORIZON - raise) * s->scale + fit(s, vh));
+}
+
 /* The camera's height above the ball's ground, in yards, that puts the
  * ball BALL_GAP rows above the bottom of a view vh rows tall with the
  * horizon on row yh. */
-static fixed SEC_RENDER cam_up(int16_t vh, int16_t yh, int16_t sc)
+static fixed SEC_RENDER cam_up(int16_t vh, int16_t yh, int16_t sc, fixed back)
 {
-	return (fixed)(vh - BALL_GAP * sc - yh) * CAM_BACK / (FOCAL * sc);
+	return (fixed)(vh - BALL_GAP * sc - yh) * back / (FOCAL * sc);
 }
 
 /* Writes palette index c at (x, y); p points at the byte holding the pixel. */
@@ -478,6 +489,458 @@ static fixed SEC_RENDER near_start(const R *r)
 #define PROBE_Z   64
 #define WBOX_MAX  8           /* water shapes with their own box; more share the last */
 
+/* Camera-space contours, 1/32 yard. Depth bounds let the march skip whole
+ * shapes, then groups of eight consecutive edges within each shape. */
+#define CONTOUR_BAND 8
+#define SAND_RADIUS 64     /* two yards, in camera units */
+typedef struct { int16_t right, depth; } ContourPoint;
+typedef struct { int16_t lo, hi; } ContourBand;
+typedef struct { int16_t right, depth; } SandNormal;
+typedef struct {
+	const uint8_t *samples;
+	uint16_t x, y, w, h;
+} SandTile;
+typedef struct {
+	uint16_t first, count, first_band, first_sand;
+	ContourBand depth;
+	uint8_t surface;
+} ContourShape;
+typedef struct ContourWork {
+	ContourShape shape[VISUAL_SHAPE_MAX + 1];
+	ContourPoint *points;
+	ContourBand *bands;
+	SandNormal *sand;
+	SandTile *atlas;
+	int16_t *crossings;
+	uint8_t *row, *prior, *cut, *prior_y;
+	uint8_t *relief, *prior_relief;
+	int8_t *sand_light;
+	int8_t sand_light_x[16], sand_light_y[16];
+	int16_t sand_px, sand_first, sand_end;
+	uint8_t count;
+} ContourWork;
+
+static int16_t SEC_DANA contour_depth(fixed v)
+{
+	int32_t q = (v + 1024) >> 11;
+	return (int16_t)(q < -32768L ? -32768L : q > 32767L ? 32767L : q);
+}
+
+static void SEC_DANA contour_point(const R *r, ContourPoint *p, fixed x, fixed y)
+{
+	fixed dx = x - r->camx, dy = y - r->camy;
+	p->depth = contour_depth(fix_mulq14(dx, r->fx) + fix_mulq14(dy, r->fy));
+	p->right = contour_depth(fix_mulq14(dx, r->rx) + fix_mulq14(dy, r->ry));
+}
+
+static void SEC_DANA contour_bounds(ContourWork *c, ContourShape *s)
+{
+	const ContourPoint *p = c->points + s->first;
+	ContourBand *b = c->bands + s->first_band;
+	uint16_t i = 0;
+	int16_t last = p[s->count - 1].depth;
+	s->depth.lo = s->depth.hi = last;
+	while (i < s->count) {
+		uint16_t end = (uint16_t)(i + CONTOUR_BAND);
+		if (end > s->count) end = s->count;
+		b->lo = b->hi = last;
+		for (; i < end; i++) {
+			last = p[i].depth;
+			if (last < b->lo) b->lo = last;
+			if (last > b->hi) b->hi = last;
+		}
+		if (b->lo < s->depth.lo) s->depth.lo = b->lo;
+		if (b->hi > s->depth.hi) s->depth.hi = b->hi;
+		b++;
+	}
+}
+
+static void SEC_DANA sand_normals(ContourWork *c, const ContourShape *s)
+{
+	const ContourPoint *p = c->points + s->first, *last = p + s->count - 1;
+	SandNormal *n = c->sand + s->first_sand;
+	uint16_t k;
+	for (k = 0; k < s->count; k++, last = p++) {
+		int32_t dx = (int32_t)p->right - last->right;
+		int32_t dz = (int32_t)p->depth - last->depth;
+		int32_t span = (dx < 0 ? -dx : dx) + (dz < 0 ? -dz : dz);
+
+		n[k].right = span ? (int16_t)(-dz * 16384L / span) : 0;
+		n[k].depth = span ? (int16_t)(dx * 16384L / span) : 0;
+	}
+}
+
+static inline uint8_t SEC_DANA sand_curve(uint16_t d)
+{
+	uint16_t eased = (uint16_t)((MULU16(d * d, 3 * SAND_RADIUS - 2 * d) + 512) >> 10);
+	return (uint8_t)(eased < 255 ? eased : 255);
+}
+
+static void SEC_DANA baked_sand_span(ContourWork *c, const SandTile *tile, const TerraRow *t,
+                                     int16_t first, int16_t end)
+{
+	uint16_t stride = tile->w * 2;
+	int16_t start, col;
+	fixed x, y;
+
+	if (t->cw == 2) first = (int16_t)((first + 1) & ~1);
+	start = (int16_t)(t->cw == 2 ? first >> 1 : first);
+	x = t->px + fix_muli(t->dpxc, start) - ((fixed)tile->x << FIX_SHIFT);
+	y = t->py + fix_muli(t->dpyc, start) - ((fixed)tile->y << FIX_SHIFT);
+	for (col = first; col < end; col += t->cw, x += t->dpxc, y += t->dpyc) {
+		uint16_t ix = (uint16_t)(x >> FIX_SHIFT), iy = (uint16_t)(y >> FIX_SHIFT);
+		const uint8_t *p;
+		int16_t a, b, d, light = 0;
+		uint16_t fx, fy;
+
+		/* A rounded contour sample can fall just outside its tile. */
+		if (ix >= tile->w - 1 || iy >= tile->h - 1) {
+			c->relief[col] = 0;
+			c->sand_light[col] = 0;
+			continue;
+		}
+		p = tile->samples + MULU16(iy, stride) + ix * 2;
+		if (p[0] == SAND_RADIUS && p[2] == SAND_RADIUS &&
+		    p[stride] == SAND_RADIUS && p[stride + 2] == SAND_RADIUS) {
+			c->relief[col] = 255;
+			c->sand_light[col] = 0;
+			continue;
+		}
+		fx = (uint16_t)((x >> 9) & 127);
+		fy = (uint16_t)((y >> 9) & 127);
+		a = (int16_t)((int8_t)p[0] * 128 + MULS16((int8_t)p[2] - (int8_t)p[0], fx));
+		b = (int16_t)((int8_t)p[stride] * 128 +
+		              MULS16((int8_t)p[stride + 2] - (int8_t)p[stride], fx));
+		d = (int16_t)((MULS16(a, 128) + MULS16(b - a, fy) + 8192) >> 14);
+		if (d <= 0) {
+			c->relief[col] = 0;
+		} else if (d >= SAND_RADIUS) {
+			c->relief[col] = 255;
+		} else {
+			uint8_t normal = p[1 + (fx >= 64 ? 2 : 0) + (fy >= 64 ? stride : 0)];
+			int16_t slope = (int16_t)(d <= SAND_RADIUS / 2 ? d : SAND_RADIUS - d);
+			light = (int16_t)(MULS16(slope, c->sand_light_x[normal >> 4] +
+			                        c->sand_light_y[normal & 15]) >> 5);
+			c->relief[col] = sand_curve((uint16_t)d);
+		}
+		c->sand_light[col] = (int8_t)light;
+	}
+}
+
+/* Ranges contain columns whose centres are inside the projected polygon. */
+static void SEC_DANA contour_paint(ContourWork *c, const ContourShape *s, const R *r,
+                                   const TerraRow *t, int16_t depth)
+{
+	const ContourPoint *p = c->points + s->first;
+	const ContourBand *b = c->bands + s->first_band;
+	int16_t *xs = c->crossings;
+	uint16_t start, n = 0;
+	if (depth < s->depth.lo || depth >= s->depth.hi) return;
+	for (start = 0; start < s->count; start += CONTOUR_BAND, b++) {
+		uint16_t i = start, end = (uint16_t)(start + CONTOUR_BAND);
+		const ContourPoint *last;
+		if (depth < b->lo || depth >= b->hi) continue;
+		if (end > s->count) end = s->count;
+		last = &p[start ? start - 1 : s->count - 1];
+		for (; i < end; last = &p[i++]) {
+			const ContourPoint *at = &p[i];
+			const ContourPoint *lo, *hi;
+			int16_t run, dy, right, x;
+			int32_t delta, x2;
+			uint16_t k;
+			if ((last->depth <= depth) == (at->depth <= depth)) continue;
+			lo = last->depth < at->depth ? last : at;
+			hi = last->depth < at->depth ? at : last;
+			dy = (int16_t)(hi->depth - lo->depth);
+			run = (int16_t)(hi->right - lo->right);
+			delta = MULS16(run, depth - lo->depth);
+			delta += delta < 0 ? -(dy >> 1) : dy >> 1;
+			right = (int16_t)(lo->right + delta / dy);
+			x2 = 2L * MULS16(right, r->f) - depth;
+			if (x2 >= 0) x2 += 2L * depth - 1;
+			x2 = r->cx + x2 / (2L * depth);
+			x = (int16_t)(x2 < 0 ? 0 : x2 > r->w ? r->w : x2);
+			k = n++;
+			while (k && x < xs[k - 1]) {
+				xs[k] = xs[k - 1];
+				k--;
+			}
+			xs[k] = x;
+		}
+	}
+	for (start = 0; start + 1 < n; start += 2) {
+		int16_t x;
+		for (x = xs[start]; x < xs[start + 1]; x++) c->row[x] = s->surface;
+		if (s->surface == SURF_BUNKER && xs[start] < xs[start + 1]) {
+			if (c->atlas) {
+				baked_sand_span(c, c->atlas + s->first_sand, t, xs[start], xs[start + 1]);
+			} else {
+				if (xs[start] < c->sand_first) c->sand_first = xs[start];
+				if (xs[start + 1] > c->sand_end) c->sand_end = xs[start + 1];
+			}
+		}
+	}
+}
+
+static void SEC_DANA contour_row(ContourWork *c, const R *r, const TerraRow *t, fixed z)
+{
+	int16_t depth = contour_depth(z), x;
+	uint8_t i;
+	c->sand_first = r->w;
+	c->sand_end = 0;
+	for (x = 0; x < r->w; x++) c->row[x] = SURF_COUNT;
+	for (i = 0; i < c->count; i++) contour_paint(c, &c->shape[i], r, t, depth);
+}
+
+/* The distance in a square around the segment is the maximum of the
+ * distances outside its box and across its line. Camera units are 1/32 yd. */
+static void SEC_DANA sand_edge(ContourWork *c, const R *r, const ContourPoint *a,
+                               const ContourPoint *b, const SandNormal *n,
+                               int16_t depth, int32_t col_step)
+{
+	int16_t zlo = a->depth < b->depth ? a->depth : b->depth;
+	int16_t zhi = a->depth > b->depth ? a->depth : b->depth;
+	int16_t dz = depth < zlo ? zlo - depth : depth > zhi ? depth - zhi : 0;
+	int16_t left = a->right < b->right ? a->right : b->right;
+	int16_t right = a->right > b->right ? a->right : b->right;
+	int16_t first = c->sand_first, end = c->sand_end, x;
+	int16_t slope = (int16_t)((n->right + n->depth) >> 9);
+	int32_t projected, right_q, base;
+
+	if (dz >= SAND_RADIUS) return;
+	projected = r->cx + MULS16(left - SAND_RADIUS, r->f) / depth - 1;
+	if (projected > first) {
+		if (projected >= end) return;
+		first = (int16_t)projected;
+	}
+	projected = r->cx + MULS16(right + SAND_RADIUS, r->f) / depth + 2;
+	if (projected < end) {
+		if (projected <= first) return;
+		end = (int16_t)projected;
+	}
+	right_q = (first - r->cx) * col_step + (col_step >> 1);
+	base = MULS16(n->depth, depth - a->depth);
+	for (x = first; x < end; x++, right_q += col_step) {
+		int16_t rx, dx, d;
+		int32_t dot;
+		if (c->row[x] != SURF_BUNKER || dz >= c->relief[x]) continue;
+		rx = (int16_t)((right_q + 128) >> 8);
+		dx = rx < left ? left - rx : rx > right ? rx - right : 0;
+		d = dx > dz ? dx : dz;
+		if (d >= c->relief[x]) continue;
+		dot = MULS16(n->right, rx - a->right) + base;
+		dx = (int16_t)(((dot < 0 ? -dot : dot) + 8192) >> 14);
+		if (dx > d) d = dx;
+		if (d < c->relief[x]) {
+			c->relief[x] = (uint8_t)d;
+			c->sand_light[x] = (int8_t)(dot < 0 ? slope : -slope);
+		}
+	}
+}
+
+static void SEC_DANA sand_row(ContourWork *c, const R *r, int16_t depth)
+{
+	int16_t x;
+	uint8_t i;
+	int32_t col_step;
+
+	if (c->sand_first >= c->sand_end) return;
+	col_step = ((int32_t)depth << 8) / r->f;
+	for (x = c->sand_first; x < c->sand_end; x++) {
+		c->relief[x] = SAND_RADIUS;
+		c->sand_light[x] = 0;
+	}
+	for (i = 0; i < c->count; i++) {
+		const ContourShape *s = &c->shape[i];
+		const ContourPoint *p = c->points + s->first;
+		const ContourBand *b = c->bands + s->first_band;
+		uint16_t start;
+		if (s->surface != SURF_BUNKER || depth < s->depth.lo || depth >= s->depth.hi) continue;
+		for (start = 0; start < s->count; start += CONTOUR_BAND, b++) {
+			uint16_t k, end;
+			const ContourPoint *last;
+			if (depth < b->lo - SAND_RADIUS || depth > b->hi + SAND_RADIUS) continue;
+			end = (uint16_t)(start + CONTOUR_BAND);
+			if (end > s->count) end = s->count;
+			last = &p[start ? start - 1 : s->count - 1];
+			for (k = start; k < end; last = &p[k++])
+				sand_edge(c, r, last, &p[k], &c->sand[s->first_sand + k], depth, col_step);
+		}
+	}
+	for (x = c->sand_first; x < c->sand_end; x++) {
+		uint16_t d = c->relief[x];
+		if (c->row[x] != SURF_BUNKER) continue;
+		if (d == SAND_RADIUS) {
+			c->relief[x] = 255;
+		} else {
+			int16_t slope = (int16_t)(d <= SAND_RADIUS / 2 ? d : SAND_RADIUS - d);
+			c->relief[x] = sand_curve(d);
+			c->sand_light[x] = (int8_t)(MULS16(slope, c->sand_light[x]) >> 5);
+		}
+	}
+}
+
+/* A point on the depth-clipped edge in 1/256 screen pixels. */
+static int32_t SEC_DANA contour_screen_x(const R *r, const ContourPoint *a,
+                                          const ContourPoint *b, int16_t depth)
+{
+	int32_t right = (int32_t)a->right * 64;
+
+	if (depth != a->depth) {
+		if (depth == b->depth) right = (int32_t)b->right * 64;
+		else {
+			int32_t t = ((int32_t)depth - a->depth) * 65536L /
+			            ((int32_t)b->depth - a->depth);
+			right += (((int32_t)b->right - a->right) * t) >> 10;
+		}
+	}
+	/* The validated hole bounds keep right below 24,000 camera units
+	 * before the extra six bits of precision. */
+	return (int32_t)r->cx * 256 + right * (4L * r->f) / depth;
+}
+
+/* Perspective depth interpolates linearly along the projected edge. */
+static int16_t SEC_DANA contour_weight(int16_t near_z, int16_t far_z, int16_t z)
+{
+	return (int16_t)(MULS16(z - near_z, far_z) * 256 / MULS16(far_z - near_z, z));
+}
+
+typedef struct {
+	int16_t near_z, far_z;
+	int16_t first, end;
+	int16_t left, right;
+} ContourCut;
+
+static void SEC_DANA contour_cut_edge(ContourWork *c, const R *r,
+                                     const ContourPoint *a, const ContourPoint *b,
+                                     const ContourCut *bounds, uint8_t surface)
+{
+	int16_t near_z = bounds->near_z, far_z = bounds->far_z;
+	int16_t lo = a->depth < b->depth ? a->depth : b->depth;
+	int16_t hi = a->depth > b->depth ? a->depth : b->depth;
+	int16_t u, v;
+	int32_t xa, xb, width, first, end, x;
+	uint8_t *cut = c->cut;
+
+	if (hi < near_z || lo > far_z) return;
+	if ((a->right < bounds->left && b->right < bounds->left) ||
+	    (a->right > bounds->right && b->right > bounds->right)) return;
+	if (lo < near_z) lo = near_z;
+	if (hi > far_z) hi = far_z;
+	xa = contour_screen_x(r, a, b, lo);
+	xb = a->depth == b->depth ? contour_screen_x(r, b, a, hi) : contour_screen_x(r, a, b, hi);
+	if (xa > xb) {
+		int32_t swap = xa;
+		int16_t z = lo;
+		xa = xb;
+		xb = swap;
+		lo = hi;
+		hi = z;
+	}
+	/* Half-open intervals count a shared vertex once. */
+	first = (xa + 127) >> 8;
+	end = (xb + 127) >> 8;
+	if (first < bounds->first) first = bounds->first;
+	if (end > bounds->end) end = bounds->end;
+	if (first >= end) return;
+	u = contour_weight(near_z, far_z, lo);
+	v = contour_weight(near_z, far_z, hi);
+	width = xb - xa;
+	for (x = first; x < end; x++) {
+		uint8_t near = c->prior[x], far = c->row[x];
+		int32_t off;
+		int16_t q;
+		if (near == far || near >= SURF_COUNT || far >= SURF_COUNT ||
+		    near == SURF_WATER || far == SURF_WATER ||
+		    (surface != near && surface != far)) continue;
+		off = x * 256 + 128 - xa;
+		q = width > 8388607L
+		    ? (int16_t)(u + ((off >> 4) * (v - u)) / (width >> 4))
+		    : (int16_t)(u + (off * (v - u)) / width);
+		if (q < 1) q = 1;
+		if (q > 254) q = 254;
+		if (!cut[x]) cut[x] = (uint8_t)q;
+		else if (q - cut[x] > 1 || cut[x] - q > 1) cut[x] = 255;
+	}
+}
+
+static void SEC_DANA contour_cuts(ContourWork *c, const R *r, fixed near, fixed far)
+{
+	ContourCut bounds;
+	int16_t x, ray;
+	uint16_t materials = 0;
+	uint8_t i;
+
+	bounds.near_z = contour_depth(near);
+	bounds.far_z = contour_depth(far);
+	bounds.first = r->w;
+	bounds.end = 0;
+	for (x = 0; x < r->w; x++) {
+		uint8_t a = c->prior[x], b = c->row[x];
+		c->cut[x] = 0;
+		if (a == b || a >= SURF_COUNT || b >= SURF_COUNT || a == SURF_WATER || b == SURF_WATER) continue;
+		if (!materials) bounds.first = x;
+		bounds.end = x + 1;
+		materials |= (1u << a) | (1u << b);
+	}
+	if (bounds.near_z >= bounds.far_z || !materials) return;
+	/* Bound the changed-column rays throughout the strip. Four camera
+	 * units cover clipping and projection rounding. */
+	ray = (int16_t)(2 * (bounds.first - r->cx) + 1);
+	bounds.left = (int16_t)(MULS16(ray, ray < 0 ? bounds.far_z : bounds.near_z) / (2 * r->f) - 4);
+	ray = (int16_t)(2 * (bounds.end - 1 - r->cx) + 1);
+	bounds.right = (int16_t)(MULS16(ray, ray < 0 ? bounds.near_z : bounds.far_z) / (2 * r->f) + 4);
+	for (i = 1; i < c->count; i++) {
+		const ContourShape *s = &c->shape[i];
+		const ContourPoint *p = c->points + s->first;
+		const ContourBand *b = c->bands + s->first_band;
+		uint16_t start;
+		if (!(materials & (1u << s->surface)) || s->depth.lo > bounds.far_z || s->depth.hi < bounds.near_z) continue;
+		for (start = 0; start < s->count; start += CONTOUR_BAND, b++) {
+			uint16_t k, end;
+			const ContourPoint *last;
+			if (b->lo > bounds.far_z || b->hi < bounds.near_z) continue;
+			end = (uint16_t)(start + CONTOUR_BAND);
+			if (end > s->count) end = s->count;
+			last = &p[start ? start - 1 : s->count - 1];
+			for (k = start; k < end; k++) {
+				contour_cut_edge(c, r, last, &p[k], &bounds, s->surface);
+				last = &p[k];
+			}
+		}
+	}
+	for (x = bounds.first; x < bounds.end; x++)
+		if (c->cut[x] == 255) c->cut[x] = 0;
+}
+
+static void SEC_DANA contour_step(ContourWork *c, const R *r, TerraRow *t,
+                                  fixed near, fixed far)
+{
+	if (t->cw == 1) {
+		uint8_t *row = c->row;
+		c->row = c->prior;
+		c->prior = row;
+		row = c->relief;
+		c->relief = c->prior_relief;
+		c->prior_relief = row;
+	}
+	contour_row(c, r, t, far);
+	if (c->sand) sand_row(c, r, contour_depth(far));
+	t->material = c->row;
+	t->sand_relief = c->relief;
+	t->prior_relief = c->prior_relief;
+	t->sand_light = c->sand_light;
+	t->cut = 0;
+	if (t->cw == 1) {
+		contour_cuts(c, r, near, far);
+		t->cut = c->cut;
+		t->prior_material = c->prior;
+		t->prior_y = c->prior_y;
+		t->prior_sand_px = c->sand_px;
+		c->sand_px = t->sand_px;
+	}
+}
+
 /* The 2-bit pattern rows in the order they go over to haze. */
 static const uint8_t haze_row[4] = { 2, 10, 6, 14 };
 
@@ -607,7 +1070,12 @@ static int SEC_RENDER terrain(Job *j, RenderClock clk, uint32_t until)
 	t->gw = g->w;
 	t->gh = g->h;
 	t->gs = g->stride;
-	t->stripe = r->lg == 3 ? 12 : 18;
+	t->stripe = j->contours ? 0 : r->lg == 3 ? 12 : 18;
+	t->material = t->cut = t->prior_material = 0;
+	t->prior_y = 0;
+	t->prior_sand_px = 0;
+	t->sand_relief = t->prior_relief = 0;
+	t->sand_light = 0;
 	t->lg = r->lg;
 	t->scale = r->scale;
 	t->shift = h->hm_shift;
@@ -650,13 +1118,14 @@ static int SEC_RENDER terrain(Job *j, RenderClock clk, uint32_t until)
 		t->wlv = (int16_t)(24 + (fz > 132 ? 132 : (int16_t)fz) * 2 / 3);
 		/* half way back to the last step, as a share of this depth, 2.14 */
 		tq = 0;
-		if (fz >= PROBE_Z && z > zl) {
+		if (!j->contours && fz >= PROBE_Z && z > zl) {
 			tq = (int16_t)(((z + zl) >> 1) / (z >> 14));
 			r->st->divides++;
 			if (!near_water(r, px, py, dpx, dpy, tq)) tq = 0;
 		}
 		t->tq = tq;
 		t->ns = fz < 10 ? 0 : fz < 24 ? 1 : fz < 48 ? 2 : 8;
+		if (j->contours && t->ns < 8) t->ns = r->lg < 2 ? 8 : t->ns + 2;
 		{
 			int32_t d = MULS16(sand_drop >> 2, t->m) >> t->sh, e = MULS16(water_drop >> 2, t->m) >> t->sh;
 			t->sand_px = (int16_t)(d > 1000 ? 1000 : d);
@@ -667,6 +1136,7 @@ static int SEC_RENDER terrain(Job *j, RenderClock clk, uint32_t until)
 
 		/* every column at this depth */
 		t->spans = t->pixels = 0;
+		if (j->contours) contour_step(j->contours, r, t, zl, z);
 		if (terra_fn) terra_fn(TERRA_ROW, t);
 		else terra_row(t);
 		COUNT(r->st->spans += t->spans);
@@ -880,17 +1350,111 @@ static const uint8_t skin_ramp[SKIN_COLOURS - 1][PAL_SKIN_N] = {
 	{ PAL_BARK, PAL_BARK + 1, PAL_SKIN, PAL_BARK + 2, PAL_BARK + 3, PAL_SKIN + 2 }
 };
 
+static const uint8_t outfit_ramp[OUTFIT_COLOURS - 1][6] = {
+	{ PAL_NAVY, PAL_NAVY + 1, PAL_NAVY + 2, PAL_NAVY + 3, PAL_NAVY + 4, PAL_NAVY + 5 },
+	{ PAL_TREE + 5, PAL_TREE + 6, PAL_TREE + 7, PAL_TREE + 8, PAL_TREE + 9, PAL_TREE + 10 },
+	{ PAL_RED, PAL_RED + 1, PAL_RED + 2, PAL_RED + 3, PAL_RED + 4, PAL_RED + 5 },
+	{ PAL_GOLD, PAL_GOLD + 1, PAL_GOLD + 2, PAL_GOLD + 3, PAL_GOLD + 4, PAL_GOLD + 5 },
+	{ PAL_GREY + 4, PAL_GREY + 5, PAL_GREY + 6, PAL_GREY + 7, PAL_CAP + 2, PAL_CAP + 3 },
+	{ PAL_GREY, PAL_GREY, PAL_GREY + 1, PAL_GREY + 1, PAL_GREY + 2, PAL_GREY + 3 }
+};
+
+static void SEC_DANA outfit_shades(uint8_t *out, uint8_t count, uint8_t colour)
+{
+	uint8_t i;
+
+	for (i = 0; i < count; i++)
+		out[i] = colour && colour < OUTFIT_COLOURS ?
+		         outfit_ramp[colour - 1][(i * 5 + (count - 1) / 2) / (count - 1)] : 0;
+}
+
+/* The optional trailer holds two clothing shade tags per byte, low first. */
+static const uint8_t *SEC_DANA golfer_clothes(uint8_t *colours, const RenderGolfer *g,
+                                              const RenderData *d, uint32_t pixels)
+{
+	if ((!g->shoes && !g->pants && !g->shirt && !g->hat) ||
+	    d->len != 12 + pixels + (pixels + 1) / 2) return 0;
+	colours[0] = 0;
+	outfit_shades(colours + 1, 3, g->shoes);
+	outfit_shades(colours + 4, 4, g->pants);
+	outfit_shades(colours + 8, 4, g->shirt);
+	outfit_shades(colours + 12, 4, g->hat);
+	return d->p + 12 + pixels;
+}
+
 static int16_t SEC_RENDER golfer_x(const RenderGolfer *g, const RenderData *d, uint16_t w, int16_t bx)
 {
 	int16_t anchor = (int16_t)be16(d->p + 8);
 	return (int16_t)(g->left ? bx + anchor - ((int16_t)w - 1) : bx - anchor);
 }
 
+/* Keep the shadow at the address pose's foot anchor during the swing. */
+static void SEC_DANA golfer_contact(const R *r, const RenderGolfer *g, int16_t bx, int16_t by)
+{
+	const RenderData *d = &g->pose[POSE_ADDRESS];
+	uint16_t w, h;
+	int16_t dx, sx, sy, x, y, row, end;
+
+	if (!sprite(d, &w, &h)) return;
+	dx = (int16_t)be16(d->p + 4) - (int16_t)be16(d->p + 8);
+	sx = bx + (g->left ? -dx : dx);
+	sy = by + (int16_t)be16(d->p + 6) - (int16_t)be16(d->p + 10);
+	for (row = -1; row <= r->scale; row++) {
+		y = sy + row;
+		if (y < 0 || y >= r->vh) continue;
+		end = 4 * r->scale - (row != 0);
+		for (x = sx - end; x <= sx + end; x++) {
+			uint8_t *p, c, level, drop;
+			if (x < 0 || x >= r->w) continue;
+			if (r->lg == 1) {
+				if (!row || !((x + y) & 1)) plot(r, x, y, PAL_BLACK, 0);
+				continue;
+			}
+			p = pixp(r, x, y);
+			c = *p;
+			if (c < PAL_TERRAIN || c >= PAL_TERRAIN + PAL_TERRAIN_N) continue;
+			level = (uint8_t)((c - PAL_TERRAIN) & (PAL_RAMP_N - 1));
+			drop = !row && x > sx - end && x < sx + end ? 3 : 1;
+			*p = (uint8_t)(c - (level < drop ? level : drop));
+		}
+	}
+}
+
+static const uint8_t golfer_ramps[][2] = {
+	{ PAL_BARK, PAL_BARK_N }, { PAL_SKIN, PAL_SKIN_N }, { PAL_SHIRT, PAL_SHIRT_N },
+	{ PAL_TROUSERS, PAL_TROUSERS_N }, { PAL_CAP, PAL_CAP_N }, { PAL_SHOES, PAL_SHOES_N },
+	{ PAL_GREY, PAL_GREY_N }, { PAL_TREE, PAL_TREE_N }, { PAL_RED, PAL_RED_N },
+	{ PAL_GOLD, PAL_GOLD_N }, { PAL_NAVY, PAL_NAVY_N }
+};
+
+/* Move a low-contrast edge along its own colour ramp. */
+static uint8_t SEC_DANA golfer_edge_colour(uint8_t c, uint8_t ground)
+{
+	int16_t bg = pal_grey[ground], difference = pal_grey[c] - bg;
+	uint8_t i;
+
+	if (difference < -24 || difference > 24) return c;
+	for (i = 0; i < sizeof golfer_ramps / sizeof golfer_ramps[0]; i++) {
+		uint8_t lo = golfer_ramps[i][0], hi = (uint8_t)(lo + golfer_ramps[i][1] - 1);
+		if (c < lo || c > hi) continue;
+		if (2 * bg < pal_grey[lo] + pal_grey[hi]) {
+			while (c != hi && pal_grey[c] - bg < 38) c++;
+		} else {
+			while (c != lo && bg - pal_grey[c] < 38) c--;
+		}
+		break;
+	}
+	return c;
+}
+
 /* Spr8 pose with its ball point on (bx, by). The ball itself stays put. */
-static void SEC_RENDER golfer(const R *r, const RenderGolfer *g, uint8_t pose, int16_t bx, int16_t by, uint8_t ball, uint8_t dbl)
+static void SEC_DANA golfer(const R *r, const RenderGolfer *g, uint8_t pose, int16_t bx,
+                            int16_t by, uint8_t ball, uint8_t dbl, uint8_t course)
 {
 	const RenderData *gd = &g->pose[pose];
-	const uint8_t *shade = r->lg >= 2 && g->skin > SKIN_LIGHT && g->skin < SKIN_COLOURS ? skin_ramp[g->skin - 1] : 0;
+	uint8_t colours[16];
+	const uint8_t *shade = r->lg >= 2 && g->skin > SKIN_LIGHT && g->skin < SKIN_COLOURS ?
+	                       skin_ramp[g->skin - 1] : 0;
 	uint16_t w, h, i, j;
 	const uint8_t *px = sprite(gd, &w, &h);
 
@@ -900,9 +1464,12 @@ static void SEC_RENDER golfer(const R *r, const RenderGolfer *g, uint8_t pose, i
 		/* the columns on screen */
 		int16_t e = r->w - x0;
 		uint16_t i0 = x0 < 0 ? (uint16_t)-x0 : 0, i1 = e < 0 ? 0 : e < (int16_t)w ? (uint16_t)e : w;
+		const uint8_t *tags = golfer_clothes(colours, g, gd, MULU16(w, h));
+		int edge = course && (r->lg == 1 || r->lg == 3);
 		for (j = 0; j < h; j++, px += w) {
 			int16_t y = y0 + (int16_t)j;
 			int16_t k = g->left ? (int16_t)(w - 1 - i0) : (int16_t)i0;
+			uint32_t tag_row = MULU16(j, w);
 			uint8_t *row;
 			if (y < 0 || y >= r->vh) continue;
 			row = r->bits + MULU16(y, r->rb);
@@ -910,7 +1477,36 @@ static void SEC_RENDER golfer(const R *r, const RenderGolfer *g, uint8_t pose, i
 				int16_t x = x0 + (int16_t)i;
 				uint8_t c = px[k];
 				if (!c) continue;
+				if (g->mesh_style) {
+					int trousers = c >= PAL_TROUSERS && c < PAL_TROUSERS + PAL_TROUSERS_N;
+					if (r->lg == 3 && trousers) c = (uint8_t)(PAL_NAVY + c - PAL_TROUSERS);
+					else if (!course && r->lg == 1 && (!k || !px[k - 1]) &&
+					         (trousers || (y > by - 19 && c >= PAL_GREY && c <= PAL_GREY + 2)) &&
+					         (getpx(r, x, y) == 3 ||
+					          (x - step >= 0 && x - step < r->w && getpx(r, x - step, y) == 3)))
+						c = PAL_WHITE;
+				}
 				if (shade && c >= PAL_SKIN && c < PAL_SKIN + PAL_SKIN_N) c = shade[c - PAL_SKIN];
+				if (tags && c) {
+					uint32_t at = tag_row + (uint16_t)k;
+					uint8_t packed = tags[at >> 1];
+					uint8_t tag = (uint8_t)(at & 1 ? packed >> 4 : packed & 15);
+					if (colours[tag]) c = colours[tag];
+				}
+				/* Work just inside the silhouette and skip fine features like the club. */
+				if (edge && (px[k] < PAL_CLUB || px[k] >= PAL_CLUB + PAL_CLUB_N) &&
+				    (((!k || !px[k - 1]) && k + 2 < w && px[k + 1] && px[k + 2]) ||
+				     ((k + 1 == w || !px[k + 1]) && k >= 2 && px[k - 1] && px[k - 2]))) {
+					uint8_t bg = getpx(r, (int16_t)(x << dbl), (int16_t)(y << dbl));
+					if (r->lg == 3) c = golfer_edge_colour(c, bg);
+					else {
+						uint8_t ink = pixval(r, x, y, c);
+						if (ink == bg || (ink | bg) < 2) {
+							c = bg < 2 ? PAL_GREY + 2 : bg == 2 ? PAL_GREY + 7 : PAL_GREY + 6;
+							if (bg == 2 && pixval(r, x, y, c) == 2) c = PAL_WHITE;
+						}
+					}
+				}
 				if (dbl) plot(r, x, y, c, 1);
 				else put(r, row + ((uint16_t)x >> (3 - r->lg)), x, y, c);
 			}
@@ -925,6 +1521,30 @@ static void SEC_RENDER golfer(const R *r, const RenderGolfer *g, uint8_t pose, i
 	 * either side and under it. */
 	if (r->lg == 1 && r->scale == 1)
 		for (i = 0; i < 5; i++) plot(r, bx + ball_dx[i], by + ball_dy[i], i ? PAL_BLACK : PAL_WHITE, dbl);
+}
+
+void render_golfer_preview(const Surface *s, const RenderGolfer *g,
+                           int16_t x, int16_t y, int16_t w, int16_t h)
+{
+	const RenderData *d = &g->pose[POSE_ADDRESS];
+	uint16_t sw, sh;
+	int16_t ax, ay, bx, by;
+	R r;
+
+	w *= s->scale;
+	h *= s->scale;
+	if (w <= 0 || h <= 0 || !sprite(d, &sw, &sh) || sw > (uint16_t)w || sh > (uint16_t)h) return;
+	ax = (int16_t)be16(d->p + 8);
+	ay = (int16_t)be16(d->p + 10);
+	bx = s->ox + x * s->scale + (w - sw) / 2 + (g->left ? (int16_t)sw - 1 - ax : ax);
+	by = s->oy + y * s->scale + (h - sh) / 2 + ay;
+	r.bits = s->bits;
+	r.rb = s->rowBytes;
+	r.w = s->w;
+	r.vh = s->h;
+	r.lg = s->lg;
+	r.scale = s->scale;
+	golfer(&r, g, POSE_ADDRESS, bx, by, 0, 0, 0);
 }
 
 /* The box round every pose and the ball, kept to the view and to the
@@ -1110,13 +1730,15 @@ int render_pose(Surface *s, const RenderGolfer *g, uint8_t pose, uint8_t ball,
 	r.vh = d ? vh >> 1 : vh;
 	if (g->x + g->w > r.w || g->y + g->h > r.vh) return -1;
 	under_io(&r, g, 0, d);
-	golfer(&r, g, pose, g->bx, g->by, ball, d);
+	golfer(&r, g, pose, g->bx, g->by, ball, d, 1);
 	*ox = d ? g->x << 1 : g->x;
 	*oy = d ? g->y << 1 : g->y;
 	*ow = d ? g->w << 1 : g->w;
 	*oh = d ? g->h << 1 : g->h;
 	return 0;
 }
+
+#include "terrainmesh.inc"
 
 int render_scene_begin(Surface *s, const RenderView *v, const RenderArt *a, void *work, RenderStats *stats)
 {
@@ -1128,6 +1750,7 @@ int render_scene_begin(Surface *s, const RenderView *v, const RenderArt *a, void
 	fixed groundz;
 	uint8_t half = (uint8_t)half_of(s, &hs);
 
+	s->smooth_y1 = 0;
 	if (fit(half ? &hs : s, &y) < 0) return -1;
 	r = &j->r;
 	j->s = *s;
@@ -1136,8 +1759,12 @@ int render_scene_begin(Surface *s, const RenderView *v, const RenderArt *a, void
 	d = &j->d;
 	j->v = *v;
 	j->a = a;
-	if (a->golfer) a->golfer->half = j->half;
-	fit(d, &r->vh);
+	j->contours = 0;
+	j->mesh = 0;
+	if (a->golfer) {
+		a->golfer->half = j->half;
+		a->golfer->mesh_style = 0;
+	}
 	r->st = stats ? stats : &j->local;
 	{
 		RenderStats z = { 0, 0, 0, 0, 0, 0, 0, 0, 0, { 0, 0, 0, 0, 0 } };
@@ -1147,7 +1774,7 @@ int render_scene_begin(Surface *s, const RenderView *v, const RenderArt *a, void
 	r->rb = d->rowBytes;
 	r->w = d->w;
 	r->scale = d->scale;
-	r->yh = (int16_t)(HORIZON * d->scale + fit(d, &y));
+	r->yh = scene_frame(d, v, &r->vh, &j->back);
 	r->f = (int16_t)(FOCAL * d->scale);
 	r->cx = d->w / 2;
 	r->lg = (uint8_t)(d->depth == 8 ? 3 : d->depth == 4 ? 2 : d->depth == 2 ? 1 : 0);
@@ -1188,13 +1815,156 @@ int render_scene_begin(Surface *s, const RenderView *v, const RenderArt *a, void
 	r->fy = isin(v->aim);
 	r->rx = r->fy;
 	r->ry = (int16_t)-r->fx;
-	r->camx = v->ball.x - mulq(CAM_BACK, r->fx);
-	r->camy = v->ball.y - mulq(CAM_BACK, r->fy);
+	r->camx = v->ball.x - mulq(j->back, r->fx);
+	r->camy = v->ball.y - mulq(j->back, r->fy);
 	j->bh = hb_at(r->h, v->ball.x, v->ball.y);
 	groundz = r->h->base + fix_mul(j->bh << 8, r->h->step);
-	r->camb = fix_div(groundz + cam_up(r->vh, r->yh, r->scale) - r->h->base, r->h->step) >> 8;
+	r->camb = fix_div(groundz + cam_up(r->vh, r->yh, r->scale, j->back) - r->h->base, r->h->step) >> 8;
 	r->stepf = (uint32_t)r->h->step * (uint32_t)r->f;
 	j->stage = JS_GATHER;
+	return 0;
+}
+
+/* One box for the base surface followed by the course's shapes in order. */
+static uint32_t SEC_DANA contour_work(const Surface *s, const RenderView *v, Job *j)
+{
+	const uint8_t *shapes = v->hole->visual_shapes, *p;
+	const uint8_t *atlas = v->hole->sand_atlas;
+	uint16_t points = 4, bands = 1, widest = 4;
+	uint16_t sand = v->hole->base_surface == SURF_BUNKER ? 4 : 0;
+	uint8_t i, count, tiles = atlas ? *atlas++ : 0, relief;
+	uint32_t offset, size;
+
+	if (!shapes) return 0;
+	count = *shapes++;
+	p = shapes;
+	for (i = 0; i < count; i++) {
+		uint16_t n = (uint16_t)((p[1] << 8) | p[2]);
+		if (n > widest) widest = n;
+		points += n;
+		bands += (n + CONTOUR_BAND - 1) / CONTOUR_BAND;
+		if (!tiles && p[0] == SURF_BUNKER) sand += n;
+		p += 3 + 4 * n;
+	}
+	relief = sand || tiles;
+	offset = (render_work_size(s) + 7) & ~7UL;
+	size = offset + sizeof(ContourWork) + tiles * sizeof(SandTile) + points * sizeof(ContourPoint) +
+	       bands * sizeof(ContourBand) + sand * sizeof(SandNormal) +
+	       widest * sizeof(int16_t) + (relief ? 8u : 5u) *
+	       (s->half && s->scale == 2 ? s->w / 2 : s->w);
+	if (j) {
+		ContourWork *c = (ContourWork *)((uint8_t *)j + offset);
+		const R *r = &j->r;
+		fixed width = (fixed)v->hole->width << FIX_SHIFT;
+		fixed length = (fixed)v->hole->length << FIX_SHIFT;
+		int16_t col;
+		c->atlas = tiles ? (SandTile *)(c + 1) : 0;
+		c->points = (ContourPoint *)((uint8_t *)(c + 1) + tiles * sizeof(SandTile));
+		c->bands = (ContourBand *)(c->points + points);
+		c->sand = sand ? (SandNormal *)(c->bands + bands) : 0;
+		c->crossings = (int16_t *)((SandNormal *)(c->bands + bands) + sand);
+		c->row = (uint8_t *)(c->crossings + widest);
+		c->prior = c->row + r->w;
+		c->cut = c->prior + r->w;
+		c->prior_y = c->cut + r->w;
+		c->relief = relief ? c->prior_y + 2 * r->w : 0;
+		c->prior_relief = relief ? c->relief + r->w : 0;
+		c->sand_light = relief ? (int8_t *)(c->prior_relief + r->w) : 0;
+		c->sand_px = 0;
+		for (i = 0; i < tiles; i++) {
+			SandTile *tile = &c->atlas[i];
+			tile->x = be16(atlas);
+			tile->y = be16(atlas + 2);
+			tile->w = be16(atlas + 4);
+			tile->h = be16(atlas + 6);
+			tile->samples = atlas + 8;
+			atlas = tile->samples + 2 * MULU16(tile->w, tile->h);
+		}
+		if (tiles) {
+			for (i = 0; i < 16; i++) {
+				int16_t direction = (int16_t)(i < 8 ? i : i - 16);
+				c->sand_light_x[i] = (int8_t)(-MULS16(direction, r->fx + r->rx) / 3584);
+				c->sand_light_y[i] = (int8_t)(-MULS16(direction, r->fy + r->ry) / 3584);
+			}
+		}
+		for (col = 0; col < r->w; col++) c->row[col] = SURF_COUNT;
+		c->count = (uint8_t)(count + 1);
+		c->shape[0].first = c->shape[0].first_band = 0;
+		c->shape[0].first_sand = 0;
+		c->shape[0].surface = v->hole->base_surface;
+		c->shape[0].count = 4;
+		contour_point(r, &c->points[0], 0, 0);
+		contour_point(r, &c->points[1], width, 0);
+		contour_point(r, &c->points[2], width, length);
+		contour_point(r, &c->points[3], 0, length);
+		contour_bounds(c, &c->shape[0]);
+		sand = 0;
+		if (c->shape[0].surface == SURF_BUNKER) {
+			sand_normals(c, &c->shape[0]);
+			sand = 4;
+		}
+		p = shapes;
+		points = 4;
+		bands = 1;
+		for (i = 1; i < c->count; i++) {
+			ContourShape *shape = &c->shape[i];
+			uint16_t k;
+			shape->surface = p[0];
+			shape->count = (uint16_t)((p[1] << 8) | p[2]);
+			shape->first = points;
+			shape->first_band = bands;
+			shape->first_sand = sand;
+			p += 3;
+			for (k = 0; k < shape->count; k++, p += 4) {
+				fixed x = (fixed)((p[0] << 8) | p[1]) << 12;
+				fixed y = (fixed)((p[2] << 8) | p[3]) << 12;
+				contour_point(r, &c->points[points++], x, y);
+			}
+			bands += (shape->count + CONTOUR_BAND - 1) / CONTOUR_BAND;
+			contour_bounds(c, shape);
+			if (shape->surface == SURF_BUNKER) {
+				if (c->atlas) {
+					sand++;
+				} else {
+					sand_normals(c, shape);
+					sand += shape->count;
+				}
+			}
+		}
+		j->contours = c;
+	}
+	return size;
+}
+
+static uint32_t SEC_DANA scene_visual_work(const Surface *s, const RenderView *v, Job *j)
+{
+	uint32_t size = mesh_work(s, v, j);
+	return size ? size : contour_work(s, v, j);
+}
+
+int terrain_mesh_parse(TerrainMesh *mesh, const Hole *hole, const uint8_t *data, uint32_t size)
+{
+	return mesh_parse(mesh, hole, data, size);
+}
+
+uint32_t render_scene_visual_size(const Surface *s, const RenderView *v)
+{
+	return scene_visual_work(s, v, 0);
+}
+
+int render_scene_visual_begin(Surface *s, const RenderView *v, const RenderArt *a, void *work, RenderStats *stats)
+{
+	Job *j = (Job *)work;
+	if (render_scene_begin(s, v, a, work, stats) < 0) return -1;
+	scene_visual_work(s, v, j);
+	if (terra_fn && j->mesh && s->depth == 8) s->smooth_y1 = j->r.vh;
+	return 0;
+}
+
+int render_scene_visual(Surface *s, const RenderView *v, const RenderArt *a, void *work, RenderStats *stats)
+{
+	if (render_scene_visual_begin(s, v, a, work, stats) < 0) return -1;
+	render_scene_step(work, 0, 0);
 	return 0;
 }
 
@@ -1208,10 +1978,23 @@ int render_scene_step(void *work, RenderClock clk, uint32_t until)
 
 	/* a stage at a time, the terrain, sky and objects in pieces, until the time's up */
 	do {
+		if (j->stage == JS_MESH) {
+			x = (int16_t)mesh_paint(j, clk, until, pal_pat2, bayer, pal_grey);
+			t = lap(r->st, RS_TERRAIN, t);
+			if (!x) return 0;
+			j->stage = JS_OBJECTS;
+			continue;
+		}
 		switch (j->stage) {
 		case JS_GATHER:
 			gather(r, &j->v, a);
 			t = lap(r->st, RS_GATHER, t);
+			if (j->mesh) {
+				sky_start(j, &a->backdrop, (angle)(j->v.aim + j->v.hole->turn));
+				j->ymax = r->yh; /* the terrain fill covers rows below the horizon */
+				j->stage = JS_SKY;
+				break;
+			}
 			j->z = j->zl = near_start(r);
 			j->on = 0;
 			j->step = 0;
@@ -1229,7 +2012,7 @@ int render_scene_step(void *work, RenderClock clk, uint32_t until)
 			t = lap(r->st, RS_SKY, t);
 			if (!x) return 0;
 			j->k = r->nobj;
-			j->stage = JS_OBJECTS;
+			j->stage = j->mesh ? JS_MESH : JS_OBJECTS;
 			break;
 		case JS_OBJECTS:
 			/* back to front */
@@ -1245,13 +2028,15 @@ int render_scene_step(void *work, RenderClock clk, uint32_t until)
 			{
 				int16_t m;
 				uint8_t sh;
-				kz(r, r->stepf, (uint32_t)CAM_BACK, &m, &sh);
+				kz(r, r->stepf, (uint32_t)j->back, &m, &sh);
 				bx = r->cx;
 				by = (int16_t)(r->yh + (MULS16(dz6(r->camb, j->bh), m) >> sh));
 			}
 			if (a->golfer) {
 				RenderGolfer *g = a->golfer;
 				golfer_box(r, g, bx, by);
+				g->mesh_style = j->mesh != 0;
+				if (g->mesh_style) golfer_contact(r, g, bx, by);
 				if (g->w && g->under) {
 					under_io(r, g, 1, 0);
 				} else {
@@ -1259,7 +2044,7 @@ int render_scene_step(void *work, RenderClock clk, uint32_t until)
 				}
 				g->shown = POSE_ADDRESS;
 				g->ball = 1;
-				golfer(r, g, POSE_ADDRESS, bx, by, 1, 0);
+				golfer(r, g, POSE_ADDRESS, bx, by, 1, 0, 1);
 			}
 			t = lap(r->st, RS_GOLFER, t);
 			/* the status strip, black for now */
@@ -1300,15 +2085,15 @@ int render_map(Surface *s, const RenderView *v, RenderMap *out)
 	return render_map_box(s, v, 0, out);
 }
 
-int render_target_map(Surface *s, const RenderView *v, RenderMap *out, const vec2 *target)
+int render_target_map(Surface *s, const RenderView *v, RenderMap *out, const vec2 *target, const MapBox *box)
 {
-	return map_rows(s, v, 0, out, 0, 0x7FFF, target) < 0 ? -1 : 0;
+	return map_rows(s, v, box, out, 0, 0x7FFF, target) < 0 ? -1 : 0;
 }
 
-int render_dana_map(Surface *s, const RenderView *v, RenderMap *out, const vec2 *target)
+int render_dana_map(Surface *s, const RenderView *v, RenderMap *out, const vec2 *target, const MapBox *box)
 {
 	if (!s->fullview) return -1;
-	return map_draw(s, v, 0, out, 0, 0x7FFF, target, 1) < 0 ? -1 : 0;
+	return map_draw(s, v, box, out, 0, 0x7FFF, target, 1) < 0 ? -1 : 0;
 }
 
 int render_map_box(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out)
@@ -1325,6 +2110,7 @@ static int SEC_RENDER map_rows(Surface *s, const RenderView *v, const MapBox *bo
 {
 	Surface h;
 	int k;
+	s->smooth_y1 = 0;
 	if (!half_of(s, &h)) return map_draw(s, v, box, out, y0, y1, target, 0);
 	/* at half size: rows of the half view, all doubled at the end */
 	k = map_draw(&h, v, box, out, (int16_t)(y0 >> 1), y1 >= 0x7FFE ? 0x7FFF : (int16_t)((y1 + 1) >> 1), target, 0);
@@ -1350,6 +2136,18 @@ static void SEC_RENDER map_wide_terrain(const R *r, const SurfaceGrid *g, int16_
 	int16_t x, y, row_bytes = (int16_t)(((uint16_t)r->w << r->lg) >> 3);
 	fixed across = ypp / 2;
 
+	if (x0 < 0) {
+		along -= (fixed)x0 * ypp;
+		w += x0;
+		x0 = 0;
+	}
+	if (y0 < 0) {
+		across -= (fixed)y0 * ypp;
+		h += y0;
+		y0 = 0;
+	}
+	if (w > r->w - x0) w = (int16_t)(r->w - x0);
+	if (h > r->vh - y0) h = (int16_t)(r->vh - y0);
 	for (x = 0; x < w; x++, along += ypp) {
 		uint16_t cy = (uint16_t)(along >> (16 + SURF_CELL_SHIFT));
 		start[x] = (uint16_t)(g->stride * (cy < g->h ? cy : g->h - 1));
@@ -1420,15 +2218,15 @@ static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *bo
 	if (box) {
 		/* the box in the middle, if that's bigger than the whole hole */
 		fixed bw = box->x1 - box->x0, bh = box->y1 - box->y0, ybox;
-		a = bw / (r.w - 4 * sc);
-		b = bh / (r.vh - 4 * sc);
+		a = bw / (ew - 4 * sc);
+		b = bh / (eh - 4 * sc);
 		ybox = a > b ? a : b;
 		if (bw > 0 && bh > 0 && ybox < ypp) {
 			ypp = ybox < 1 ? 1 : ybox;
 			mw = (int16_t)(((fixed)h->width << 16) / ypp);
 			mh = (int16_t)(((fixed)h->length << 16) / ypp);
-			left = (int16_t)((r.w - bw / ypp) / 2 - box->x0 / ypp);
-			top = (int16_t)((r.vh - bh / ypp) / 2 - (((fixed)h->length << 16) - box->y1) / ypp);
+			left = (int16_t)((ew - bw / ypp) / 2 - box->x0 / ypp);
+			top = (int16_t)((eh - bh / ypp) / 2 - (((fixed)h->length << 16) - box->y1) / ypp);
 		}
 	}
 
@@ -1517,7 +2315,7 @@ static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *bo
 	map_dot(&r, wide, x - sc, y - sc, 3 * sc, PAL_BLACK);
 	map_dot(&r, wide, x, y, sc, PAL_WHITE);
 
-	/* The line to the target or pin, on the whole-hole map. */
+	/* The line to the target, or to the pin on a whole-hole overview. */
 	out->bx = MX(v->ball.x);
 	out->by = MY(v->ball.y);
 	out->px = MX(h->pins[v->pin & 3].x);
@@ -1557,7 +2355,7 @@ static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *bo
 		for (j = 0; j < 2 * sc; j++) dot(&r, x + (int16_t)i, y - 5 * sc + j, 1, PAL_FLAG + 1);
 	}
 	/* the ball: white with a black ring */
-	if (!box) {
+	if (!box || target) {
 		map_dot(&r, wide, out->bx - sc, out->by - sc, 3 * sc, PAL_BLACK);
 		map_dot(&r, wide, out->bx, out->by, sc, PAL_WHITE);
 	}
@@ -1593,22 +2391,24 @@ static fixed SEC_RENDER ground_z(const Hole *h, fixed x, fixed y)
 }
 
 /* The green camera backs away and rises as the putt gets longer. */
-#define GREEN_PITCH 5100         /* 28 degrees */
+#define GREEN_PITCH 5825         /* 32 degrees */
 #define GREEN_BACK  18022        /* 1.1, 2.14 */
 #define GREEN_UP    11469        /* 0.7, 2.14 */
 #define GREEN_ZK    3            /* height exaggeration */
 #define GREEN_FOCAL 200
-#define GREEN_ROW   94           /* the row straight ahead on 160 wide screens */
+#define GREEN_ROW   97           /* the row straight ahead on 160 wide screens */
 #define GREEN_NEAR  (4L << 16)
 #define GREEN_FAR   (40L << 16)
-#define GREEN_ROUGH_LIGHT (3 * 16)
+#define GREEN_ROUGH_LIGHT LIGHT_FLAT
 
 static fixed SEC_RENDER green_cam(const Surface *s, const RenderView *v, RenderCam *c)
 {
 	const Hole *h = v->hole;
 	vec2 pin = h->pins[v->pin & 3];
 	fixed len = vec2_len(vec2_sub(pin, v->ball)), back, zb;
-	int16_t vh;
+	int16_t vh, extra = fit(s, &vh), tall = s->scale == 2 ? extra / 2 : extra;
+	/* Keep the far ground in frame as the view gets taller. */
+	angle pitch = (angle)(GREEN_PITCH + tall * 32);
 
 	if (len < GREEN_NEAR) len = GREEN_NEAR;
 	if (len > GREEN_FAR) len = GREEN_FAR;
@@ -1617,8 +2417,8 @@ static fixed SEC_RENDER green_cam(const Surface *s, const RenderView *v, RenderC
 	c->fy = isin(v->aim);
 	c->rx = c->fy;
 	c->ry = (int16_t)-c->fx;
-	c->pc = icos(GREEN_PITCH);
-	c->ps = isin(GREEN_PITCH);
+	c->pc = icos(pitch);
+	c->ps = isin(pitch);
 	c->camx = v->ball.x - mulq(back, c->fx);
 	c->camy = v->ball.y - mulq(back, c->fy);
 	c->zref = ground_z(h, pin.x, pin.y);
@@ -1627,7 +2427,7 @@ static fixed SEC_RENDER green_cam(const Surface *s, const RenderView *v, RenderC
 	c->camz = c->zref + (zb - c->zref) * GREEN_ZK + mulq(len, GREEN_UP);
 	c->f = (int16_t)(GREEN_FOCAL * s->scale);
 	c->cx = s->w / 2;
-	c->yh = (int16_t)(GREEN_ROW * s->scale + fit(s, &vh));
+	c->yh = (int16_t)(GREEN_ROW * s->scale + extra);
 	c->back = (int16_t)(back >> 16);
 	return len;
 }
@@ -1640,8 +2440,18 @@ static int16_t SEC_RENDER persp(fixed v, int16_t f, fixed d);
 #define GRID_N 17
 typedef struct {
 	int16_t x, y;
-	uint16_t hb;
+	uint16_t depth, hb;        /* depth in sixteenths of a yard */
+	vec2 ground;
 } GPt;
+
+static __inline__ void SEC_RENDER guide_2bit(uint8_t *p, int16_t x, int16_t along)
+{
+	uint8_t dark = (uint8_t)(0x80 >> ((x & 3) << 1));
+
+	/* Alternate pairs of black and dark-grey pixels over the turf dither. */
+	if (along & 2) *p = (uint8_t)((*p & ~(dark >> 1)) | dark);
+	else *p |= (uint8_t)(dark | (dark >> 1));
+}
 
 /* A one pixel line, clipped to the view. */
 static void SEC_RENDER gline(const R *r, int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint8_t c)
@@ -1650,12 +2460,14 @@ static void SEC_RENDER gline(const R *r, int16_t x0, int16_t y0, int16_t x1, int
 	int16_t sx = x1 > x0 ? 1 : -1, sy = y1 > y0 ? 1 : -1, e = dx - dy, e2, n;
 
 	uint8_t fast = r->lg == 1 && c == PAL_BLACK;
+	uint8_t grey_guide = r->lg == 1 && c == PAL_GREY + 6;
 
 	if ((x0 < 0 && x1 < 0) || (y0 < 0 && y1 < 0) || (x0 >= r->w && x1 >= r->w) || (y0 >= r->vh && y1 >= r->vh)) return;
 	for (n = dx + dy + 1; n > 0; n--) {
 		if (x0 >= 0 && x0 < r->w && y0 >= 0 && y0 < r->vh) {
 			/* black on 2 bits is both bits set */
 			if (fast) *(r->bits + MULU16(y0, r->rb) + (x0 >> 2)) |= (uint8_t)(0xC0 >> ((x0 & 3) << 1));
+			else if (grey_guide) guide_2bit(r->bits + MULU16(y0, r->rb) + (x0 >> 2), x0, dx >= dy ? x0 : y0);
 			else put(r, pixp(r, x0, y0), x0, y0, c);
 		}
 		if (x0 == x1 && y0 == y1) break;
@@ -1665,27 +2477,82 @@ static void SEC_RENDER gline(const R *r, int16_t x0, int16_t y0, int16_t x1, int
 	}
 }
 
+typedef struct PuttingCurves PuttingCurves;
+
 /* The green view being drawn (render_green_begin and _step), at the start
  * of the work memory. */
+typedef struct {
+	uint16_t offset;           /* bytes from the first shape */
+	uint8_t x0, y0, x1, y1;    /* quarter yards from the detail box's corner */
+} GreenShape;
+
+#define GREEN_DETAIL_Q 104     /* 26 yd either side of the cup */
+#define GREEN_TILES    27      /* two-yard cells intersecting the detail box */
+#define GREEN_STRIPES  8
+#define STRIPE_EDGES   8
+
+typedef struct {
+	uint16_t key;              /* local shape index and world row */
+	uint8_t count;             /* more than STRIPE_EDGES means scan the shape */
+	uint8_t edge[STRIPE_EDGES];
+} GreenStripe;
+
 typedef struct {
 	R r;
 	RenderCam c;
 	RenderView v;
 	Surface s;                  /* the surface asked for */
-	uint8_t half, guide, done;
+	uint8_t half, guide, done, shape_count, sp_shift, refine;
 	GPt rows[2][GRID_N], *far, *near;
 	fixed len, sp, back, up;     /* putt length, cell size, camera setback and height */
 	int16_t k, k0, k1, wide;    /* row to draw, the near and far bounds, and where to coarsen */
+	int16_t detail_x, detail_y; /* origin of the detail box, quarter yards */
+	uint32_t edges[GREEN_TILES]; /* cells touched by a polygon edge, one bit each */
+	const uint8_t *mesh_rows, *mesh_runs;
+	uint16_t mesh_x, mesh_y, mesh_w, mesh_h;
+	uint8_t geometry, visual_mesh;
+	GreenStripe stripes[GREEN_STRIPES];
 	int32_t hbb;
-	uint16_t green_past;        /* green cells in the row past this one */
+	uint32_t green_past;        /* green half-edges along the near side of the last row */
 	TerraTris tt;               /* triangles waiting to be filled */
 	TerraTri tl[TERRA_TRIS_MAX];
+	GreenShape shapes[HOLE_MAX_SHAPES];
+	PuttingCurves *curves;
 } GJob;
+
+typedef struct {
+	int16_t x, y;
+	uint16_t depth;
+} GreenProjected;
+
+typedef struct {
+	GreenProjected vertices[GREEN_VERT_MAX];
+	uint16_t next[GREEN_TRI_MAX], bins[64];
+} GreenWork;
+
+/* An edge on a cell boundary marks both cells. */
+static void SEC_RENDER green_edge(GJob *j, int16_t ax, int16_t ay, int16_t bx, int16_t by)
+{
+	int16_t left = (j->detail_x >> 3), top = (j->detail_y >> 3);
+	int16_t x0 = (int16_t)((((ax < bx) ? ax : bx) - 1) >> 3) - left;
+	int16_t x1 = (int16_t)(((ax > bx) ? ax : bx) >> 3) - left;
+	int16_t y0 = (int16_t)((((ay < by) ? ay : by) - 1) >> 3) - top;
+	int16_t y1 = (int16_t)(((ay > by) ? ay : by) >> 3) - top;
+	uint32_t bits;
+
+	if (x0 >= GREEN_TILES || x1 < 0 || y0 >= GREEN_TILES || y1 < 0) return;
+	if (x0 < 0) x0 = 0;
+	if (x1 >= GREEN_TILES) x1 = GREEN_TILES - 1;
+	if (y0 < 0) y0 = 0;
+	if (y1 >= GREEN_TILES) y1 = GREEN_TILES - 1;
+	bits = ((2UL << x1) - 1) & ~((1UL << x0) - 1);
+	for (; y0 <= y1; y0++) j->edges[y0] |= bits;
+}
 
 /* Close cells show the green edge. Cells farther away cover more ground. */
 static fixed SEC_RENDER green_row(const GJob *j, int16_t k)
 {
-	if (k > j->wide) k = (int16_t)(j->wide + 4 * (k - j->wide));
+	if (k > j->wide) k = (int16_t)(j->wide + 2 * (k - j->wide));
 	return (fixed)k * j->sp;
 }
 
@@ -1725,6 +2592,428 @@ static void SEC_RENDER tri(GJob *j, const GPt *a, const GPt *b, const GPt *c, ui
 	q->lv = lv;
 }
 
+/* Build the painter order from depth buckets, projecting each vertex once. */
+static int SEC_DANA green_geometry(GJob *j)
+{
+	GreenWork *work = (GreenWork *)(j + 1);
+	const uint8_t *mesh = j->v.hole->green_geometry, *p = mesh + 4, *tris;
+	const Hole *h = j->v.hole;
+	uint16_t nv = be16(mesh), nt = be16(mesh + 2), i, group, visible = 0;
+
+	for (i = 0; i < nv; i++, p += 6) {
+		GreenProjected *v = &work->vertices[i];
+		fixed depth, x = (fixed)be16(p) << 12, y = (fixed)be16(p + 2) << 12;
+		fixed z = h->base + fix_mulf((fixed)be16(p + 4) * 256, h->step);
+		v->depth = 0;
+		if (render_point(&j->c, x, y, z, &v->x, &v->y, &depth)) {
+			v->depth = (uint16_t)(1 + (depth >> 14));
+			if (v->x < -4000) v->x = -4000;
+			if (v->x > 4000) v->x = 4000;
+			if (v->y < -4000) v->y = -4000;
+			if (v->y > 4000) v->y = 4000;
+		}
+	}
+	tris = p;
+	for (i = 0; i < 64; i++) work->bins[i] = 0;
+	for (i = 0; i < nt; i++, p += 7) {
+		const GreenProjected *a = &work->vertices[be16(p)];
+		const GreenProjected *b = &work->vertices[be16(p + 2)];
+		const GreenProjected *c = &work->vertices[be16(p + 4)];
+		if (!a->depth || !b->depth || !c->depth) continue;
+		if ((a->x < 0 && b->x < 0 && c->x < 0) ||
+		    (a->x >= j->r.w && b->x >= j->r.w && c->x >= j->r.w) ||
+		    (a->y < 0 && b->y < 0 && c->y < 0) ||
+		    (a->y >= j->r.vh && b->y >= j->r.vh && c->y >= j->r.vh)) continue;
+		group = (a->depth + b->depth + c->depth) >> 4;
+		if (group > 63) group = 63;
+		work->next[i] = work->bins[group];
+		work->bins[group] = i + 1;
+		visible++;
+	}
+	if (!visible) return 0;
+	for (group = 64; group; group--) {
+		uint16_t link = work->bins[group - 1];
+		while (link) {
+			TerraTri *q;
+			uint8_t sf, k;
+			i = link - 1;
+			p = tris + i * 7;
+			sf = p[6] == SURF_OOB ? SURF_ROUGH : p[6];
+			if (j->tt.n == TERRA_TRIS_MAX) tris_flush(j);
+			q = &j->tl[j->tt.n++];
+			for (k = 0; k < 3; k++) {
+				const GreenProjected *point = &work->vertices[be16(p + 2 * k)];
+				q->x[k] = point->x;
+				q->y[k] = point->y;
+			}
+			q->base = PAL_TERRAIN + sf * PAL_RAMP_N;
+			q->lv = sf == SURF_GREEN ? (j->r.lg < 2 ? 96 : 72) :
+			        sf == SURF_FRINGE ? 46 : sf == SURF_ROUGH ? (GREEN_ROUGH_LIGHT / 16) * 16 : LIGHT_FLAT;
+			link = work->next[i];
+		}
+	}
+	tris_flush(j);
+	return 1;
+}
+
+/* Keep local polygon bounds for the putting view. The two-yard lie grid
+ * still drives play and covers the ground outside this part of the view. */
+static void SEC_RENDER green_shapes(GJob *j)
+{
+	const Hole *h = j->v.hole;
+	vec2 pin = h->pins[j->v.pin & 3];
+	const uint8_t *p = h->shapes;
+	int16_t x = (int16_t)((pin.x >> 14) - GREEN_DETAIL_Q);
+	int16_t y = (int16_t)((pin.y >> 14) - GREEN_DETAIL_Q);
+	int16_t side = 2 * GREEN_DETAIL_Q;
+	uint8_t i;
+
+	j->shape_count = 0;
+	j->detail_x = x;
+	j->detail_y = y;
+	/* Partial cells at the box edge may have their grid sample outside it. */
+	for (i = 0; i < GREEN_TILES; i++) j->edges[i] = 1UL | (1UL << (GREEN_TILES - 1));
+	j->edges[0] = j->edges[GREEN_TILES - 1] = UINT32_MAX;
+	for (i = 0; i < GREEN_STRIPES; i++) j->stripes[i].key = UINT16_MAX;
+	for (i = 0; i < h->shape_count; i++) {
+		const uint8_t *q, *end = p + 2 + p[1] * 4;
+		int16_t x0 = 32767, y0 = 32767, x1 = -32767, y1 = -32767;
+		for (q = p + 2; q < end; q += 4) {
+			int16_t px = (int16_t)be16(q) - x, py = (int16_t)be16(q + 2) - y;
+			if (px < x0) x0 = px;
+			if (px > x1) x1 = px;
+			if (py < y0) y0 = py;
+			if (py > y1) y1 = py;
+		}
+		if (x0 < side && x1 > 0 && y0 < side && y1 > 0) {
+			GreenShape *s = &j->shapes[j->shape_count++];
+			int16_t ax = (int16_t)be16(end - 4), ay = (int16_t)be16(end - 2);
+			s->offset = (uint16_t)(p - h->shapes);
+			s->x0 = (uint8_t)(x0 < 0 ? 0 : x0);
+			s->y0 = (uint8_t)(y0 < 0 ? 0 : y0);
+			s->x1 = (uint8_t)(x1 > side ? side : x1);
+			s->y1 = (uint8_t)(y1 > side ? side : y1);
+			for (q = p + 2; q < end; q += 4) {
+				int16_t bx = (int16_t)be16(q), by = (int16_t)be16(q + 2);
+				green_edge(j, ax, ay, bx, by);
+				ax = bx;
+				ay = by;
+			}
+		}
+		p = end;
+	}
+}
+
+/* Mark tiles where a visual contour or the edge of its material box can cross. */
+static void SEC_DANA green_visual_edges(GJob *j, const uint8_t *p)
+{
+	uint8_t count = *p++;
+	int16_t x = j->mesh_x, y = j->mesh_y;
+	int16_t right = (int16_t)(x + j->mesh_w), bottom = (int16_t)(y + j->mesh_h);
+
+	green_edge(j, x, y, right, y);
+	green_edge(j, x, bottom, right, bottom);
+	green_edge(j, x, y, x, bottom);
+	green_edge(j, right, y, right, bottom);
+	while (count--) {
+		const uint8_t *v = p + 3, *end = v + be16(p + 1) * 4;
+		int16_t ax = (int16_t)(be16(end - 4) >> 2);
+		int16_t ay = (int16_t)(be16(end - 2) >> 2);
+
+		for (; v < end; v += 4) {
+			int16_t bx = (int16_t)(be16(v) >> 2), by = (int16_t)(be16(v + 2) >> 2);
+			green_edge(j, ax, ay, bx, by);
+			ax = bx;
+			ay = by;
+		}
+		p = end;
+	}
+}
+
+/* Cache the edges that can cross a ray anywhere in this two-yard stripe. */
+static const GreenStripe *SEC_RENDER green_stripe(GJob *j, const uint8_t *verts,
+                                                   uint8_t n, uint8_t shape, uint16_t stripe)
+{
+	GreenStripe *s = &j->stripes[(stripe + 3 * shape) & (GREEN_STRIPES - 1)];
+	uint16_t key = (uint16_t)(((uint16_t)shape << 9) | stripe);  /* up to 320 stripes */
+	int16_t y0, y1, ay;
+	uint8_t k;
+
+	if (s->key == key) return s;
+	s->key = key;
+	s->count = 0;
+	y0 = (int16_t)(stripe * 8);
+	y1 = y0 + 7;
+	ay = (int16_t)be16(verts + 4 * n - 2);
+	for (k = 0; k < n; k++) {
+		int16_t by = (int16_t)be16(verts + 4 * k + 2);
+		if ((ay < by && ay <= y1 && by > y0) || (by < ay && by <= y1 && ay > y0)) {
+			uint8_t e = s->count++;
+			if (e == STRIPE_EDGES) break;
+			s->edge[e] = k;
+		}
+		ay = by;
+	}
+	return s;
+}
+
+static inline uint8_t SEC_RENDER green_mesh_surface(const GJob *j, int16_t qx, int16_t qy)
+{
+	uint16_t mx = (uint16_t)(qx - j->mesh_x), my = (uint16_t)(qy - j->mesh_y);
+	const uint8_t *run;
+	uint16_t column, entry;
+
+	if (mx >= j->mesh_w || my >= j->mesh_h) return SURF_COUNT;
+	run = j->mesh_runs + be16(j->mesh_rows + 2 * my);
+	column = (uint16_t)((mx << 4) | 15);
+	while ((entry = be16(run)) <= column) run += 2;
+	return (entry & 15) == SURF_OOB ? SURF_ROUGH : (uint8_t)(entry & 15);
+}
+
+static uint8_t SEC_RENDER green_surface(GJob *j, fixed x, fixed y)
+{
+	const Hole *h = j->v.hole;
+	int16_t qx = (int16_t)(x >> 14), qy = (int16_t)(y >> 14);
+	uint8_t sf;
+
+	if (j->visual_mesh) {
+		sf = green_mesh_surface(j, qx, qy);
+		if (sf != SURF_COUNT) return sf;
+	}
+	qx -= j->detail_x;
+	qy -= j->detail_y;
+	if ((uint16_t)qx < 2 * GREEN_DETAIL_Q && (uint16_t)qy < 2 * GREEN_DETAIL_Q &&
+	    j->shape_count && x >= 0 && x < (fixed)h->width * FIX_ONE &&
+	    y >= 0 && y < (fixed)h->length * FIX_ONE &&
+	    ((j->edges[(qy + (j->detail_y & 7)) >> 3] >> ((qx + (j->detail_x & 7)) >> 3)) & 1)) {
+		int16_t sx = (int16_t)(x >> 11), sy = (int16_t)(y >> 11), row = sy >> 3;
+		uint8_t i = j->shape_count;
+		if (j->mesh_rows && !j->visual_mesh) {
+			sf = green_mesh_surface(j, (int16_t)(sx >> 3), row);
+			if (sf != SURF_COUNT) return sf;
+		}
+		while (i) {
+			const GreenShape *s = &j->shapes[--i];
+			const GreenStripe *stripe;
+			const uint8_t *header, *v, *edges;
+			uint8_t n, k, count, inside = 0;
+
+			if (qx < s->x0 || qx >= s->x1 || qy < s->y0 || qy >= s->y1) continue;
+			header = h->shapes + s->offset;
+			sf = header[0];
+			n = header[1];
+			v = header + 2;
+			stripe = green_stripe(j, v, n, i, (uint16_t)(row >> 3));
+			edges = stripe->count <= STRIPE_EDGES ? stripe->edge : 0;
+			count = edges ? stripe->count : n;
+			for (k = 0; k < count; k++) {
+				uint8_t e = edges ? edges[k] : k;
+				const uint8_t *p = v + 4 * e, *prev = e ? p - 4 : v + 4 * n - 4;
+				int16_t ay = (int16_t)be16(prev + 2), by = (int16_t)be16(p + 2);
+				if ((ay <= row) != (by <= row)) {
+					int16_t ax = (int16_t)be16(prev), bx = (int16_t)be16(p);
+					int32_t a = MULS16(sx - ax * 8, by - ay);
+					int32_t b = MULS16(sy - ay * 8, bx - ax);
+					if (by > ay ? a < b : a > b) inside ^= 1;
+				}
+			}
+			if (inside) return sf == SURF_OOB ? SURF_ROUGH : sf;
+		}
+		return h->base_surface == SURF_OOB ? SURF_ROUGH : h->base_surface;
+	}
+	sf = surface_at(j->v.grid, x, y);
+	return sf >= SURF_COUNT || sf == SURF_OOB ? SURF_ROUGH : sf;
+}
+
+/* An entire mesh patch within the detail box needs no material samples
+ * when its cells have no polygon edges. */
+static int SEC_RENDER green_uniform(const GJob *j, const GPt *a, const GPt *b, const GPt *c, const GPt *d)
+{
+	int16_t x0, x1, y0, y1, x, y;
+	const GPt *pts[4] = {a, b, c, d};
+	uint32_t bits;
+	uint8_t i;
+
+	x0 = x1 = (int16_t)(a->ground.x >> 14);
+	y0 = y1 = (int16_t)(a->ground.y >> 14);
+	for (i = 1; i < 4; i++) {
+		x = (int16_t)(pts[i]->ground.x >> 14);
+		y = (int16_t)(pts[i]->ground.y >> 14);
+		if (x < x0) x0 = x;
+		if (x > x1) x1 = x;
+		if (y < y0) y0 = y;
+		if (y > y1) y1 = y;
+	}
+	if (x0 < 0 || y0 < 0 || x1 >= (int16_t)(j->v.hole->width * 4) ||
+	    y1 >= (int16_t)(j->v.hole->length * 4)) return 0;
+	if ((x0 >> 3) == (x1 >> 3) && (y0 >> 3) == (y1 >> 3) &&
+	    (x1 < j->detail_x || x0 >= j->detail_x + 2 * GREEN_DETAIL_Q ||
+	     y1 < j->detail_y || y0 >= j->detail_y + 2 * GREEN_DETAIL_Q)) {
+		return !j->visual_mesh || x1 < j->mesh_x || x0 >= j->mesh_x + j->mesh_w ||
+		       y1 < j->mesh_y || y0 >= j->mesh_y + j->mesh_h;
+	}
+	if (x0 < j->detail_x || y0 < j->detail_y || x1 >= j->detail_x + 2 * GREEN_DETAIL_Q ||
+	    y1 >= j->detail_y + 2 * GREEN_DETAIL_Q) return 0;
+	x = j->detail_x >> 3;
+	x0 = (x0 >> 3) - x;
+	x1 = (x1 >> 3) - x;
+	y = j->detail_y >> 3;
+	y0 = (y0 >> 3) - y;
+	y1 = (y1 >> 3) - y;
+	bits = ((2UL << x1) - 1) & ~((1UL << x0) - 1);
+	for (; y0 <= y1; y0++)
+		if (j->edges[y0] & bits) return 0;
+	return 1;
+}
+
+static int16_t SEC_RENDER green_light(const GJob *j, uint8_t sf, int16_t lv)
+{
+	if (sf == SURF_GREEN && j->r.lg < 2 && lv < 96) lv = 96;
+	else if (sf != SURF_GREEN) lv = (int16_t)((lv + 3 * LIGHT_FLAT) / 4);
+	if (sf == SURF_FRINGE) lv -= 16;
+	return lv;
+}
+
+static void SEC_RENDER green_patch(GJob *j, const GPt *f0, const GPt *f1,
+                                   const GPt *n0, const GPt *n1, uint8_t sf, int16_t lv)
+{
+	uint8_t base = (uint8_t)(PAL_TERRAIN + sf * PAL_RAMP_N);
+	lv = green_light(j, sf, lv);
+	tri(j, f0, f1, n1, base, lv);
+	tri(j, f0, n1, n0, base, lv);
+}
+
+static GPt SEC_RENDER green_midpoint(const GPt *a, const GPt *b)
+{
+	GPt mid;
+	uint32_t sum = (uint32_t)a->depth + b->depth;
+	int16_t weight = (int16_t)(MULU16(a->depth, 256) / sum);
+	mid.x = (int16_t)(b->x + (MULS16(a->x - b->x, weight) >> 8));
+	mid.y = (int16_t)(b->y + (MULS16(a->y - b->y, weight) >> 8));
+	mid.depth = (uint16_t)(sum >> 1);
+	mid.hb = 0;
+	mid.ground.x = (a->ground.x + b->ground.x) / 2;
+	mid.ground.y = (a->ground.y + b->ground.y) / 2;
+	return mid;
+}
+
+/* A single-corner transition follows the line between the adjacent quarter
+ * centres instead of giving the minority surface a square end. */
+static void SEC_RENDER green_corner(GJob *j, const GPt *tip, const GPt *a, const GPt *b,
+                                    uint8_t sf, int16_t lv)
+{
+	uint8_t base = (uint8_t)(PAL_TERRAIN + sf * PAL_RAMP_N);
+	tri(j, tip, a, b, base, green_light(j, sf, lv));
+}
+
+/* Locate the boundary along a projected edge after three halvings. */
+static GPt SEC_RENDER green_crossing(GJob *j, const GPt *a, const GPt *b, uint8_t sf)
+{
+	GPt l = *a, r = *b;
+	uint8_t i;
+	for (i = 0; i < 3; i++) {
+		GPt m = green_midpoint(&l, &r);
+		if (green_surface(j, m.ground.x, m.ground.y) == sf) l = m;
+		else r = m;
+	}
+	return green_midpoint(&l, &r);
+}
+
+/* Cut a single material edge across the patch. A saddle or a three-way
+ * join uses the quarter samples instead. */
+static uint8_t SEC_RENDER green_cut(GJob *j, const GPt **pts, uint8_t sf, uint8_t ink, int16_t lv)
+{
+	uint8_t i, mask = 0, n = 0, edges = 0;
+	GPt crossing[2];
+	const GPt *v[5];
+
+	for (i = 0; i < 4; i++) {
+		uint8_t at = green_surface(j, pts[i]->ground.x, pts[i]->ground.y);
+		if (at == ink) mask |= (uint8_t)(1 << i);
+		else if (at != sf) return 0;
+	}
+	if (mask == 0 || mask == 15 || mask == 5 || mask == 10) return 0;
+	for (i = 0; i < 4; i++) {
+		uint8_t next = (uint8_t)((i + 1) & 3);
+		uint8_t a = (uint8_t)((mask >> i) & 1), b = (uint8_t)((mask >> next) & 1);
+		if (a) v[n++] = pts[i];
+		if (a != b) {
+			crossing[edges] = green_crossing(j, pts[i], pts[next], a ? ink : sf);
+			v[n++] = &crossing[edges++];
+		}
+	}
+	for (i = 1; i + 1 < n; i++) green_corner(j, v[0], v[i], v[i + 1], ink, lv);
+	return 1;
+}
+
+static uint8_t SEC_RENDER green_quad(GJob *j, const GPt *f0, const GPt *f1,
+                                    const GPt *n0, const GPt *n1, uint8_t sf,
+                                    int16_t lv, uint8_t refine)
+{
+	uint8_t fl = green_surface(j, (f0->ground.x * 2 + f1->ground.x + n0->ground.x) / 4,
+	                            (f0->ground.y * 2 + f1->ground.y + n0->ground.y) / 4);
+	uint8_t fr = green_surface(j, (f1->ground.x * 2 + f0->ground.x + n1->ground.x) / 4,
+	                            (f1->ground.y * 2 + f0->ground.y + n1->ground.y) / 4);
+	uint8_t nl = green_surface(j, (n0->ground.x * 2 + n1->ground.x + f0->ground.x) / 4,
+	                            (n0->ground.y * 2 + n1->ground.y + f0->ground.y) / 4);
+	uint8_t nr = green_surface(j, (n1->ground.x * 2 + n0->ground.x + f1->ground.x) / 4,
+	                            (n1->ground.y * 2 + n0->ground.y + f1->ground.y) / 4);
+	uint8_t green = (fl == SURF_GREEN) | ((fr == SURF_GREEN) << 1) |
+	                ((nl == SURF_GREEN) << 2) | ((nr == SURF_GREEN) << 3);
+
+	/* Fill between split edges which round to screen pixels. */
+	green_patch(j, f0, f1, n0, n1, sf, lv);
+	if (fl != sf || fr != sf || nl != sf || nr != sf) {
+		GPt fm = green_midpoint(f0, f1), nm = green_midpoint(n0, n1);
+		GPt l = green_midpoint(f0, n0), r = green_midpoint(f1, n1);
+		if (!refine) {
+			uint8_t ink = fl != sf ? fl : fr != sf ? fr : nl != sf ? nl : nr;
+			const GPt *pts[] = { f0, f1, n1, n0 };
+			if ((fl == sf || fl == ink) && (fr == sf || fr == ink) &&
+			    (nl == sf || nl == ink) && (nr == sf || nr == ink) &&
+			    green_cut(j, pts, sf, ink, lv)) return green;
+		}
+		if (refine || (fl != sf) + (fr != sf) + (nl != sf) + (nr != sf) != 1) {
+			GPt m = green_midpoint(&l, &r);
+			if (refine) {
+				green_quad(j, f0, &fm, &l, &m, fl, lv, (uint8_t)(refine - 1));
+				green_quad(j, &fm, f1, &m, &r, fr, lv, (uint8_t)(refine - 1));
+				green_quad(j, &l, &m, n0, &nm, nl, lv, (uint8_t)(refine - 1));
+				green_quad(j, &m, &r, &nm, n1, nr, lv, (uint8_t)(refine - 1));
+			} else {
+				if (fl != sf) green_patch(j, f0, &fm, &l, &m, fl, lv);
+				if (fr != sf) green_patch(j, &fm, f1, &m, &r, fr, lv);
+				if (nl != sf) green_patch(j, &l, &m, n0, &nm, nl, lv);
+				if (nr != sf) green_patch(j, &m, &r, &nm, n1, nr, lv);
+			}
+		} else if (fl != sf) green_corner(j, f0, &fm, &l, fl, lv);
+		else if (fr != sf) green_corner(j, f1, &r, &fm, fr, lv);
+		else if (nl != sf) green_corner(j, n0, &l, &nm, nl, lv);
+		else green_corner(j, n1, &nm, &r, nr, lv);
+	}
+	return green;
+}
+
+static int SEC_RENDER green_begin(Surface *s, const RenderView *v, void *work, uint8_t curves);
+
+#include "puttingcurves.inc"
+
+/* A grid edge can end halfway through a cell split at the green's edge. */
+static void SEC_RENDER green_guide(const GJob *j, const GPt *a, const GPt *b, uint8_t halves)
+{
+	if (j->curves) {
+		curve_guide(j, a, b);
+		return;
+	}
+	if (halves == 3) gline(&j->r, a->x, a->y, b->x, b->y, j->guide);
+	else {
+		GPt m = green_midpoint(a, b);
+		if (halves == 1) b = &m;
+		else a = &m;
+		gline(&j->r, a->x, a->y, b->x, b->y, j->guide);
+	}
+}
+
 int render_green(Surface *s, const RenderView *v)
 {
 	GJob j;
@@ -1733,7 +3022,26 @@ int render_green(Surface *s, const RenderView *v)
 	return 0;
 }
 
-int render_green_begin(Surface *s, const RenderView *v, void *work)
+uint32_t SEC_DANA render_green_compiled_size(void)
+{
+	return sizeof(GJob) + sizeof(GreenWork);
+}
+
+int SEC_DANA render_green_compiled(Surface *s, const RenderView *v, void *work)
+{
+	GJob *j = work;
+	if (render_green_begin(s, v, work) < 0) return -1;
+	if (v->hole->green_geometry && green_geometry(j)) {
+		j->geometry = 1;
+		/* The compiled terrain supplies depth around the green. Only a few
+		 * outside strips are needed to carry the coarse backdrop on. */
+		j->k = j->k1 = (int16_t)(j->wide + 8);
+	}
+	render_green_step(work, 0, 0);
+	return 0;
+}
+
+static int SEC_RENDER green_begin(Surface *s, const RenderView *v, void *work, uint8_t curves)
 {
 	GJob *j = (GJob *)work;
 	Surface hs, *d;
@@ -1743,6 +3051,7 @@ int render_green_begin(Surface *s, const RenderView *v, void *work)
 	int16_t x, y;
 	uint8_t half = (uint8_t)half_of(s, &hs);
 
+	s->smooth_y1 = 0;
 	d = half ? &hs : s;
 	if (fit(d, &y) < 0) return -1;
 	r = &j->r;
@@ -1750,19 +3059,40 @@ int render_green_begin(Surface *s, const RenderView *v, void *work)
 	j->half = half;
 	j->v = *v;
 	j->done = 0;
+	j->geometry = 0;
+	j->curves = 0;
 	fit(d, &r->vh);
+	if (!curves && terra_fn && h->terrain_mesh.data && !half && d->depth == 8) s->smooth_y1 = r->vh;
 	r->bits = d->bits;
 	r->rb = d->rowBytes;
 	r->w = d->w;
 	r->lg = (uint8_t)(d->depth == 8 ? 3 : d->depth == 4 ? 2 : d->depth == 2 ? 1 : 0);
-	j->guide = d->depth == 8 ? PAL_GREEN + 7 : PAL_BLACK;
+	j->guide = d->depth == 8 ? PAL_GREEN + 7 : d->depth == 2 ? PAL_GREY + 6 : PAL_BLACK;
+	/* The small view keeps extra subdivision for putts played from off the green. */
+	j->refine = 2;
+	if (r->w <= 160) j->refine = surface_at(v->grid, v->ball.x, v->ball.y) == SURF_GREEN ? 0 : 1;
 	j->len = len = green_cam(d, v, &j->c);
 	j->back = mulq(len, GREEN_BACK);
 	j->up = mulq(len, GREEN_UP);
 	j->hbb = hb_at(h, v->ball.x, v->ball.y);
+	j->mesh_rows = 0;
+	j->visual_mesh = h->visual_shapes != 0 && h->green_mesh != 0;
+	if (h->green_mesh) {
+		const uint8_t *mesh = h->green_mesh;
+		j->mesh_x = be16(mesh);
+		j->mesh_y = be16(mesh + 2);
+		j->mesh_w = be16(mesh + 4);
+		j->mesh_h = be16(mesh + 6);
+		j->mesh_rows = mesh + 8;
+		j->mesh_runs = j->mesh_rows + 2 * (j->mesh_h + 1);
+	}
+	if (!curves) {
+		green_shapes(j);
+		if (j->visual_mesh) green_visual_edges(j, h->visual_shapes);
+	}
 
-	/* Rough fills the far edge where the close terrain runs out. */
-	for (y = 0; y < d->h; y++) {
+	/* Rough backs the terrain wherever the ground mesh falls outside the view. */
+	for (y = curves ? r->vh : 0; y < d->h; y++) {
 		uint8_t colour = PAL_ROUGH + GREEN_ROUGH_LIGHT / 16;
 		uint8_t *p = r->bits + MULU16(y, r->rb);
 		if (r->lg == 1) colour = pal_pat2[((uint16_t)colour << 2) | (y & 3)];
@@ -1776,11 +3106,16 @@ int render_green_begin(Surface *s, const RenderView *v, void *work)
 
 	/* Cells of half a yard, 1, 2, 4 or 8 keep the view's cost bounded. */
 	sp = FIX_HALF;
-	while (len * 2 > sp * 16) sp <<= 1;
+	j->sp_shift = FIX_SHIFT - 1;
+	while (len * 2 > sp * 16) {
+		sp <<= 1;
+		j->sp_shift++;
+	}
 	j->sp = sp;
 	j->k0 = (int16_t)-((len / 2 + sp - 1) / sp);
+	if (d->h > 160 * d->scale) j->k0 -= (int16_t)((len / 4 + sp - 1) / sp);
 	j->wide = (int16_t)((len * 3 / 2 + sp - 1) / sp);
-	j->k1 = (int16_t)(j->wide + 7);
+	j->k1 = (int16_t)(j->wide + 14);
 	j->k = j->k1;
 	j->green_past = 0;
 	j->tt.bits = r->bits;
@@ -1793,9 +3128,17 @@ int render_green_begin(Surface *s, const RenderView *v, void *work)
 	j->tt.vh = r->vh;
 	j->tt.n = 0;
 	j->tt.lg = r->lg;
+	j->tt.turf = 0;
+	j->tt.noise = 0;
+	j->tt.mow_phase = 0;
 	j->far = j->rows[0];
 	j->near = j->rows[1];
 	return 0;
+}
+
+int render_green_begin(Surface *s, const RenderView *v, void *work)
+{
+	return green_begin(s, v, work, 0);
 }
 
 int render_green_step(void *work, RenderClock clk, uint32_t until)
@@ -1813,24 +3156,31 @@ int render_green_step(void *work, RenderClock clk, uint32_t until)
 	int32_t hbb = j->hbb;
 
 	if (j->done) return 1;
+	if (j->curves && !curve_surfaces(j, clk, until)) return 0;
 	/* each row of points from the far end, then the cells between it and the row past it */
 	for (k = j->k; k >= k0; k--) {
 		/* the points of row k, along the aim from the ball */
+		fixed wx0, wy0, along_depth, along_down;
 		a = green_row(j, k);
+		wx0 = v->ball.x + mulq(a, c.fx);
+		wy0 = v->ball.y + mulq(a, c.fy);
+		along_depth = mulq(a + j->back, c.pc);
+		along_down = mulq(a + j->back, c.ps);
 		for (i = -n; i <= n; i++) {
 			GPt *g = &near[i + n];
 			fixed cx = green_cell(j, i, k);
-			fixed wx = v->ball.x + mulq(a, c.fx) + mulq(cx, c.rx), wy = v->ball.y + mulq(a, c.fy) + mulq(cx, c.ry);
+			fixed wx = wx0 + mulq(cx, c.rx), wy = wy0 + mulq(cx, c.ry);
 			int32_t hb = hb_at(h, wx, wy);
-			fixed along = a + j->back;
 			g->hb = (uint16_t)hb;
 			up = mulf((hb - hbb) * 256, h->step) * GREEN_ZK - j->up;
-			depth = mulq(along, c.pc) - mulq(up, c.ps);
-			down = -(mulq(along, c.ps) + mulq(up, c.pc));
+			depth = along_depth - mulq(up, c.ps);
+			down = -(along_down + mulq(up, c.pc));
 			if (depth < FIX_HALF) {
 				g->x = NO_PT;
 				continue;
 			}
+			g->depth = depth > 0x0FFFF000L ? 65535 : (uint16_t)(depth >> 12);
+			g->ground = vec2_make(wx, wy);
 			g->x = persp(cx, c.f, depth);
 			g->y = persp(down, c.f, depth);
 			if (g->x > 4000) g->x = 4000;
@@ -1841,83 +3191,81 @@ int render_green_step(void *work, RenderClock clk, uint32_t until)
 			g->y += c.yh;
 		}
 		if (k < k1) {
-			uint16_t green = 0;
-			fixed fa = green_row(j, (int16_t)(k + 1));
-			fixed ca = (a + fa) / 2, da = (fa - a) / 6;
-			fixed rowx = v->ball.x + mulq(ca, c.fx), rowy = v->ball.y + mulq(ca, c.fy);
-			fixed farx = mulq(da, c.fx), fary = mulq(da, c.fy);
-			int16_t light_step = (int16_t)(j->sp >> (k >= j->wide ? 6 : 8));
+			uint32_t green_far = 0, green_near = 0, sides_far = 0, sides_near = 0, across;
+			fixed rowx = 0, rowy = 0;
+			uint8_t light_shift = (uint8_t)(j->sp_shift - (k >= j->wide ? 6 : 8));
+			int16_t light_round = (int16_t)((1U << light_shift) - 1);
+			if (!j->curves) {
+				fixed ca = (a + green_row(j, (int16_t)(k + 1))) / 2;
+				rowx = v->ball.x + mulq(ca, c.fx);
+				rowy = v->ball.y + mulq(ca, c.fy);
+			}
 			for (i = 0; i < 2 * n; i++) {
 				GPt *f0 = &far[i], *f1 = &far[i + 1], *n0 = &near[i], *n1 = &near[i + 1];
-				int16_t col = (int16_t)(i - n);
-				fixed cleft, cright, cc, cx, cy, rise;
-				uint8_t sf, far_sf, near_sf;
-				int32_t lv;
+				uint8_t green;
 				if (f0->x == NO_PT || f1->x == NO_PT || n0->x == NO_PT || n1->x == NO_PT) continue;
 				/* A cell entirely off one edge has no fill or guide lines to draw. */
 				if ((f0->x < 0 && f1->x < 0 && n0->x < 0 && n1->x < 0) ||
 				    (f0->x >= r->w && f1->x >= r->w && n0->x >= r->w && n1->x >= r->w) ||
 				    (f0->y < 0 && f1->y < 0 && n0->y < 0 && n1->y < 0) ||
 				    (f0->y >= r->vh && f1->y >= r->vh && n0->y >= r->vh && n1->y >= r->vh)) continue;
-				cleft = green_cell(j, col, k);
-				cright = green_cell(j, (int16_t)(col + 1), (int16_t)(k + 1));
-				cc = (cleft + cright) / 2;
-				cx = rowx + mulq(cc, c.rx);
-				cy = rowy + mulq(cc, c.ry);
-				sf = surface_at(v->grid, cx, cy);
-				if (sf >= SURF_COUNT || sf == SURF_OOB) sf = SURF_ROUGH;
-				/* lit from the left and behind: the rise to the right and half the rise away, per cell */
-				rise = mulf((((int32_t)f1->hb + n1->hb - f0->hb - n0->hb) + (((int32_t)f0->hb + f1->hb - n0->hb - n1->hb) >> 1)) * 128, h->step);
-				lv = LIGHT_FLAT + (rise / light_step) * 4;
-				if (sf == SURF_GREEN || ((sf == SURF_FRINGE || sf == SURF_FAIRWAY) && k < j->wide)) lv += (k & 1) ? 16 : 8;
-				/* Soften the distant rough and blend the last row into the backdrop. */
-				if (k == k1 - 1 && sf != SURF_GREEN) {
-					sf = SURF_ROUGH;
-					lv = GREEN_ROUGH_LIGHT;
-				} else if (sf == SURF_ROUGH && k >= j->wide) {
-					lv = (lv + GREEN_ROUGH_LIGHT * 3) / 4;
-				} else if (sf != SURF_GREEN) {
-					/* Quieter slope shading away from the putting surface. */
-					lv = (lv + LIGHT_FLAT) / 2;
-				}
-				if (sf == SURF_GREEN && r->lg < 2 && lv < 96) lv = 96;
-				if (lv < 0) lv = 0;
-				if (lv > PAL_RAMP_N * 16 - 16) lv = PAL_RAMP_N * 16 - 16;
-				far_sf = near_sf = sf;
-				/* Sample both halves of large sand-edge cells. The putting grid
-				 * keeps its original green cells and the same two triangles. */
-				if (k < k1 - 1 && sf != SURF_GREEN && sf <= SURF_BUNKER &&
-				    (j->sp >= (2L << 16) || k >= j->wide || col < -5 || col > 4)) {
-					fixed dc = (cright - cleft) / 6;
-					fixed dx = farx + mulq(dc, c.rx), dy = fary + mulq(dc, c.ry);
-					uint8_t a = surface_at(v->grid, cx + dx, cy + dy);
-					uint8_t b = surface_at(v->grid, cx - dx, cy - dy);
-					if ((a == SURF_BUNKER || b == SURF_BUNKER) && a != SURF_GREEN &&
-					    b != SURF_GREEN && a <= SURF_BUNKER && b <= SURF_BUNKER) {
-						far_sf = a;
-						near_sf = b;
+				if (j->curves) green = 15;
+				else {
+					int16_t col = (int16_t)(i - n);
+					fixed cleft = green_cell(j, col, k);
+					fixed cright = green_cell(j, (int16_t)(col + 1), (int16_t)(k + 1));
+					fixed cc = (cleft + cright) / 2;
+					fixed cx = rowx + mulq(cc, c.rx), cy = rowy + mulq(cc, c.ry);
+					uint8_t sf = green_surface(j, cx, cy);
+					if (j->geometry) {
+						/* The compiled patch owns the foreground. Keep guides and
+						 * the existing coarse ground beyond its bounds. */
+						uint16_t mx = (uint16_t)((cx >> 14) - j->mesh_x);
+						uint16_t my = (uint16_t)((cy >> 14) - j->mesh_y);
+						if (sf != SURF_ROUGH && (mx >= j->mesh_w || my >= j->mesh_h))
+							green_patch(j, f0, f1, n0, n1, sf, LIGHT_FLAT);
+						green = sf == SURF_GREEN &&
+						        green_surface(j, f0->ground.x, f0->ground.y) == SURF_GREEN &&
+						        green_surface(j, f1->ground.x, f1->ground.y) == SURF_GREEN &&
+						        green_surface(j, n0->ground.x, n0->ground.y) == SURF_GREEN &&
+						        green_surface(j, n1->ground.x, n1->ground.y) == SURF_GREEN ? 15 : 0;
+					} else {
+						/* lit from the left and behind: the rise to the right and half the rise away, per cell */
+						fixed rise = mulf((((int32_t)f1->hb + n1->hb - f0->hb - n0->hb) + (((int32_t)f0->hb + f1->hb - n0->hb - n1->hb) >> 1)) * 128, h->step);
+						/* Match division's truncation toward zero on a downhill slope. */
+						int32_t lv = LIGHT_FLAT + (((rise < 0 ? rise + light_round : rise) >> light_shift) * 4);
+						if (sf == SURF_GREEN || ((sf == SURF_FRINGE || sf == SURF_FAIRWAY) && k < j->wide)) lv += (k & 1) ? 16 : 8;
+						if (lv < 0) lv = 0;
+						if (lv > PAL_RAMP_N * 16 - 16) lv = PAL_RAMP_N * 16 - 16;
+						if (green_uniform(j, f0, f1, n0, n1)) {
+							green_patch(j, f0, f1, n0, n1, sf, (int16_t)lv);
+							green = sf == SURF_GREEN ? 15 : 0;
+						} else green = green_quad(j, f0, f1, n0, n1, sf, (int16_t)lv, k < j->wide ? j->refine : 0);
 					}
 				}
-				tri(j, f0, f1, n1, (uint8_t)(PAL_TERRAIN + far_sf * PAL_RAMP_N), (int16_t)lv);
-				tri(j, f0, n1, n0, (uint8_t)(PAL_TERRAIN + near_sf * PAL_RAMP_N), (int16_t)lv);
-				if (sf == SURF_GREEN) green |= (uint16_t)(1U << i);
+				if (green) {
+					uint8_t right = (uint8_t)(i & 1);
+					uint32_t edge = 1UL << (i + right);
+					green_far |= (uint32_t)(green & 3) << (i * 2);
+					green_near |= (uint32_t)(green >> 2) << (i * 2);
+					if ((green >> right) & 1) sides_far |= edge;
+					if ((green >> right) & 4) sides_near |= edge;
+				}
 			}
 			tris_flush(j);
 			/* Guide lines at every other mesh edge, only on the green. */
-			if (green || j->green_past) {
-				uint32_t sides = (uint32_t)green | ((uint32_t)green << 1);
-				uint16_t across = (k & 1) ? 0 : (uint16_t)(green | j->green_past);
-				sides &= 0x15555UL;
-				for (i = 0; across || sides; i++) {
-					if ((across & 1) && far[i].x != NO_PT && far[i + 1].x != NO_PT)
-						gline(r, far[i].x, far[i].y, far[i + 1].x, far[i + 1].y, j->guide);
-					if ((sides & 1) && far[i].x != NO_PT && near[i].x != NO_PT)
-						gline(r, far[i].x, far[i].y, near[i].x, near[i].y, j->guide);
-					across >>= 1;
-					sides >>= 1;
-				}
+			across = (k & 1) ? 0 : green_far | j->green_past;
+			for (i = 0; across || sides_far || sides_near; i++) {
+				uint8_t half = (uint8_t)((sides_far & 1) | ((sides_near & 1) << 1));
+				if ((across & 3) && far[i].x != NO_PT && far[i + 1].x != NO_PT)
+					green_guide(j, &far[i], &far[i + 1], (uint8_t)(across & 3));
+				if (half && far[i].x != NO_PT && near[i].x != NO_PT)
+					green_guide(j, &far[i], &near[i], half);
+				across >>= 2;
+				sides_far >>= 1;
+				sides_near >>= 1;
 			}
-			j->green_past = green;
+			j->green_past = green_near;
 		}
 		t = far;
 		far = near;
@@ -1964,26 +3312,26 @@ int render_green_step(void *work, RenderClock clk, uint32_t until)
 }
 
 static void SEC_RENDER scene_cam(const Surface *s, const RenderView *v, RenderCam *c)
-
 {
 	int16_t vh;
 	int32_t bh = hb_at(v->hole, v->ball.x, v->ball.y);
+	fixed back;
 
+	c->yh = scene_frame(s, v, &vh, &back);
 	c->fx = icos(v->aim);
 	c->fy = isin(v->aim);
 	c->rx = c->fy;
 	c->ry = (int16_t)-c->fx;
-	c->camx = v->ball.x - mulq(CAM_BACK, c->fx);
-	c->camy = v->ball.y - mulq(CAM_BACK, c->fy);
+	c->camx = v->ball.x - mulq(back, c->fx);
+	c->camy = v->ball.y - mulq(back, c->fy);
 	c->f = (int16_t)(FOCAL * s->scale);
 	c->cx = s->w / 2;
-	c->yh = (int16_t)(HORIZON * s->scale + fit(s, &vh));
-	c->camz = v->hole->base + fix_mul(bh << 8, v->hole->step) + cam_up(vh, c->yh, s->scale);
+	c->camz = v->hole->base + fix_mul(bh << 8, v->hole->step) + cam_up(vh, c->yh, s->scale, back);
 	c->pc = 16384;
 	c->ps = 0;
 	c->zref = 0;
 	c->zk = 1;
-	c->back = (int16_t)(CAM_BACK >> 16);
+	c->back = (int16_t)(back >> 16);
 }
 
 void render_camera(const Surface *s, const RenderView *v, RenderCam *c)

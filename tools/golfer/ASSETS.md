@@ -36,12 +36,12 @@ python3 tools/golfer/sprites.py build/golfer/r640 build/evidence/golfer
 
 `sprites.py` needs `tools/mockup/r/scene_bg_960.png` (from `tools/mockup/render.py r 960`).
 
-For the female golfer, use the same camera, lights and swing with the female MakeHuman model. Only the four in-play poses are needed. `sprites.py` puts the 40 and 80 pixel frames in `art/golfer/female/`.
+For the female golfer, use the same camera, lights and swing with the female MakeHuman model. `sprites.py` puts the five 40 and 80 pixel poses in `art/golfer/female/`.
 
 ```
 mkdir -p build/golfer-female
 . tools/golfer/env.sh
 heavy build blender -b --python tools/golfer/build_scene.py -- build/golfer-assets "$PWD/build/golfer-female/golfer.blend" female
-heavy build blender -b "$PWD/build/golfer-female/golfer.blend" --python tools/golfer/render.py -- "$PWD/build/golfer-female/r640" 640 64 1,2,4,13
+heavy build blender -b "$PWD/build/golfer-female/golfer.blend" --python tools/golfer/render.py -- "$PWD/build/golfer-female/r640" 640 64 1,2,4,8,13
 python3 tools/golfer/sprites.py build/golfer-female/r640 build/evidence/golfer-female --female
 ```

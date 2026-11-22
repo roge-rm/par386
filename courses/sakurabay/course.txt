@@ -7,3 +7,4 @@ tee Red
 holes 18
 scenery 3         # the bay backdrop: the sea, the volcano and wooded hills
 wind 8            # sheltered by the trees, lighter than the usual 10
+terrain-mesh 1 putting bunkers

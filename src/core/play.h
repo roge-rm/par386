@@ -48,6 +48,7 @@ enum { PS_AIM, PS_UP, PS_DOWN, PS_FLY, PS_RESULT, PS_DONE };
 #define PLAY_MAP_AFTER_MS 1000
 #define PLAY_MAP_MIN_MS   1500
 #define PLAY_UNDER 128  /* bytes kept under the ball on the map */
+#define PLAY_FLIGHT_UNDER (18 * 18) /* largest saved overlay on a 320-wide scene */
 
 /* The swing meter, in logical units along the panel's top row, and its timing. */
 #define MTR_X      4    /* the bar's left */
@@ -73,6 +74,8 @@ typedef struct {
 	uint8_t wind_mph;
 	angle wind_dir;
 	angle aim;                  /* the shot's aim; the scene was drawn at rv.aim */
+	uint32_t aim_time;           /* when the crosshair first drew */
+	uint8_t aim_mark;            /* opacity step, or waiting for the first draw */
 	uint8_t redraw;             /* R_* bits */
 	uint8_t npatch;
 	URect patch[PLAY_PATCHES];  /* overlay pixels drawn over the scene */
@@ -109,6 +112,8 @@ typedef struct {
 	vec2 target;                /* where the aiming map's marker sits on the hole */
 	fixed target_range;         /* distance to keep while turning the target with the keys */
 	uint8_t target_set;         /* the player picked this point on the map */
+	uint8_t map_near;
+	vec2 map_focus;              /* the local map's focus stays put while picking a point */
 	RenderGolfer *golf;         /* the golfer in the scene, set by the platform; 0 for none */
 	/* computer golfers */
 	uint8_t cpu;                /* the skill of the player whose shot it is, CPU_HUMAN for a person */
@@ -127,6 +132,8 @@ typedef struct {
 	RenderMap mg;               /* where the current map put things */
 	URect under;                /* the pixels under the ball on the map, kept in ubits */
 	uint8_t ubits[PLAY_UNDER];
+	uint16_t flight_saved;
+	uint8_t flight_under[PLAY_FLIGHT_UNDER]; /* aim crosshair or flight overlays without a kept scene */
 } Play;
 
 /* A hole on its own with one player, from the tee. seed sets the wind, as
@@ -177,7 +184,7 @@ void SEC_RENDER play_card(Surface *s, Play *p);
 /* The hole map with the aim line, target and last shot's path;
  * or, for a shot on the map, the map framed on the shot with its trail so
  * far and the ball. */
-void SEC_UI play_map(Surface *s, Play *p);
+void SEC_MENU play_map(Surface *s, Play *p);
 /* True while a shot in the scene will go over to the map: the platform
  * then calls play_map_prep after each frame. */
 int SEC_UI play_map_wanted(const Play *p);

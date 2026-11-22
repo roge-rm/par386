@@ -70,7 +70,7 @@ static Course gCourseHdr;      /* the open course's header: scenery and each hol
 /* The installed courses' database names, sorted, found at start-up. */
 static char gCourseNames[FRONT_COURSES][dmDBNameLength];
 static UInt8 gCourseCount;
-static MemHandle gHoleH, gGridH;
+static MemHandle gHoleH, gGridH, gTerrainH;
 static RenderGolfer gGolf;     /* the golfer's frames, kept locked while playing, and the pixels under him */
 static MemHandle gGolfH[RENDER_POSES];
 static UInt32 gUnderLen;
@@ -135,6 +135,10 @@ static Boolean DanaFront(void)
 	return gS.scale == 1 && gS.w == DANA_SCREEN_W && gS.h == 160;
 }
 
+static UInt8 gShownNameKey, gShownNameLower;
+static UInt8 gShownCharacterRow;
+static void SEC_DANA DrawCharacter(void);
+
 /* Draws the screen's picture band by band, then the game's text and boxes. */
 static void Redraw(void)
 {
@@ -146,6 +150,7 @@ static void Redraw(void)
 #endif
 
 	if (!gS.bits) return;
+	gS.smooth_y1 = 0;
 	front_dana(&gFront, DanaFront());
 	if (ScreenKept() && gBgPic == id) {
 		ScreenRestoreAll();
@@ -166,6 +171,12 @@ static void Redraw(void)
 #endif
 	gfx_centre(&gS, 1);
 	front_draw(&gFront, &gS);
+	if (gFront.screen == SCR_CHARACTER) {
+		DrawCharacter();
+		gShownCharacterRow = gFront.character_row;
+	}
+	gShownNameKey = gFront.name_key;
+	gShownNameLower = gFront.name_lower;
 	if ((id = front_preview(&gFront)) != 0)
 		for (k = 0; (h = DmGetResource(type, id + k)) != NULL; k++) {
 			front_preview_band(&gS, MemHandleLock(h), MemHandleSize(h));
@@ -583,6 +594,36 @@ static void GolferFree(void)
 	gUnderLen = 0;
 }
 
+static void SEC_DANA GolferOptions(RenderGolfer *g, const PlayerProfile *p)
+{
+	g->left = p ? p->left : 0;
+	g->skin = p ? p->skin : SKIN_LIGHT;
+	g->shoes = p ? p->shoes : OUTFIT_DEFAULT;
+	g->pants = p ? p->pants : OUTFIT_DEFAULT;
+	g->shirt = p ? p->shirt : OUTFIT_DEFAULT;
+	g->hat = p ? p->hat : OUTFIT_DEFAULT;
+}
+
+static void DrawCharacter(void)
+{
+	const PlayerProfile *p = &gFront.character;
+	UInt16 base = p->golfer == GOLFER_FEMALE ? 2100 : 2000;
+	MemHandle h = DmGetResource('Spr8', base + gS.scale - 1);
+	RenderGolfer g;
+
+	if (!h) return;
+	g.pose[POSE_ADDRESS].p = MemHandleLock(h);
+	if (g.pose[POSE_ADDRESS].p) {
+		g.pose[POSE_ADDRESS].len = MemHandleSize(h);
+		GolferOptions(&g, p);
+		g.mesh_style = 1;
+		render_golfer_preview(&gS, &g, CHARACTER_PREVIEW_X, CHARACTER_PREVIEW_Y,
+		                      CHARACTER_PREVIEW_W, CHARACTER_PREVIEW_H);
+		MemHandleUnlock(h);
+	}
+	DmReleaseResource(h);
+}
+
 /* The scene and a scene drawn ahead each keep their own frames locked. */
 static void GolferLock(RenderGolfer *g, MemHandle *frames, UInt16 sc, UInt8 player)
 {
@@ -590,8 +631,7 @@ static void GolferLock(RenderGolfer *g, MemHandle *frames, UInt16 sc, UInt8 play
 	Boolean custom = player == gProfileSlot;
 
 	GolferFramesFree(g, frames);
-	g->left = custom ? gFront.player.left : 0;
-	g->skin = custom ? gFront.player.skin : SKIN_LIGHT;
+	GolferOptions(g, custom ? &gFront.player : NULL);
 	if (custom && gFront.player.golfer == GOLFER_FEMALE) base = 2100;
 	for (k = 0; k < RENDER_POSES; k++) {
 		MemHandle h = DmGetResource('Spr8', base + 10 * k + sc - 1);
@@ -620,12 +660,20 @@ static void GolferUnder(void)
 
 static void NextDrop(void);
 
+static void SEC_DANA TerrainDrop(void)
+{
+	if (gTerrainH) MemHandleUnlock(gTerrainH);
+	gTerrainH = NULL;
+	gHole.terrain_mesh.data = NULL;
+}
+
 static void PlayEnd(void)
 {
 	LocalID id;
 
 	NextDrop();
 	ScreenSpareDrop();
+	TerrainDrop();
 	if (gGridH) MemHandleUnlock(gGridH);
 	if (gHoleH) MemHandleUnlock(gHoleH);
 	gGridH = gHoleH = NULL;
@@ -780,6 +828,29 @@ static UInt8 SEC_MENU LoadSave(Round *r, Boolean full)
 	return ok ? LS_OK : LS_CHANGED;
 }
 
+static void SEC_DANA TerrainLoad(UInt16 hole)
+{
+	UInt16 records = DmNumRecords(gCourseDb), dir = gCourseHdr.hole_count + 1, index;
+	UInt32 cpu;
+	Boolean compact;
+	MemHandle manifest, mesh;
+	const UInt8 *data;
+
+	if (records <= dir || !(manifest = DmQueryRecord(gCourseDb, dir))) return;
+	compact = FtrGet(sysFtrCreator, sysFtrNumProcessorID, &cpu) != errNone ||
+	          !sysFtrNumProcessorIsARM(cpu);
+	data = MemHandleLock(manifest);
+	if (!data) return;
+	index = course_terrain_record(data, MemHandleSize(manifest), gCourseHdr.hole_count,
+	                              records, hole, compact);
+	MemHandleUnlock(manifest);
+	if (!index || !(mesh = DmQueryRecord(gCourseDb, index))) return;
+	data = MemHandleLock(mesh);
+	if (!data) return;
+	if (terrain_mesh_parse(&gHole.terrain_mesh, &gHole, data, MemHandleSize(mesh))) gTerrainH = mesh;
+	else MemHandleUnlock(mesh);
+}
+
 /* Hole n (from 1) of the open course: parses it, keeping its record
  * locked, and draws its surface grid into record 0 of the scratch database
  * in place of the last hole's. */
@@ -795,10 +866,12 @@ static Boolean SEC_MENU LoadHole(UInt16 n)
 		gGridH = NULL;
 	}
 	if (gHoleH) MemHandleUnlock(gHoleH);
+	TerrainDrop();
 	gHoleH = NULL;
 	if ((h = DmQueryRecord(gCourseDb, n)) == NULL) return false;
 	gHoleH = h;
 	if (hole_parse(&gHole, MemHandleLock(h), MemHandleSize(h)) != HOLE_OK) return false;
+	TerrainLoad(n);
 	if (n >= 1 && n <= COURSE_MAX_HOLES) gHole.turn = (UInt16)gCourseHdr.turn[n - 1] << 8;
 	gHole.wind = gCourseHdr.wind;
 	gHole.green = gCourseHdr.green;
@@ -820,34 +893,49 @@ static Boolean SEC_MENU LoadHole(UInt16 n)
 enum { PF_MEM, PF_SAVE, PF_MISSING, PF_NOCOURSE };
 static UInt8 gFail;
 
-/* Backed-up player preference version 1: model, colour, hand, then the name. */
-static void SEC_MENU PlayerLoad(void)
+/* Version 2 adds the four outfit colours after the original name field. */
+enum { PLAYER_PREF_V1_BYTES = 3 + PLAYER_NAME_MAX + 1, PLAYER_PREF_BYTES = PLAYER_PREF_V1_BYTES + 4 };
+
+static void SEC_DANA PlayerLoad(void)
 {
-	UInt8 data[3 + PLAYER_NAME_MAX + 1];
+	UInt8 data[PLAYER_PREF_BYTES];
 	UInt16 n = sizeof(data), k;
 	PlayerProfile *p = &gFront.player;
+	Int16 version = PrefGetAppPreferences(kCreator, kPlayerPref, data, &n, true);
 
-	if (PrefGetAppPreferences(kCreator, kPlayerPref, data, &n, true) != 1 || n != sizeof(data) ||
+	if (!((version == 1 && n == PLAYER_PREF_V1_BYTES) || (version == 2 && n == PLAYER_PREF_BYTES)) ||
 	    data[0] >= GOLFER_MODELS || data[1] >= SKIN_COLOURS || data[2] > 1 ||
-	    !data[3] || data[sizeof(data) - 1]) return;
+	    !data[3] || data[PLAYER_PREF_V1_BYTES - 1]) return;
 	for (k = 3; data[k]; k++)
 		if (data[k] < ' ' || data[k] > '~' || data[k] == '|') return;
 	p->golfer = data[0];
 	p->skin = data[1];
 	p->left = data[2];
 	StrCopy(p->name, (const char *)data + 3);
+	if (version == 2) {
+		const UInt8 *colours = data + PLAYER_PREF_V1_BYTES;
+		p->shoes = colours[0] < OUTFIT_COLOURS ? colours[0] : OUTFIT_DEFAULT;
+		p->pants = colours[1] < OUTFIT_COLOURS ? colours[1] : OUTFIT_DEFAULT;
+		p->shirt = colours[2] < OUTFIT_COLOURS ? colours[2] : OUTFIT_DEFAULT;
+		p->hat = colours[3] < OUTFIT_COLOURS ? colours[3] : OUTFIT_DEFAULT;
+	}
 }
 
-static void SEC_MENU PlayerSave(void)
+static void SEC_DANA PlayerSave(void)
 {
-	UInt8 data[3 + PLAYER_NAME_MAX + 1];
+	UInt8 data[PLAYER_PREF_BYTES], *colours = data + PLAYER_PREF_V1_BYTES;
+	const PlayerProfile *p = &gFront.player;
 
 	MemSet(data, sizeof(data), 0);
-	data[0] = gFront.player.golfer;
-	data[1] = gFront.player.skin;
-	data[2] = gFront.player.left;
-	StrCopy((char *)data + 3, gFront.player.name);
-	PrefSetAppPreferences(kCreator, kPlayerPref, 1, data, sizeof(data), true);
+	data[0] = p->golfer;
+	data[1] = p->skin;
+	data[2] = p->left;
+	StrCopy((char *)data + 3, p->name);
+	colours[0] = p->shoes;
+	colours[1] = p->pants;
+	colours[2] = p->shirt;
+	colours[3] = p->hat;
+	PrefSetAppPreferences(kCreator, kPlayerPref, 2, data, sizeof(data), true);
 }
 
 static Boolean SEC_MENU PlayStart(Boolean resume)
@@ -922,7 +1010,7 @@ static Boolean SEC_MENU PlayStart(Boolean resume)
 }
 
 /* Locks a resource for render_scene and keeps its handle in hs to let go of after. */
-static void LockArt(RenderData *d, UInt32 type, UInt16 id, MemHandle *hs, UInt16 *n)
+static void SEC_DANA LockArt(RenderData *d, UInt32 type, UInt16 id, MemHandle *hs, UInt16 *n)
 {
 	MemHandle h = DmGetResource(type, id);
 	if (!h) return;
@@ -1262,20 +1350,30 @@ static void PlayStatus(void)
 
 /* Locks the sprites and backdrop for the scene at scale sc (handles in hs
  * for ArtFree). */
-static void ArtLock(RenderArt *art, MemHandle *hs, UInt16 *n, UInt16 sc)
+static void SEC_DANA ArtLock(RenderArt *art, MemHandle *hs, UInt16 *n, UInt16 sc, const Hole *hole)
 {
-	UInt16 t, v, k, s = gCourseHdr.scenery;
+	UInt16 i, t, v, k, s = gCourseHdr.scenery;
+	UInt8 variants[RENDER_TYPES];
+	HoleObject object;
 
 	MemSet(art, sizeof(*art), 0);
+	MemSet(variants, sizeof(variants), 0);
 	*n = 0;
-	/* the course style's sprites (tools/mkstyle.py), else the shared ones;
-	 * a variant the style doesn't have is left out and render.c uses the first */
+	for (i = 0; i < hole->object_count; i++) {
+		hole_object(hole, i, &object);
+		if (object.type >= RENDER_TYPES) continue;
+		variants[object.type] |= 1;
+		if (object.variant < RENDER_VARIANTS) variants[object.type] |= 1U << object.variant;
+	}
+	/* Keep variant zero as a fallback for each type used on the hole. */
 	for (t = 0; t < RENDER_TYPES; t++)
-		for (v = 0; v < RENDER_VARIANTS; v++)
+		for (v = 0; v < RENDER_VARIANTS; v++) {
+			if (!(variants[t] & (1U << v))) continue;
 			for (k = 0; k < RENDER_SIZES; k++) {
 				if (s) LockArt(&art->spr[t][v][k], 'Spr8', 3000 + 200 * s + 10 * t + 2 * v + k, hs, n);
 				if (!art->spr[t][v][k].p && !v) LockArt(&art->spr[t][v][k], 'Spr8', 1000 + t * 10 + k, hs, n);
 			}
+		}
 	/* the course's backdrop, or the first one if it's not in this build */
 	LockArt(&art->backdrop, 'Bkd8', 1000 + 10 * s + sc - 1, hs, n);
 	if (!art->backdrop.p) LockArt(&art->backdrop, 'Bkd8', 1000 + sc - 1, hs, n);
@@ -1312,6 +1410,47 @@ static void NextFail(void)
 	gNext = 3;
 }
 
+static void *SEC_DANA SceneWork(const Surface *s, const RenderView *v, Boolean *visual)
+{
+	UInt32 size = v->green ? render_green_curves_size(s, v) : render_scene_visual_size(s, v);
+	void *work = size ? MemPtrNew(size) : NULL;
+
+	*visual = work != NULL;
+	return work ? work : MemPtrNew(render_work_size(s));
+}
+
+static int SEC_DANA SceneBegin(Surface *s, const RenderView *v, const RenderArt *art,
+                              void *work, RenderStats *stats, Boolean visual)
+{
+	if (visual) return render_scene_visual_begin(s, v, art, work, stats);
+	return render_scene_begin(s, v, art, work, stats);
+}
+
+static int SEC_DANA SceneDraw(Surface *s, const RenderView *v, const RenderArt *art,
+                             void *work, RenderStats *stats, Boolean visual)
+{
+	if (visual) return render_scene_visual(s, v, art, work, stats);
+	return render_scene(s, v, art, work, stats);
+}
+
+static void SEC_UI GreenDraw(Surface *s, const RenderView *v)
+{
+	UInt32 size = render_green_curves_size(s, v);
+	void *work = size ? MemPtrNew(size) : NULL;
+
+	if (work) {
+		int ok = render_green_curves_begin(s, v, work);
+		if (ok >= 0) render_green_step(work, NULL, 0);
+		MemPtrFree(work);
+		if (ok >= 0) return;
+	}
+	work = v->hole->green_geometry ? MemPtrNew(render_green_compiled_size()) : NULL;
+	if (work) {
+		render_green_compiled(s, v, work);
+		MemPtrFree(work);
+	} else render_green(s, v);
+}
+
 /* Starts the next scene on the spare surface, if it's known and there's
  * memory for it. */
 static void NextStart(void)
@@ -1319,6 +1458,7 @@ static void NextStart(void)
 	Surface *m;
 	UInt16 sc = gS.half ? 1 : gS.scale;
 	int ok;
+	Boolean visual;
 
 	/* a shot's map that wasn't used (NextRoom only lets this happen once the map is done with the spare) */
 	ScreenSpareDrop();
@@ -1328,36 +1468,36 @@ static void NextStart(void)
 #endif
 	if (!gS.bits || !play_next_view(&gPlay, &gNextView)) return;
 	m = ScreenSpare();
-	gNextWork = MemPtrNew(render_work_size(&gS));
+	if (!m) {
+		NextFail();
+		return;
+	}
+	if (!gNextView.green) gNextGolf.under = MemPtrNew(render_under_size(&gS));
+	gNextWork = gNextView.green || gNextGolf.under ? SceneWork(&gS, &gNextView, &visual) : NULL;
 	gNextTicks = 0;
 #ifdef DEBUG
 	gNextFlyN = 0;
 #endif
-	if (!m || !gNextWork) {
+	if (!gNextWork) {
 		NextFail();
 		return;
 	}
+	gNext = 1;
 	if (gNextView.green) {
 		/* the green view: no art or golfer */
-		gNext = 1;
-		if (render_green_begin(m, &gNextView, gNextWork) < 0) NextFail();
+		ok = visual ? render_green_curves_begin(m, &gNextView, gNextWork) : -1;
+		if (ok < 0 && render_green_begin(m, &gNextView, gNextWork) < 0) NextFail();
 		return;
 	}
-	gNextGolf.under = MemPtrNew(render_under_size(&gS));
 	gNextGolf.w = 0;
-	gNext = 1;
-	if (!gNextGolf.under) {
-		NextFail();
-		return;
-	}
 	GolferLock(&gNextGolf, gNextGolfH, sc, gNextView.player);
-	ArtLock(&gNextArt, gNextHs, &gNextN, sc);
+	ArtLock(&gNextArt, gNextHs, &gNextN, sc, gNextView.hole);
 	gNextArt.golfer = &gNextGolf;
 #ifdef DEBUG
 	render_clock(Ticks);
-	ok = render_scene_begin(m, &gNextView, &gNextArt, gNextWork, &gStats);
+	ok = SceneBegin(m, &gNextView, &gNextArt, gNextWork, &gStats, visual);
 #else
-	ok = render_scene_begin(m, &gNextView, &gNextArt, gNextWork, NULL);
+	ok = SceneBegin(m, &gNextView, &gNextArt, gNextWork, NULL, visual);
 #endif
 	if (ok < 0) NextFail();
 }
@@ -1439,6 +1579,7 @@ static Boolean NextUse(void)
 	else if (gNext == 1) render_scene_step(gNextWork, NULL, 0);
 	if (gS.fullview) gfx_copy(&gS, m, 0, 0, gS.w, gS.h);
 	else MemMove(gS.bits, m->bits, (Int32)gS.rowBytes * gS.h);
+	gS.smooth_y1 = m->smooth_y1;
 	if (!a->green) {
 		/* the golfer and the pixels under him as drawn there */
 		u = gGolf.under;
@@ -1473,7 +1614,7 @@ static void SceneRender(void)
 	UInt16 n = 0, sc;
 	void *work;
 	UInt32 fr;
-	Boolean ahead;
+	Boolean ahead, visual;
 #ifdef DEBUG
 	UInt32 t0;
 #endif
@@ -1512,12 +1653,13 @@ static void SceneRender(void)
 		return;
 	}
 	/* a shot's map that wasn't used isn't kept through the draw */
+	gS.smooth_y1 = 0;
 	ScreenSpareDrop();
 	if (gPlay.rv.green) {
 #ifdef DEBUG
 		t0 = TimGetTicks();
 #endif
-		render_green(&gS, &gPlay.rv);
+		GreenDraw(&gS, &gPlay.rv);
 #ifdef DEBUG
 		gDrawTicks = TimGetTicks() - t0;
 		MemSet(&gStats, sizeof(gStats), 0);
@@ -1537,23 +1679,23 @@ static void SceneRender(void)
 	}
 	/* the golfer and backdrop for the scale the scene is drawn at */
 	sc = gS.half ? 1 : gS.scale;
-	ArtLock(&art, hs, &n, sc);
+	ArtLock(&art, hs, &n, sc, gPlay.rv.hole);
 	GolferLock(&gGolf, gGolfH, sc, gPlay.rv.player);
 	GolferUnder();
 	art.golfer = &gGolf;
 	gPlay.golf = &gGolf;
 	gGolf.w = 0;    /* no golfer box until render_scene sets one */
-	work = MemPtrNew(render_work_size(&gS));
+	work = SceneWork(&gS, &gPlay.rv, &visual);
 	fr = FreeHeap();
 	if (fr < gMinFree || !gMinFree) gMinFree = fr;
 	if (work) {
 #ifdef DEBUG
 		render_clock(Ticks);
 		t0 = TimGetTicks();
-		render_scene(&gS, &gPlay.rv, &art, work, &gStats);
+		SceneDraw(&gS, &gPlay.rv, &art, work, &gStats, visual);
 		gDrawTicks = TimGetTicks() - t0;
 #else
-		render_scene(&gS, &gPlay.rv, &art, work, NULL);
+		SceneDraw(&gS, &gPlay.rv, &art, work, NULL, visual);
 #endif
 		MemPtrFree(work);
 	} else {
@@ -1622,6 +1764,7 @@ static void PlayAct(int f)
 		/* over the kept scene; saved when it opens at the end of a hole */
 		gAnim = false;
 		if (gPlay.card != CARD_BOOK && ScreenKept() && gBgPic == PIC_SCENE) ScreenRestoreAll();
+		else gS.smooth_y1 = 0;
 		play_card(&gS, &gPlay);
 		if (gS.fullview) DanaDraw();
 		ScreenShowAll();
@@ -1719,6 +1862,34 @@ static void SEC_MENU PlayInput(Boolean tap, Int16 x, Int16 y, UInt8 key)
 
 static char gMsg[48];                  /* the message dialog keeps its text */
 
+static void SEC_MENU RedrawName(void)
+{
+	URect dirty[3];
+	UInt8 i, n;
+
+	if (!gS.bits) return;
+	gfx_centre(&gS, 1);
+	n = front_name_update(&gFront, &gS, gShownNameKey, gShownNameLower, dirty);
+	gfx_centre(&gS, 0);
+	gShownNameKey = gFront.name_key;
+	gShownNameLower = gFront.name_lower;
+	for (i = 0; i < n; i++) ScreenShow(&dirty[i]);
+}
+
+static void SEC_CARD RedrawCharacter(UInt8 preview)
+{
+	URect dirty[3];
+	UInt8 i, n;
+
+	if (!gS.bits) return;
+	gfx_centre(&gS, 1);
+	n = front_character_update(&gFront, &gS, gShownCharacterRow, preview, dirty);
+	if (preview) DrawCharacter();
+	gfx_centre(&gS, 0);
+	gShownCharacterRow = gFront.character_row;
+	for (i = 0; i < n; i++) ScreenShow(&dirty[i]);
+}
+
 static void Act(int r)
 {
 	Sound();
@@ -1755,6 +1926,8 @@ static void Act(int r)
 	}
 	if (r & FR_QUIT) Quit();
 	else if ((r & FR_LINES) && RedrawLines()) return;
+	else if (r & FR_NAME) RedrawName();
+	else if (r & FR_CHARACTER) RedrawCharacter((r & FR_CHARACTER_POSE) != 0);
 	else if (r & FR_REDRAW) Redraw();
 }
 

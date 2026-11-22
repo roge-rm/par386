@@ -155,6 +155,7 @@ COURSES = {
     "saffrondunes": ("Saffron Dunes", 8, 12, 11, DESERT),
     "falesiagrove": ("Falesia Grove", 9, 9, 10, GROVE),
 }
+CURVED_HOLES = {"brackenmere": 3, "saffrondunes": 8, "falesiagrove": 5}
 
 
 def shape(cx, cy, rx, ry, turn, limit, rng, n=20, wobble=0.11):
@@ -310,7 +311,8 @@ def main():
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "course.txt").write_text(
             f"name {name}\n" + "".join(f"tee {tee}\n" for tee in TEES)
-            + f"holes {len(holes)}\nscenery {scenery}\nwind {wind}\ngreen {green}\n")
+            + f"holes {len(holes)}\nscenery {scenery}\nwind {wind}\ngreen {green}\n"
+            + f"terrain-mesh {CURVED_HOLES[slug]} putting bunkers\n")
         for n, spec in enumerate(holes, 1):
             write_hole(folder, n, scenery, spec)
 

@@ -511,7 +511,8 @@ def main():
         "name Cascade Springs\n" + "".join("tee %s\n" % t for t in TEES) +
         "holes %d\n" % len(HOLES) +
         "scenery 6         # the Rockies backdrop: snow-capped peaks over wooded slopes\n"
-        "wind 8            # light to moderate\n")
+        "wind 8            # light to moderate\n"
+        "terrain-mesh 13 putting bunkers\n")
     total, pars, tot_t = 0, 0, [0, 0]
     for n, d in enumerate(HOLES, 1):
         par, yards, others, nobj, nsh, step, drop = make_hole(n, d, out)

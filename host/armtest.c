@@ -21,6 +21,7 @@
 #include "terraarm.h"
 #include "render.h"
 #include "trig.h"
+#include "pal.h"
 
 static int checks, fails;
 #define CHECK(cond) do { checks++; if (!(cond)) { fails++; printf("FAIL %s:%d %s\n", __FILE__, __LINE__, #cond); } } while (0)
@@ -84,6 +85,8 @@ static void via_entry(const struct To16Job *a)
 	blk[TO16_MASK] = a->mask;
 	blk[TO16_LO] = a->lo;
 	blk[TO16_HI] = a->hi;
+	put16(blk + TO16_WIDTH, (uint16_t)a->width);
+	put16(blk + TO16_SMOOTH_Y1, (uint16_t)a->smooth_y1);
 	to16arm_entry(NULL, blk, NULL);
 	jobs++;
 }
@@ -113,6 +116,72 @@ static const int16_t rects[][4] = {
 	{ 7, 0, 2, H }, { 0, 11, W, 1 }, { 50, 20, 0, 4 }, { 2, 2, W - 5, H - 3 },
 };
 static const uint8_t steps[][2] = { { 0, 16 }, { 0, 2 }, { 2, 16 }, { 5, 10 }, { 14, 16 }, { 3, 4 }, { 7, 7 } };
+
+static uint16_t rgb_at(const uint8_t *d, int x, int y, int le)
+{
+	const uint8_t *p = d + y * DRB + x * 2;
+	return (uint16_t)(le ? (p[1] << 8 | p[0]) : (p[0] << 8 | p[1]));
+}
+
+static uint16_t blended(uint16_t a, uint16_t b)
+{
+	unsigned r = (5 * (a >> 11) + 3 * (b >> 11) + 4) / 8;
+	unsigned g = (5 * ((a >> 5) & 63) + 3 * ((b >> 5) & 63) + 4) / 8;
+	unsigned bl = (5 * (a & 31) + 3 * (b & 31) + 4) / 8;
+	return (uint16_t)((r << 11) | (g << 5) | bl);
+}
+
+static void terrain_edges(Surface *s, uint8_t *plain, uint8_t *full, uint8_t *steps_out)
+{
+	const uint16_t *pal = gfx_pal565();
+	const uint8_t grass = PAL_FAIRWAY + 4, sand = PAL_SAND + 4;
+	uint16_t a = pal[grass], b = pal[sand], water = pal[PAL_WATER + 4];
+	uint16_t expected = blended(a, b);
+	int le, y;
+	uint8_t step;
+
+	memset(s->bits, grass, (size_t)s->rowBytes * H);
+	for (y = 0; y < H; y++) memset(s->bits + y * s->rowBytes + 80, PAL_WATER + 4, W - 80);
+	for (y = 25; y <= 27; y++) memset(s->bits + y * s->rowBytes + 40, sand, 5);
+	s->bits[9 * s->rowBytes + 10] = sand - 1;
+	s->bits[10 * s->rowBytes + 9] = sand;
+	s->bits[4 * s->rowBytes + 5] = sand;
+	s->bits[5 * s->rowBytes + 4] = sand;
+	s->bits[5 * s->rowBytes + 5] = PAL_SKIN + 2;
+	s->bits[19 * s->rowBytes + 20] = grass - 1;
+	s->bits[20 * s->rowBytes + 19] = grass - 1;
+	s->bits[21] = sand;
+	s->bits[s->rowBytes + 20] = sand;
+	s->bits[(H - 3) * s->rowBytes + 25] = sand;
+	s->bits[(H - 2) * s->rowBytes + 24] = sand;
+	s->smooth_y1 = H - 2;
+	for (le = 0; le < 2; le++) {
+		memset(plain, 0, (size_t)DRB * H);
+		memset(full, 0, (size_t)DRB * H);
+		memset(steps_out, 0, (size_t)DRB * H);
+		gfx_to16_use(NULL);
+		gfx_to16(s, plain, DRB, 0, 0, W, H, le);
+		gfx_to16_use(via_entry);
+		gfx_to16(s, full, DRB, 0, 0, W, H, le);
+		for (step = 0; step < 16; step += 2)
+			gfx_to16_mask(s, steps_out, DRB, 0, 0, W, H, le, step, step + 2);
+		CHECK(memcmp(full, steps_out, (size_t)DRB * H) == 0);
+		CHECK(rgb_at(plain, 10, 10, le) == a && rgb_at(full, 10, 10, le) == expected && a != expected);
+		CHECK(rgb_at(full, 5, 5, le) == pal[PAL_SKIN + 2]);
+		CHECK(rgb_at(full, 79, 10, le) == blended(a, water));
+		CHECK(rgb_at(full, 80, 10, le) == blended(water, a));
+		CHECK(rgb_at(full, 42, 24, le) == expected);
+		CHECK(rgb_at(full, 42, 25, le) == blended(b, a));
+		CHECK(rgb_at(full, 42, 26, le) == b);
+		CHECK(rgb_at(full, 20, 20, le) == a);
+		CHECK(rgb_at(full, 20, 0, le) == a);
+		CHECK(rgb_at(full, 25, H - 2, le) == a);
+		gfx_to16(s, plain, DRB, 10, 10, 1, 1, le);
+		CHECK(rgb_at(plain, 10, 10, le) == expected);
+	}
+	s->smooth_y1 = 0;
+	gfx_to16_use(NULL);
+}
 
 /* The renderer's loops through terraarm_entry. */
 
@@ -151,7 +220,7 @@ static void swap_be(int16_t *v, int n)
 	}
 }
 
-static uint8_t *tblk, *tlist, *tuser;   /* in low memory */
+static uint8_t *tblk, *tlist, *tturf, *tuser;   /* in low memory */
 
 static void call_entry(uint8_t op, const uint8_t *b)
 {
@@ -226,6 +295,14 @@ static void via_terra(uint8_t op, void *job)
 		b[TR_SH] = t->sh;
 		b[TR_KSS] = t->kss;
 		b[TR_HM] = t->hm;
+		put32(b + TR_MATERIAL, t->material);
+		put32(b + TR_CUT, t->cut);
+		put32(b + TR_PRIOR_MATERIAL, t->prior_material);
+		put32(b + TR_PRIOR_Y, t->prior_y);
+		V32(TR_PRIOR_SAND, t->prior_sand_px);
+		put32(b + TR_SAND_RELIEF, t->sand_relief);
+		put32(b + TR_SAND_LIGHT, t->sand_light);
+		put32(b + TR_PRIOR_RELIEF, t->prior_relief);
 		swap_be(t->ybuf, t->w);
 		call_entry(op, b);
 		swap_be(t->ybuf, t->w);
@@ -241,6 +318,15 @@ static void via_terra(uint8_t op, void *job)
 			}
 			put16(q + 12, (uint16_t)t->tri[i].base);
 			put16(q + 14, (uint16_t)t->tri[i].lv);
+			if (t->turf) {
+				q = tturf + TT_TURF_SIZE * i;
+				for (k = 0; k < 3; k++) {
+					put16(q + 2 * k, (uint16_t)t->turf[i].u[k]);
+					put16(q + 6 + 2 * k, (uint16_t)t->turf[i].v[k]);
+					put16(q + 12 + 2 * k, (uint16_t)t->turf[i].light[k]);
+					put16(q + 18 + 2 * k, (uint16_t)t->turf[i].depth[k]);
+				}
+			}
 		}
 		put32(b + TT_BITS, t->bits);
 		put32(b + TT_TRI, tlist);
@@ -252,6 +338,9 @@ static void via_terra(uint8_t op, void *job)
 		put16(b + TT_VH, (uint16_t)t->vh);
 		put16(b + TT_N, (uint16_t)t->n);
 		b[TT_LG] = t->lg;
+		put32(b + TT_TURF, t->turf ? tturf : NULL);
+		put32(b + TT_NOISE, lowtab(t->noise, 256));
+		put16(b + TT_MOW_PHASE, (uint16_t)t->mow_phase);
 		call_entry(op, b);
 	} else if (op == TERRA_SKY) {
 		TerraSky *t = job;
@@ -460,6 +549,7 @@ static void terra_tests(const char *pdbpath, const char *artdir)
 
 	tblk = lowalloc(TR_SIZE + TT_SIZE + TS_SIZE + TM_SIZE);
 	tlist = lowalloc(TERRA_TRIS_MAX * 16);
+	tturf = lowalloc(TERRA_TRIS_MAX * TT_TURF_SIZE);
 	tuser = lowalloc(6);
 	/* the test course's hole 1 and its surface grid, in low memory */
 	pdb = load_low(pdbpath, &n);
@@ -573,6 +663,7 @@ int main(int argc, char **argv)
 			}
 	/* the job count: every rectangle with something in it, both byte orders */
 	CHECK(jobs == 2 * 7 * 8);
+	terrain_edges(&s, d1, d2, d3);
 	terra_tests(argv[1], argv[2]);
 	printf("armtest: %d checks, %d failed, %d jobs through the entry\n", checks, fails, jobs);
 	munmap(low, LOW_SIZE);

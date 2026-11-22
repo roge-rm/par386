@@ -20,6 +20,8 @@ typedef struct To16Job {
 	uint8_t le;             /* 28: low byte first in d */
 	uint8_t mask;           /* 29: only the pixels whose dither value is from lo up to (not) hi */
 	uint8_t lo, hi;         /* 30, 31 */
+	int16_t width;          /* 32: source columns */
+	int16_t smooth_y1;      /* 34: terrain rows, 0 for no smoothing */
 } To16;
 
 #define TO16_BITS 0
@@ -36,7 +38,9 @@ typedef struct To16Job {
 #define TO16_MASK 29
 #define TO16_LO   30
 #define TO16_HI   31
-#define TO16_SIZE 32
+#define TO16_WIDTH 32
+#define TO16_SMOOTH_Y1 34
+#define TO16_SIZE 36
 
 void SEC_CORE to16_run(const To16 *a);
 /* Writes pal (256 colours) to d as 512 bytes low byte first: the table

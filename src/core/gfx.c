@@ -29,6 +29,7 @@ void gfx_init(Surface *s)
 	s->lh = (int16_t)(s->h / s->scale);
 	s->ox = s->oy = 0;
 	s->fullview = 0;
+	s->smooth_y1 = 0;
 
 	for (i = 0; i < UIC_COUNT; i++) {
 		if (s->depth >= 8) {
@@ -409,6 +410,8 @@ void gfx_to16_mask(const Surface *s, uint8_t *d, uint16_t rb, int16_t x0, int16_
 	a.mask = lo > 0 || hi < 16;
 	a.lo = lo;
 	a.hi = hi;
+	a.width = s->w;
+	a.smooth_y1 = to16_fn ? s->smooth_y1 : 0;
 	if (to16_fn) to16_fn(&a);
 	else to16_run(&a);
 }

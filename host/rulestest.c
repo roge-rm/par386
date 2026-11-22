@@ -667,6 +667,53 @@ static void map_aim_tests(const Course *c, Surface *s)
 	CHECK(play_key(&p, KEY_MAP, 0) == PL_SCENE && p.view == PLAY_SCENE);
 	CHECK(p.target_set && play_key(&p, KEY_DOWN, 0) == 0 && p.target_set && p.target_range == distance[1]);
 	CHECK(play_key(&p, KEY_LEFT, 0) == 0 && !p.target_set && !p.target_range);
+
+	/* From the rough, put the ball, bunker and flag in the same close view. */
+	{
+		RenderMap whole, near;
+		vec2 target = h->pins[0];
+		int16_t x, y, sc = s->scale;
+
+		r.pl[0].ball = vec2_make(YD(110), YD(382));
+		r.pl[0].lie = LIE_ROUGH;
+		r.pl[0].taken = 1;
+		play_start(&p, h, g, &r);
+		CHECK(play_key(&p, KEY_MAP, 0) == PL_MAP);
+		play_map(s, &p);
+		x = (int16_t)((p.mg.left + target.x / p.mg.ypp) / sc);
+		y = (int16_t)((p.mg.top + (p.mg.length - target.y) / p.mg.ypp) / sc);
+		CHECK(play_tap(&p, x, y, 0) == PL_MAP);
+		play_map(s, &p);
+		play_status(s, &p, NULL);
+		save(s, "greenside-hole");
+		whole = p.mg;
+		target = p.target;
+		aim = p.aim;
+		CHECK(play_tap(&p, 20, 125, 0) == PL_MAP && p.map_near);
+		CHECK(p.target.x == target.x && p.target.y == target.y && p.aim == aim);
+		play_map(s, &p);
+		play_status(s, &p, NULL);
+		save(s, "greenside-near");
+		near = p.mg;
+		CHECK(near.ypp < whole.ypp && near.bx >= 0 && near.bx < s->w && near.px < s->w &&
+		      near.py >= 0 && near.by < (s->lh - RENDER_STATUS) * sc);
+		x = (int16_t)((near.left + YD(128) / near.ypp) / sc);
+		y = (int16_t)((near.top + (near.length - YD(397)) / near.ypp) / sc);
+		CHECK(play_tap(&p, x, y, 0) == PL_MAP && p.target_set);
+		CHECK(fix_abs(p.target.x - YD(128)) <= near.ypp * sc &&
+		      fix_abs(p.target.y - YD(397)) <= near.ypp * sc);
+		play_map(s, &p);
+		CHECK(p.mg.ypp == near.ypp && p.mg.left == near.left && p.mg.top == near.top);
+		target = p.target;
+		aim = p.aim;
+		CHECK(play_tap(&p, 116, 155, 0) == PL_CARD && p.card == CARD_VIEW);
+		CHECK(play_key(&p, KEY_SELECT, 0) == PL_MAP && p.map_near && p.aim == aim);
+		play_map(s, &p);
+		CHECK(play_key(&p, KEY_DOWN, 0) == PL_MAP && !p.map_near);
+		play_map(s, &p);
+		CHECK(p.mg.ypp == whole.ypp && p.target.x == target.x && p.target.y == target.y);
+		CHECK(play_tap(&p, 81, 155, 0) == PL_SCENE && p.aim == aim);
+	}
 }
 
 static void book_edge_test(void)
@@ -688,6 +735,42 @@ static void book_edge_test(void)
 	CHECK(hole_hazards(&h, &g, ball, ANG_90, hit, 1) == 1);
 }
 
+/* The ball, trail and contact mark clear with or without a kept scene. */
+static void flight_scene(const Play *shot, Surface *bg)
+{
+	static Play kept, lean;
+	Surface a, b;
+	uint32_t t;
+	uint8_t seen = 0;
+
+	kept = lean = *shot;
+	surface(&a, bg->scale);
+	surface(&b, bg->scale);
+	gfx_copy(&a, bg, 0, 0, bg->w, bg->h);
+	gfx_copy(&b, bg, 0, 0, bg->w, bg->h);
+	CHECK(kept.shot.land_pt > 0 && kept.shot.land_pt < kept.shot.fly_n);
+	for (t = 1240; kept.state == PS_FLY && t < 10000; t += 42) {
+		uint8_t i, landed = 0;
+		play_frame(&kept, &a, bg, t);
+		play_frame(&lean, &b, NULL, t);
+		CHECK(memcmp(a.bits, b.bits, (size_t)a.rowBytes * a.h) == 0);
+		for (i = 0; i < kept.npatch; i++)
+			if (kept.patch[i].w == 7 * a.scale && kept.patch[i].h == 7 * a.scale) landed = 1;
+		CHECK(landed == (kept.shown >= kept.shot.land_pt));
+		if (t == 1786) save(&a, "scene-ball-flight");
+		if (landed && !seen) {
+			save(&a, "scene-first-contact");
+			seen = 1;
+		}
+	}
+	CHECK(seen && kept.state == PS_RESULT);
+	CHECK(strncmp(kept.msg1, "Carry ", 6) == 0 && strstr(kept.msg1, " Total "));
+	CHECK(strstr(kept.msg2, " Pin "));
+	save(&a, "scene-flight-result");
+	free(a.bits);
+	free(b.bits);
+}
+
 static void pen_tests(const Course *c, Surface *s)
 {
 	static Play p;
@@ -699,7 +782,7 @@ static void pen_tests(const Course *c, Surface *s)
 	Round r;
 	char file[32];
 	void *work = malloc(render_work_size(s));
-	uint8_t club;
+	uint8_t club, landed = 0;
 	uint32_t t;
 
 	surface(&bg, s->scale);
@@ -738,6 +821,7 @@ static void pen_tests(const Course *c, Surface *s)
 	save(s, "panel-meter");
 	CHECK(play_tap(&p, 110, 141, 750) == PL_ANIM && p.state == PS_DOWN);
 	CHECK(play_tap(&p, 120, 60, 1238) == PL_ANIM && p.state == PS_FLY);
+	flight_scene(&p, &bg);
 	play_frame(&p, s, &bg, 1240);
 	save(s, "panel-flight");
 	/* The flight map's rose uses the map axes even when the shot aimed across them. */
@@ -750,6 +834,10 @@ static void pen_tests(const Course *c, Surface *s)
 	play_map(s, &p);
 	for (t = 2200; t < 20000 && p.state == PS_FLY; t += 40) {
 		play_frame(&p, s, NULL, t);
+		if (!landed && p.shown >= p.shot.land_pt) {
+			save(s, "map-first-contact");
+			landed = 1;
+		}
 		if (t == 2200) {
 			play_status(s, &p, NULL);
 			CHECK(map_pixel(s, 145, 140) == s->pa[UIC_TEXT_HI] && map_pixel(s, 149, 144) != s->pa[UIC_TEXT_HI]);
@@ -783,6 +871,10 @@ static void pen_tests(const Course *c, Surface *s)
 		play_map(s, &p);
 		play_status(s, &p, NULL);
 		save(s, "map-target-history");
+		CHECK(play_key(&p, KEY_DOWN, t) == PL_MAP && p.map_near);
+		play_map(s, &p);
+		play_status(s, &p, NULL);
+		save(s, "map-target-near");
 		CHECK(play_tap(&p, 81, 155, t) == PL_SCENE);
 		CHECK(p.target_set && p.target.x == target.x && p.target.y == target.y);
 		CHECK(render_scene(s, &p.rv, &art, work, NULL) == 0);

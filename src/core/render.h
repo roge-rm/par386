@@ -22,8 +22,8 @@ typedef struct {
 	uint32_t len;               /* 0 if missing */
 } RenderData;
 
-/* Golfer poses: address, half way back, the top of the swing, the finish. */
-enum { POSE_ADDRESS, POSE_BACK, POSE_TOP, POSE_FINISH, RENDER_POSES };
+/* Golfer poses in sprite resource order. */
+enum { POSE_ADDRESS, POSE_BACK, POSE_TOP, POSE_FINISH, POSE_IMPACT, RENDER_POSES };
 
 /* The pixels kept under the golfer, so his pose can change over a finished
  * scene: at most this many logical units square. */
@@ -43,7 +43,14 @@ typedef struct {
 	uint8_t ball;               /* 1 if the ball is drawn at his feet */
 	uint8_t left;               /* reflect the pose about the ball point */
 	uint8_t skin;               /* SKIN_* from profile.h */
+	uint8_t mesh_style;         /* contrast for the full-shot mesh */
+	uint8_t shoes, pants, shirt, hat;  /* OUTFIT_* from profile.h */
 } RenderGolfer;
+
+/* Centre the address pose in a logical rectangle. The Surface origin is
+ * the same as for UI controls. */
+void SEC_CARD render_golfer_preview(const Surface *s, const RenderGolfer *g,
+                                    int16_t x, int16_t y, int16_t w, int16_t h);
 
 /* Spr8 resources by object type, variant and size, the golfer and the Bkd8
  * strip for the surface's scale. */
@@ -130,6 +137,16 @@ int SEC_RENDER render_scene(Surface *s, const RenderView *v, const RenderArt *a,
  * while there's more. begin returns -1 if s won't do. */
 int SEC_RENDER render_scene_begin(Surface *s, const RenderView *v, const RenderArt *a, void *work, RenderStats *stats);
 int SEC_RENDER render_scene_step(void *work, RenderClock clock, uint32_t until);
+/* Validate a packed terrain record. On success mesh points into data.
+ * The caller keeps that record in place for as long as the hole uses it. */
+int SEC_RENDER terrain_mesh_parse(TerrainMesh *mesh, const Hole *hole, const uint8_t *data, uint32_t size);
+/* Work for an optional terrain mesh or visual contours, including the
+ * usual scene work. Returns 0 when neither is available. */
+uint32_t SEC_RENDER render_scene_visual_size(const Surface *s, const RenderView *v);
+int SEC_RENDER render_scene_visual_begin(Surface *s, const RenderView *v, const RenderArt *a,
+                                       void *work, RenderStats *stats);
+int SEC_RENDER render_scene_visual(Surface *s, const RenderView *v, const RenderArt *a,
+                                 void *work, RenderStats *stats);
 /* Sets the clock render_scene times its stages with, or 0 for none. */
 void SEC_RENDER render_clock(RenderClock fn);
 /* The terrain's depth steps, the green's triangles and the sky rows go
@@ -141,15 +158,15 @@ void SEC_RENDER render_terra_use(void (*fn)(uint8_t op, void *job));
  * ball and a line from the ball to the pin. Text is left to the caller.
  * Returns 0, or -1 if the surface isn't 160 or 320 wide. */
 int SEC_RENDER render_map(Surface *s, const RenderView *v, RenderMap *out);
-/* The whole hole, with the line drawn to the chosen target. */
-int SEC_RENDER render_target_map(Surface *s, const RenderView *v, RenderMap *out, const vec2 *target);
-/* The Dana's whole-hole map, tee on the left. RenderMap keeps its normal
- * coordinates: on screen, (x, y) is (s->w - 1 - y, x). */
-int SEC_RENDER render_dana_map(Surface *s, const RenderView *v, RenderMap *out, const vec2 *target);
 /* A part of the hole for render_map_box, in yards. */
 typedef struct {
 	fixed x0, y0, x1, y1;
 } MapBox;
+/* The aiming map with a line to the target. With a box, frame that area. */
+int SEC_RENDER render_target_map(Surface *s, const RenderView *v, RenderMap *out, const vec2 *target, const MapBox *box);
+/* The Dana's aiming map, tee on the left. RenderMap keeps its normal
+ * coordinates: on screen, (x, y) is (s->w - 1 - y, x). */
+int SEC_RENDER render_dana_map(Surface *s, const RenderView *v, RenderMap *out, const vec2 *target, const MapBox *box);
 /* render_map framed on box (kept to its middle, as big as fits), or on the
  * whole hole if box is 0 or the hole fits as big. With a box there's no
  * ball and no line to the pin. */
@@ -166,11 +183,18 @@ int SEC_RENDER render_map_rows(Surface *s, const RenderView *v, const MapBox *bo
  * steep so the slope reads, the cup and the flag. The ball is left to the
  * caller. Returns 0, or -1 if the surface isn't 160 or 320 wide. */
 int SEC_RENDER render_green(Surface *s, const RenderView *v);
+/* Experimental synchronous draw. Work has render_green_compiled_size bytes. */
+uint32_t SEC_DANA render_green_compiled_size(void);
+int SEC_DANA render_green_compiled(Surface *s, const RenderView *v, void *work);
 /* render_green in slices, as render_scene_begin and _step: work holds
  * render_work_size bytes, s's pixels, the hole and the grid stay put until
  * it's done, a row of cells at a time. */
 int SEC_RENDER render_green_begin(Surface *s, const RenderView *v, void *work);
 int SEC_RENDER render_green_step(void *work, RenderClock clock, uint32_t until);
+/* The curved putting view uses the same step function. Size is zero on
+ * unsupported surfaces or holes without putting contours. */
+uint32_t SEC_CARD render_green_curves_size(const Surface *s, const RenderView *v);
+int SEC_CARD render_green_curves_begin(Surface *s, const RenderView *v, void *work);
 /* The camera for the view on surface s: render_scene's, or render_green's
  * if v->green is set. */
 void SEC_RENDER render_camera(const Surface *s, const RenderView *v, RenderCam *c);

@@ -5,3 +5,4 @@ tee Blue
 tee White
 tee Red
 holes 3
+terrain-mesh 1

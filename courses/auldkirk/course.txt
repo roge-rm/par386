@@ -6,3 +6,5 @@ tee Club
 tee Forward
 holes 18
 scenery 1         # the links backdrop: sea, hills and the kirk
+terrain-mesh 16 putting
+terrain-mesh 17 putting dunes

@@ -1,5 +1,5 @@
 /* The ARM code for OS 5's renderer loops, the `armc' 1001 resource called
- * through PceNativeCall: terra_row, terra_tris, terra_sky and terra_map
+ * through PceNativeCall: terrain, triangles, sky, maps and putting spans
  * (src/core/terra.c) as native code. The 68k passes its jobs as they lie in
  * its memory, big endian, so the entry reads each field byte by byte into
  * a copy, swaps the y-buffer to the ARM's byte order for the call and back
@@ -92,6 +92,14 @@ static void row(uint8_t *b)
 	t.sh = b[TR_SH];
 	t.kss = b[TR_KSS];
 	t.hm = b[TR_HM];
+	t.material = (const uint8_t *)P32(b, TR_MATERIAL);
+	t.cut = (const uint8_t *)P32(b, TR_CUT);
+	t.prior_material = (const uint8_t *)P32(b, TR_PRIOR_MATERIAL);
+	t.prior_y = (uint8_t *)P32(b, TR_PRIOR_Y);
+	t.prior_sand_px = (int32_t)be32(b + TR_PRIOR_SAND);
+	t.sand_relief = (const uint8_t *)P32(b, TR_SAND_RELIEF);
+	t.sand_light = (const int8_t *)P32(b, TR_SAND_LIGHT);
+	t.prior_relief = (const uint8_t *)P32(b, TR_PRIOR_RELIEF);
 	t.spans = t.pixels = 0;
 	swap16(t.ybuf, t.w);
 	terra_row(&t);
@@ -104,6 +112,7 @@ static void tris(const uint8_t *b)
 {
 	TerraTris t;
 	TerraTri tl[TERRA_TRIS_MAX];
+	TerraTurf turf[TERRA_TRIS_MAX];
 	const uint8_t *q;
 	int16_t i, k;
 
@@ -117,6 +126,9 @@ static void tris(const uint8_t *b)
 	t.vh = S16(b, TT_VH);
 	t.n = S16(b, TT_N);
 	t.lg = b[TT_LG];
+	t.noise = (const int8_t *)P32(b, TT_NOISE);
+	t.mow_phase = S16(b, TT_MOW_PHASE);
+	t.turf = 0;
 	if (t.n < 0) t.n = 0;
 	if (t.n > TERRA_TRIS_MAX) t.n = TERRA_TRIS_MAX;
 	/* the triangles, 8 big endian 16-bit fields each: x[3], y[3], base, lv */
@@ -129,6 +141,18 @@ static void tris(const uint8_t *b)
 		tl[i].lv = S16(q, 14);
 	}
 	t.tri = tl;
+	q = (const uint8_t *)P32(b, TT_TURF);
+	if (q && t.lg == 3) {
+		for (i = 0; i < t.n; i++, q += TT_TURF_SIZE) {
+			for (k = 0; k < 3; k++) {
+				turf[i].u[k] = S16(q, 2 * k);
+				turf[i].v[k] = S16(q, 6 + 2 * k);
+				turf[i].light[k] = S16(q, 12 + 2 * k);
+				turf[i].depth[k] = S16(q, 18 + 2 * k);
+			}
+		}
+		t.turf = turf;
+	}
 	terra_tris(&t);
 }
 
@@ -194,6 +218,86 @@ static void map(const uint8_t *b)
 	terra_map(&t);
 }
 
+static void curve_shade(const uint8_t *b)
+{
+	TerraCurveShade t;
+
+	t.bits = (uint8_t *)P32(b, TC_BITS);
+	t.light = (const int8_t *)P32(b, TC_LIGHT);
+	t.bayer = (const uint8_t *)P32(b, TC_BAYER);
+	t.spans = (const uint8_t *)P32(b, TC_SPANS);
+	t.rb = be16(b + TC_RB);
+	t.count = be16(b + TC_COUNT);
+	t.noise = (const int8_t *)P32(b, TC_NOISE);
+	terra_curve_shade(&t);
+}
+
+static __inline__ void put16(uint8_t *b, uint16_t n)
+{
+	b[0] = (uint8_t)(n >> 8);
+	b[1] = (uint8_t)n;
+}
+
+static __inline__ void put32(uint8_t *b, uint32_t n)
+{
+	put16(b, (uint16_t)(n >> 16));
+	put16(b + 2, (uint16_t)n);
+}
+
+static __inline__ int16_t mesh_pixel(int32_t position, int32_t depth, int16_t f, int16_t centre)
+{
+	int32_t p = centre + terra_div(position * f, depth);
+	return (int16_t)(p < -MESH_TILE_COORD ? -MESH_TILE_COORD : p > MESH_TILE_COORD ? MESH_TILE_COORD : p);
+}
+
+static void mesh_project(uint8_t *b)
+{
+	const uint8_t *v = (const uint8_t *)P32(b, TMP_VERTICES);
+	uint8_t *p = (uint8_t *)P32(b, TMP_POINTS);
+	uint8_t *outside = (uint8_t *)P32(b, TMP_OUTSIDE);
+	const int8_t *light = (const int8_t *)P32(b, TMP_LIGHT);
+	int32_t side0 = (int32_t)be32(b + TMP_ORIGIN_SIDE);
+	int32_t depth0 = (int32_t)be32(b + TMP_ORIGIN_DEPTH);
+	int32_t height = (int32_t)be32(b + TMP_HEIGHT), low = INT32_MAX, high = INT32_MIN;
+	int16_t fx = S16(b, TMP_FX), fy = S16(b, TMP_FY), rx = S16(b, TMP_RX), ry = S16(b, TMP_RY);
+	int16_t cx = S16(b, TMP_CX), yh = S16(b, TMP_YH), f = S16(b, TMP_F);
+	int16_t w = S16(b, TMP_W), vh = S16(b, TMP_VH);
+	uint16_t n = be16(b + TMP_COUNT), i;
+	uint8_t projected = 0;
+
+	for (i = 0; i < n; i++, v += 6, p += MP_SIZE) {
+		int16_t u = S16(v, 0), v0 = S16(v, 2);
+		int32_t depth = (u * fx + v0 * fy - depth0) >> 10;
+		int32_t side = (u * rx + v0 * ry - side0) >> 10;
+		int32_t down = height - S16(v, 4);
+
+		if (depth < low) low = depth;
+		if (depth > high) high = depth;
+		put32(p + MP_SIDE, (uint32_t)side);
+		put32(p + MP_DOWN, (uint32_t)down);
+		put32(p + MP_DEPTH, (uint32_t)depth);
+		if (light) {
+			put16(p + MP_U, (uint16_t)u);
+			put16(p + MP_V, (uint16_t)v0);
+			p[MP_LIGHT] = (uint8_t)mesh_light_sample(light, b[TMP_LIGHT_W], b[TMP_LIGHT_H],
+			                                       b[TMP_LIGHT_SHIFT], u, v0);
+			p[MP_SAND] = MESH_SAND_UNLIT;
+		}
+		if (depth < MESH_TILE_NEAR) outside[i] = MESH_OUT_NEAR;
+		else {
+			int16_t x = mesh_pixel(side, depth, f, cx), y = mesh_pixel(down, depth, f, yh);
+			put16(p + MP_X, (uint16_t)x);
+			put16(p + MP_Y, (uint16_t)y);
+			outside[i] = (x < 0 ? MESH_OUT_LEFT : x >= w ? MESH_OUT_RIGHT : 0) |
+			             (y < 0 ? MESH_OUT_TOP : y >= vh ? MESH_OUT_BOTTOM : 0);
+			projected++;
+		}
+	}
+	put32(b + TMP_LOW, (uint32_t)low);
+	put32(b + TMP_HIGH, (uint32_t)high);
+	b[TMP_PROJECTED] = projected;
+}
+
 unsigned long TO16ARM_ENTRY terraarm_entry(const void *emul, void *user, void *call68k)
 {
 	const uint8_t *u = (const uint8_t *)user;
@@ -206,5 +310,7 @@ unsigned long TO16ARM_ENTRY terraarm_entry(const void *emul, void *user, void *c
 	else if (op == TERRA_TRIS) tris(b);
 	else if (op == TERRA_SKY) sky(b);
 	else if (op == TERRA_MAP) map(b);
+	else if (op == TERRA_CURVE) curve_shade(b);
+	else if (op == TERRA_MESH_PROJECT) mesh_project(b);
 	return 0;
 }

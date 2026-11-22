@@ -237,8 +237,8 @@ static void poses(const RenderView *v, const RenderArt *a, int scale, int depth,
 	CHECK(a->golfer->w > 0 && a->golfer->shown == POSE_ADDRESS && a->golfer->ball == 1);
 	first = malloc(n);
 	memcpy(first, s.bits, n);
-	for (k = POSE_BACK; k <= POSE_FINISH; k++) {
-		CHECK(render_pose(&s, a->golfer, (uint8_t)k, k != POSE_FINISH, &x, &y, &w, &h) == 0);
+	for (k = POSE_BACK; k < RENDER_POSES; k++) {
+		CHECK(render_pose(&s, a->golfer, (uint8_t)k, k <= POSE_TOP, &x, &y, &w, &h) == 0);
 		/* nothing outside the box it gives */
 		for (yy = 0; yy < s.h; yy++)
 			for (xx = 0; xx < s.w; xx++)
@@ -252,6 +252,44 @@ static void poses(const RenderView *v, const RenderArt *a, int scale, int depth,
 	CHECK(render_pose(&s, a->golfer, POSE_ADDRESS, 1, &x, &y, &w, &h) == 0);
 	CHECK(memcmp(first, s.bits, n) == 0);
 	CHECK(render_pose(&s, a->golfer, RENDER_POSES, 1, &x, &y, &w, &h) == -1);
+	if (name) {
+		Play p;
+		Surface bg;
+		uint32_t down = 100 + MTR_UP_MS * 3 / 4, strike = down + MTR_DOWN_MS * 3 / 4;
+
+		surface_d(&bg, scale, depth);
+		memcpy(bg.bits, s.bits, n);
+		play_init(&p, v->hole, v->grid, 1);
+		p.rv = *v;
+		p.aim = v->aim;
+		p.golf = a->golfer;
+		play_frame(&p, &s, &bg, 0);
+		CHECK(play_key(&p, KEY_SELECT, 100) & PL_ANIM);
+		play_frame(&p, &s, &bg, 100);
+		CHECK(p.golf->shown == POSE_ADDRESS);
+		play_shown(&p, 100);
+		play_frame(&p, &s, &bg, 100);
+		CHECK(p.golf->shown == POSE_BACK);
+		play_shown(&p, 100);
+		CHECK(play_key(&p, KEY_SELECT, down) & PL_ANIM);
+		play_frame(&p, &s, &bg, down);
+		CHECK(p.golf->shown == POSE_TOP);
+		snprintf(nm, sizeof nm, "%s-swing-top", name);
+		save(&s, nm);
+		CHECK(play_key(&p, KEY_SELECT, strike) & PL_ANIM);
+		CHECK(p.state == PS_FLY && p.snap == 0);
+		play_frame(&p, &s, &bg, strike + 180);
+		CHECK(p.golf->shown == POSE_IMPACT && !p.golf->ball && p.tf == strike + 180);
+		snprintf(nm, sizeof nm, "%s-impact", name);
+		save(&s, nm);
+		play_frame(&p, &s, &bg, strike + 260);
+		CHECK(p.golf->shown == POSE_IMPACT);
+		play_frame(&p, &s, &bg, strike + 390);
+		CHECK(p.golf->shown == POSE_FINISH && !p.golf->ball && p.tf == strike + 180);
+		snprintf(nm, sizeof nm, "%s-swing-finish", name);
+		save(&s, nm);
+		sfree(&bg);
+	}
 	free(first);
 	sfree(&s);
 }
@@ -550,9 +588,16 @@ int main(int argc, char **argv)
 		v.aim = toward(v.ball, pos[i].to_pin ? h.pins[0] : h.aim);
 		for (scale = 1; scale <= 2; scale++) {
 			Surface s, s2;
+			RenderCam cam;
+			fixed depth;
+			int16_t bx, by;
+
 			surface(&s, scale);
 			surface(&s2, scale);
 			CHECK(draw(&s, &v, &art[scale - 1], &st) == 0);
+			render_camera(&s, &v, &cam);
+			CHECK(render_point(&cam, v.ball.x, v.ball.y, hole_height(&h, v.ball.x, v.ball.y), &bx, &by, &depth));
+			CHECK(bx == art[scale - 1].golfer->bx && abs(by - art[scale - 1].golfer->by) <= 2);
 			printf("%s %d: %u steps, %u samples, %u spans, %u terrain px, %u sky px, %u objects, %u sprite px, %u divides\n",
 			       pos[i].name, s.w, st.steps, st.samples, st.spans, st.pixels, st.sky, st.objects,
 			       st.sprite_px, st.divides);
@@ -566,6 +611,39 @@ int main(int argc, char **argv)
 			CHECK(memcmp(s.bits, s2.bits, (size_t)s.rowBytes * s.h) == 0);
 			sfree(&s);
 			sfree(&s2);
+		}
+	}
+
+	/* Elbow Pond's front bunker, from rough, sand and the fringe. */
+	{
+		static const struct {
+			const char *name;
+			int16_t x, y;
+			uint8_t lie;
+		} edge[] = {
+			{ "rough-bunker", 110, 382, SURF_ROUGH },
+			{ "in-bunker", 120, 391, SURF_BUNKER },
+			{ "fringe-address", 140, 385, SURF_FRINGE }
+		};
+		uint8_t lie;
+
+		for (lie = 0; lie < sizeof edge / sizeof edge[0]; lie++) {
+			v.ball = vec2_make(Y(edge[lie].x), Y(edge[lie].y));
+			v.aim = toward(v.ball, h.pins[0]);
+			CHECK(surface_at(&g, v.ball.x, v.ball.y) == edge[lie].lie);
+			for (scale = 1; scale <= 2; scale++) {
+				Surface s;
+				surface(&s, scale);
+				CHECK(draw(&s, &v, &art[scale - 1], NULL) == 0);
+				save(&s, edge[lie].name);
+				if (lie == 0) {
+					v.green = 1;
+					CHECK(render_green(&s, &v) == 0);
+					save(&s, "rough-bunker-putt");
+					v.green = 0;
+				}
+				sfree(&s);
+			}
 		}
 	}
 
@@ -646,6 +724,8 @@ int main(int argc, char **argv)
 		blen = cut + 2;
 		bare = malloc(blen);
 		memcpy(bare, hrec, cut);
+		bare[0] = 0;
+		bare[1] = 1;
 		bare[cut] = bare[cut + 1] = 0;
 		CHECK(hole_parse(&hb, bare, blen) == HOLE_OK && hb.object_count == 0);
 		v.hole = &hb;
@@ -915,6 +995,15 @@ int main(int argc, char **argv)
 			play_map(&centre, &p);
 			play_status(&centre, &p, NULL);
 			save(&s, "dana-map");
+			{
+				fixed ypp = p.mg.ypp;
+				vec2 target = p.target;
+				CHECK(play_tap(&p, 50, 155, 12) == PL_MAP && p.map_near);
+				play_map(&centre, &p);
+				play_status(&centre, &p, NULL);
+				CHECK(p.mg.ypp < ypp && p.target.x == target.x && p.target.y == target.y);
+				save(&s, "dana-map-near");
+			}
 			for (y = 0; y < s.h; y++) {
 				memset(left.bits + y * s.rowBytes, 0x5a, DANA_RAIL_W / 2);
 				memset(right.bits + y * s.rowBytes, 0x5a, DANA_RAIL_W / 2);

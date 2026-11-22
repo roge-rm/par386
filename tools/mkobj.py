@@ -10,7 +10,8 @@ and previews to PREVIEW if given.
 
 Spr8: big-endian u16 width, height, anchor x, anchor y (the base, on the
 ground), point x, point y (the golfer's ball, else the anchor), then width *
-height palette indices row by row, 0 clear.
+height palette indices row by row, 0 clear. Golfer resources append a
+4-bit clothing shade per pixel, with the first pixel in the low nibble.
 Bkd8: u16 width, height, then each row packed with PackBits on its own. 0 is
 clear. A whole turn is 968 px on 160 wide screens and 1936 on 320; a
 narrower strip repeats (the plain tree line is half a turn). Across a
@@ -223,9 +224,9 @@ def spr8(idx, ax, ay, px=None, py=None):
     return struct.pack('>HHHHhh', w, h, ax, ay, px, py) + idx.astype(np.uint8).tobytes()
 
 
-# Golfer poses the game shows, as frames of tools/golfer: address, half way
-# back, the top of the swing and the finish. Spr8 2000 + 10 * pose + size.
-POSES = (1, 2, 4, 13)
+# Golfer frames in resource order. Spr8 2000 + 10 * pose + size for the male
+# golfer and 2100 + 10 * pose + size for the female golfer.
+POSES = (1, 2, 4, 13, 8)
 GOLFER_SIZES = (40, 80)
 
 
@@ -251,6 +252,59 @@ def golfer(frame, n, female=False):
     ys, xs = np.nonzero(a)
     y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
     return a[y0:y1, x0:x1].astype(np.uint8), fx - x0, feet - y0, bx - x0, by - y0
+
+
+# Cropped 80 px frame landmarks: cap bounds (right and bottom exclusive),
+# first row of the shirt, trousers and shoes.
+GOLFER_CLOTHES = (
+    {
+        1: ((23, 0, 31, 9), 7, 36, 67),
+        2: ((31, 22, 40, 32), 30, 60, 87),
+        4: ((34, 0, 44, 12), 8, 38, 63),
+        8: ((17, 0, 29, 10), 7, 37, 72),
+        13: ((10, 6, 24, 16), 9, 42, 79),
+    },
+    {
+        1: ((23, 0, 30, 12), 10, 35, 65),
+        2: ((30, 24, 40, 38), 34, 61, 90),
+        4: ((38, 0, 47, 14), 10, 36, 62),
+        8: ((17, 0, 26, 12), 10, 36, 66),
+        13: ((9, 4, 24, 14), 9, 37, 69),
+    },
+)
+
+
+def golfer_clothes(idx, frame, size, female):
+    """Keep identity separate from colour where grey pixels share a ramp."""
+    (x0, y0, x1, y1), collar, waist, shoe = GOLFER_CLOTHES[female][frame]
+    scale = 80 // size
+    y, x = np.indices(idx.shape) * scale
+    out = np.zeros(idx.shape, dtype=np.uint8)
+    light = PAL @ np.array([0.2126, 0.7152, 0.0722])
+
+    def on_ramp(name):
+        start, count = RAMPS[name]
+        return (idx >= start) & (idx < start + count)
+
+    def paint(where, name, tag, levels):
+        start, count = RAMPS[name]
+        lo, hi = light[start], light[start + count - 1]
+        shade = np.rint((light[idx[where]] - lo) * (levels - 1) / (hi - lo))
+        out[where] = tag + np.clip(shade, 0, levels - 1).astype(np.uint8)
+
+    cap_area = (x >= x0 - (scale - 1)) & (x < x1) & (y >= y0 - (scale - 1)) & (y < y1)
+    neutral = on_ramp('cap') | on_ramp('shoes') | on_ramp('grey')
+    paint(on_ramp('shirt') & (y >= collar - (scale - 1)) &
+          (y < waist + scale) & ~cap_area, 'shirt', 8, 4)
+    paint((y >= waist - scale) & (on_ramp('trousers') |
+          (on_ramp('grey') & (light[idx] < 105))), 'trousers', 4, 4)
+    paint(neutral & (y >= shoe - (scale - 1)) &
+          (on_ramp('cap') | on_ramp('shoes') | (light[idx] >= 105)), 'shoes', 1, 3)
+    paint(neutral & cap_area, 'cap', 12, 4)
+    flat = out.ravel()
+    if flat.size & 1:
+        flat = np.pad(flat, (0, 1))
+    return (flat[::2] | (flat[1::2] << 4)).tobytes()
 
 
 def backdrop(width, height, seed):
@@ -1143,7 +1197,8 @@ def main():
         for p, frame in enumerate(POSES):
             for k, n in enumerate(GOLFER_SIZES):
                 idx, fx, fy, bx, by = golfer(frame, n, model == 'female')
-                res.append(('Spr8', base + 10 * p + k, spr8(idx, fx, fy, bx, by)))
+                clothes = golfer_clothes(idx, frame, n, model == 'female')
+                res.append(('Spr8', base + 10 * p + k, spr8(idx, fx, fy, bx, by) + clothes))
                 if prev:
                     prefix = 'golfer' if model == 'male' else 'golfer-female'
                     preview(idx, prev / f'{prefix}-{p}-{n}.png', 4)

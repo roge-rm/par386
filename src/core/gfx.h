@@ -23,6 +23,7 @@ typedef struct {
 	uint8_t fullview;       /* the controls are outside this surface */
 	int16_t lw, lh;         /* size in logical units, set by gfx_init */
 	int16_t ox, oy;         /* where ui.c and pictures put logical 0,0, in pixels; 0 from gfx_init */
+	int16_t smooth_y1;     /* rows eligible for terrain smoothing on a 16-bit display, or 0 */
 	uint8_t pa[UIC_COUNT];  /* pixel value of each UI colour on even checker squares */
 	uint8_t pb[UIC_COUNT];  /* and on odd ones */
 } Surface;

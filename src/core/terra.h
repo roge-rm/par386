@@ -1,12 +1,12 @@
 /* The renderer's hot loops (render.c): a depth step of the terrain march,
- * a batch of the green view's triangles, a row of sky and the hole map's
- * rows. The same C is
+ * a batch of green triangles or putting spans, a row of sky and the hole
+ * map's rows. The same C is
  * built for the 68k (core segment), the host and as ARM code for OS 5
  * (src/arm/terraarm.c), so it has no tables or globals of its own: the
  * palette tables and every buffer come in the job.
  *
  * On the 68k each job is also the ARM code's argument, read there big
- * endian at the TR_*, TT_*, TS_* and TM_* byte offsets, so keep the layouts:
+ * endian at the TR_*, TT_*, TS_*, TM_* and TC_* byte offsets, so keep the layouts:
  * 4-byte fields, then 2-byte, then bytes. Fields after the last offset
  * are the host's only. */
 #ifndef TERRA_H
@@ -18,7 +18,7 @@
 
 /* What the ARM entry is asked to run, the first 2 bytes of its argument
  * block, a pointer to the job in the next 4. */
-enum { TERRA_ROW, TERRA_TRIS, TERRA_SKY, TERRA_MAP };
+enum { TERRA_ROW, TERRA_TRIS, TERRA_SKY, TERRA_MAP, TERRA_CURVE, TERRA_MESH_PROJECT };
 
 /* One depth step of the terrain march, every column (render.c terrain). */
 typedef struct TerraRow {
@@ -60,6 +60,14 @@ typedef struct TerraRow {
 	uint8_t sh;                 /* 141 */
 	uint8_t kss;                /* 142: height samples every 1 << kss columns */
 	uint8_t hm;                 /* 143: at 2 bits, the pattern rows that are haze, a bit each */
+	const uint8_t *material;    /* 144: projected materials, SURF_COUNT uses the grid, or null */
+	const uint8_t *cut;         /* 148: fraction from prior depth to cut, in 1/256, or 0 */
+	const uint8_t *prior_material; /* 152: projected materials at the prior depth */
+	uint8_t *prior_y;           /* 156: prior projected heights, big endian signed 1/16 pixels */
+	int32_t prior_sand_px;      /* 160: bunker setback at the prior depth, pixels */
+	const uint8_t *sand_relief; /* 164: sand depth per column, in 1/256 of the setback */
+	const int8_t *sand_light;   /* 168: sand slope light per column, in ramp units */
+	const uint8_t *prior_relief; /* 172: sand depth fractions at the prior strip */
 	uint32_t spans, pixels;     /* host only: work counts added to */
 } TerraRow;
 
@@ -115,13 +123,27 @@ typedef struct TerraRow {
 #define TR_SH 141
 #define TR_KSS 142
 #define TR_HM 143
-#define TR_SIZE 144
+#define TR_MATERIAL 144
+#define TR_CUT 148
+#define TR_PRIOR_MATERIAL 152
+#define TR_PRIOR_Y 156
+#define TR_PRIOR_SAND 160
+#define TR_SAND_RELIEF 164
+#define TR_SAND_LIGHT 168
+#define TR_PRIOR_RELIEF 172
+#define TR_SIZE 176
 
 /* A triangle of the green view: corners, ramp base and slope light. */
 typedef struct {
 	int16_t x[3], y[3];
 	int16_t base, lv;
 } TerraTri;
+
+typedef struct {
+	int16_t u[3], v[3];          /* world coordinates, sixteenths of a yard */
+	int16_t light[3];           /* slope light added to the triangle ramp level */
+	int16_t depth[3];           /* camera depth in yards for the fairway */
+} TerraTurf;
 
 #define TERRA_TRIS_MAX 8
 
@@ -137,6 +159,9 @@ typedef struct TerraTris {
 	int16_t n;                  /* 26: up to TERRA_TRIS_MAX */
 	uint8_t lg;                 /* 28 */
 	uint8_t pad;
+	const TerraTurf *turf;      /* 30: optional parallel vertex data for 8-bit turf */
+	const int8_t *noise;        /* 34: signed 16 x 16 grain tile */
+	int16_t mow_phase;          /* 38: fairway band origin in yards */
 } TerraTris;
 
 #define TT_BITS 0
@@ -149,7 +174,15 @@ typedef struct TerraTris {
 #define TT_VH 24
 #define TT_N 26
 #define TT_LG 28
-#define TT_SIZE 30
+#define TT_TURF 30
+#define TT_NOISE 34
+#define TT_MOW_PHASE 38
+#define TT_SIZE 40
+#define TT_TURF_SIZE 24
+
+/* The baked fairway shade encodes the 12-yard band's polarity. */
+#define MOW_MID 67                 /* matches tools/terrainmesh.py */
+#define MOW_CONTRAST 13
 
 /* Rows y0 to y1 of sky over the columns above the y-buffer, with the
  * backdrop strip unpacked a row at a time (render.c sky). */
@@ -234,25 +267,137 @@ typedef struct TerraMap {
 #define TM_LG 52
 #define TM_SIZE 54
 
+/* A batch of 8-bit putting spans. Each command has big-endian y, x0, x1,
+ * then one surface byte. Light samples are 16 pixels apart. */
+#define CURVE_LIGHT_SHIFT 4
+#define CURVE_LIGHT_STRIDE 21
+#define CURVE_SPAN_BYTES 7
+typedef struct TerraCurveShade {
+	uint8_t *bits;
+	const int8_t *light;
+	const uint8_t *bayer, *spans;
+	uint16_t rb, count;
+	const int8_t *noise;
+} TerraCurveShade;
+
+#define TC_BITS 0
+#define TC_LIGHT 4
+#define TC_BAYER 8
+#define TC_SPANS 12
+#define TC_RB 16
+#define TC_COUNT 18
+#define TC_NOISE 20
+#define TC_SIZE 24
+
+/* Full-shot mesh points, in the camera's Q8 coordinates and screen pixels. */
+#define MESH_TILE_NEAR 256L
+#define MESH_TILE_COORD 8191
+#define MESH_SAND_UNLIT 127
+
+enum { MESH_OUT_LEFT = 1, MESH_OUT_RIGHT = 2, MESH_OUT_TOP = 4,
+       MESH_OUT_BOTTOM = 8, MESH_OUT_NEAR = 16 };
+
+typedef struct {
+	int32_t side, down, depth;
+	int16_t x, y, u, v;
+	int8_t light, sand;
+} MeshPoint;
+
+typedef struct {
+	const uint8_t *vertices;    /* 0: big-endian x, y, height triplets */
+	MeshPoint *points;          /* 4 */
+	uint8_t *outside;           /* 8 */
+	const int8_t *light;         /* 12: optional slope grid */
+	int32_t origin_side, origin_depth, height; /* 16, 20, 24 */
+	int32_t low, high;           /* 28, 32: out, point depth range */
+	int16_t fx, fy, rx, ry;     /* 36, 38, 40, 42 */
+	int16_t cx, yh, f, w, vh;   /* 44, 46, 48, 50, 52 */
+	uint16_t count;             /* 54 */
+	uint8_t light_w, light_h, light_shift; /* 56, 57, 58 */
+	uint8_t projected;          /* 59: out, number on or beyond the near plane */
+} TerraMeshProject;
+
+#define TMP_VERTICES 0
+#define TMP_POINTS 4
+#define TMP_OUTSIDE 8
+#define TMP_LIGHT 12
+#define TMP_ORIGIN_SIDE 16
+#define TMP_ORIGIN_DEPTH 20
+#define TMP_HEIGHT 24
+#define TMP_LOW 28
+#define TMP_HIGH 32
+#define TMP_FX 36
+#define TMP_FY 38
+#define TMP_RX 40
+#define TMP_RY 42
+#define TMP_CX 44
+#define TMP_YH 46
+#define TMP_F 48
+#define TMP_W 50
+#define TMP_VH 52
+#define TMP_COUNT 54
+#define TMP_LIGHT_W 56
+#define TMP_LIGHT_H 57
+#define TMP_LIGHT_SHIFT 58
+#define TMP_PROJECTED 59
+
+#define MP_SIDE 0
+#define MP_DOWN 4
+#define MP_DEPTH 8
+#define MP_X 12
+#define MP_Y 14
+#define MP_U 16
+#define MP_V 18
+#define MP_LIGHT 20
+#define MP_SAND 21
+#define MP_SIZE 22
+
+static __inline__ int8_t mesh_light_sample(const int8_t *light, uint16_t w, uint16_t h,
+                                           uint8_t shift, int16_t x, int16_t y)
+{
+	int32_t gx = ((int32_t)x * 16) >> shift, gy = ((int32_t)y * 16) >> shift;
+	int32_t xmax = (int32_t)(w - 1) * 256 - 1, ymax = (int32_t)(h - 1) * 256 - 1;
+	uint16_t fx, fy;
+	int32_t a, b;
+	const int8_t *near, *far;
+
+	gx = gx < 0 ? 0 : gx > xmax ? xmax : gx;
+	gy = gy < 0 ? 0 : gy > ymax ? ymax : gy;
+	fx = (uint16_t)(gx & 255); fy = (uint16_t)(gy & 255);
+	near = light + MULU16(gy >> 8, w) + (gx >> 8);
+	far = near + w;
+	a = (int32_t)near[0] * 256 + MULS16(near[1] - near[0], fx);
+	b = (int32_t)far[0] * 256 + MULS16(far[1] - far[0], fx);
+	return (int8_t)((a + (MULS16(b - a, fy) >> 8) + 128) >> 8);
+}
+
 void SEC_CORE terra_row(TerraRow *t);
-void SEC_CORE terra_tris(const TerraTris *t);
+void SEC_CARD terra_tris(const TerraTris *t);
 void SEC_CORE terra_sky(TerraSky *t);
 void SEC_CORE terra_map(const TerraMap *t);
+void SEC_CORE terra_curve_shade(const TerraCurveShade *t);
 
 /* a / b rounded toward zero, by shifts: the ARM has no divide and the blob
  * can't call a library. b is not 0. */
 static __inline__ int32_t terra_div(int32_t a, int32_t b)
 {
-	uint32_t ua = a < 0 ? 0u - (uint32_t)a : (uint32_t)a, ub = b < 0 ? 0u - (uint32_t)b : (uint32_t)b, q = 0, r = 0;
-	int16_t i;
-	for (i = 31; i >= 0; i--) {
-		r = (r << 1) | ((ua >> i) & 1);
-		if (r >= ub) {
-			r -= ub;
-			q |= 1UL << i;
+	uint32_t ua = a < 0 ? 0u - (uint32_t)a : (uint32_t)a;
+	uint32_t ub = b < 0 ? 0u - (uint32_t)b : (uint32_t)b;
+	uint32_t bit = 1, q = 0;
+
+	if (ua < ub) return 0;
+	/* Start at the highest quotient bit that can fit. */
+	while (ub <= (ua >> 8)) { ub <<= 8; bit <<= 8; }
+	while (ub <= (ua >> 1)) { ub <<= 1; bit <<= 1; }
+	do {
+		if (ua >= ub) {
+			ua -= ub;
+			q |= bit;
 		}
-	}
-	return (a < 0) != (b < 0) ? -(int32_t)q : (int32_t)q;
+		ub >>= 1;
+		bit >>= 1;
+	} while (bit);
+	return (int32_t)((a < 0) != (b < 0) ? 0u - q : q);
 }
 
 #endif

@@ -52,7 +52,7 @@ PIN_CLEAR = 2.5           # yards a pin must stay from the sand
 # other tees are ahead (front, forward) and extras: a raised tee (yards),
 # extra length past the green, sheds, the windmill, kangaroos.
 HOLES = [
-    # 1: a gentle start, gums on both sides, bunkers biting the green's front corners
+    # 1: a gentle start, gums on both sides, bunkers by the green's front corners
     dict(name="Wattle Gate", par=4, W=220, line=[(110, 14), (104, 250), (116, 396)], rise=[8, 7, 9],
          fw=(38, 32), green=(17, 15, 0), gb=[(-130, 9, 3), (-45, 8, 3), (110, 6, 2)],
          fb=[(80, 236, 9), (146, 262, 8)], houses=[(40, 30)], roos=[(190, 210)]),
@@ -60,7 +60,7 @@ HOLES = [
     dict(name="Kookaburra", par=5, W=240, line=[(120, 14), (110, 270), (140, 440), (130, 540)], rise=[6, 8, 7, 9],
          fw=(38, 34, 30), green=(18, 16, 5), gb=[(-150, 10, 3), (-20, 8, 3), (120, 7, 2)],
          fb=[(152, 268, 10), (104, 434, 9), (166, 470, 7)]),
-    # 3: a par 3 to a green with sand cut in left and right
+    # 3: a par 3 to a green with sand close on the left and right
     dict(name="Red Gum", par=3, W=200, line=[(100, 14), (104, 184)], rise=[9, 10],
          fw=(0, 0), green=(16, 14, 0), gb=[(-160, 10, 4), (-20, 9, 4), (100, 6, 2)], raised=1),
     # 4: a short par 4, a big bunker right across the front of the green
@@ -95,7 +95,7 @@ HOLES = [
     dict(name="Heath Run", par=5, W=240, line=[(100, 14), (110, 270), (130, 440), (124, 540)], rise=[8, 7, 8, 7],
          fw=(38, 34, 30), green=(18, 16, 0), gb=[(-140, 10, 3), (-40, 8, 3), (100, 7, 2)],
          fb=[(80, 266, 9), (140, 282, 8), (112, 420, 11)]),
-    # 12: a long par 3 to a big green, sand cut deep into both front corners
+    # 12: a long par 3 to a big green with sand beside both front corners
     dict(name="Stringybark", par=3, W=210, line=[(110, 14), (114, 244)], rise=[9, 9],
          fw=(0, 0), green=(19, 17, 0), gb=[(-135, 11, 4), (-45, 11, 4), (160, 7, 2)],
          ahead=(25, 55), raised=1),
@@ -246,21 +246,21 @@ def make_hole(n, d, out):
 
     ponds = []
     for cx, cy, rx, ry, turn in d.get("ponds", []):
-        ponds.append((cx, cy, ellipse_pts(cx, cy, rx, ry, turn, 20, W, L, rng, 0.1)))
+        ponds.append((cx, cy, ellipse_pts(cx, cy, rx, ry, turn, 20, W, L, rng, 0.035)))
     for _, _, pts in ponds:
         shapes.append(("water", pts))
 
-    # the heath lip round each bunker, then the green over it, then the sand
+    # The heath lips and sand sit below the fringe and the putting surface.
     for k, (lb, _, near, ux, uy) in enumerate(bunkers):
         for pts in lobe_pts(lb, LIP, 100 * n + k, 0.12, (8, 5, 5)):
             shapes.append(("deep-rough", pts))
-    shapes.append(("fringe", ellipse_pts(gx, gy, grx + 3, gry + 3, gturn, 16, W, L)))
-    shapes.append(("green", ellipse_pts(gx, gy, grx, gry, gturn, 18, W, L)))
     sand = []
     for k, (lb, _, near, ux, uy) in enumerate(bunkers):
         for pts in lobe_pts(lb, 0, 100 * n + k, 0.2):
             shapes.append(("bunker", pts))
             sand.append((pts, near))
+    shapes.append(("fringe", ellipse_pts(gx, gy, grx + 3, gry + 3, gturn, 16, W, L)))
+    shapes.append(("green", ellipse_pts(gx, gy, grx, gry, gturn, 18, W, L)))
     # Pins toward the green's corners, moved in toward the middle where the
     # sand comes too close.
     def clear_of_sand(px, py):
@@ -455,6 +455,7 @@ def make_hole(n, d, out):
 def main():
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "courses/banksiaheath"
     out.mkdir(parents=True, exist_ok=True)
+    mesh_options = {6: " putting", 7: " putting", 13: " hole-13-visual.txt"}
     (out / "course.txt").write_text(
         "# Banksia Heath, an Australian sandbelt course among heath and gum trees.\n"
         "# Made by tools/mkbanksia.py.\n"
@@ -462,7 +463,13 @@ def main():
         "holes %d\n" % len(HOLES) +
         "scenery 4         # the sandbelt backdrop: low sandy hills in the heat haze\n"
         "wind 12           # a moderate breeze\n"
-        "green 13          # firm, fast sandbelt greens\n")
+        "green 13          # firm, fast sandbelt greens\n" +
+        "".join("terrain-mesh %d%s\n" % (n, mesh_options.get(n, ""))
+                for n in range(1, len(HOLES) + 1)))
+    source = ROOT / "courses/banksiaheath/hole-13-visual.txt"
+    override = out / source.name
+    if override.resolve() != source:
+        override.write_bytes(source.read_bytes())
     total, pars, tot_t = 0, 0, [0, 0]
     for n, d in enumerate(HOLES, 1):
         par, yards, others, nobj, nsh = make_hole(n, d, out)

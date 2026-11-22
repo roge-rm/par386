@@ -186,7 +186,7 @@ static uint8_t SEC_DANA left_draw(DanaPanels *d, Surface *s, const Play *p, uint
 	if (point < d->shown) base = 1;
 	if (base) {
 		face(s);
-		d->map_ready = render_target_map(&pane, &p->rv, &d->map, &target) == 0;
+		d->map_ready = render_target_map(&pane, &p->rv, &d->map, &target, 0) == 0;
 		d->marker_count = 0;
 		d->shown = -1;
 		d->hole = h;
@@ -281,16 +281,18 @@ static void SEC_DANA right_body(Surface *s, const Play *p, const char *action, u
 	}
 	play_num(t + append(t, "Shot "), p->stroke);
 	well(s, 2, t, 0);
+	if (p->state >= PS_RESULT) {
+		int16_t y = wrap(s, CLUB_Y, p->msg1);
+		wrap(s, y + 5, p->msg2);
+		if (p->state == PS_RESULT && p->mishit && p->shot.result == SHOT_OK &&
+		    !p->shot.lip && p->club != CLUB_PT) well(s, NAV_Y, "Mis-hit", 0);
+		if (action) well(s, ACT_Y, action, 1);
+		return;
+	}
 	n = append(t, p->club == CLUB_PT ? "Cup " : "Pin ");
 	n += play_num(t + n, distance);
 	append(t + n, p->club == CLUB_PT ? " ft" : "y");
 	well(s, PIN_Y, t, 0);
-	if (p->state >= PS_RESULT) {
-		int16_t y = wrap(s, 47, p->msg1);
-		wrap(s, y + 5, p->msg2);
-		if (action) well(s, ACT_Y, action, 1);
-		return;
-	}
 	n = append(t, ball_club_name(p->club));
 	if (p->club != CLUB_PT) {
 		n += append(t + n, " ");

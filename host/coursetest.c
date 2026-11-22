@@ -9,16 +9,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "hole.h"
+#include "render.h"
 
 static int fails, checks;
 
 #define CHECK(cond) do { checks++; if (!(cond)) { fails++; printf("FAIL %s:%d %s\n", __FILE__, __LINE__, #cond); } } while (0)
 
+#define MAX_PDB_RECORDS (3 * COURSE_MAX_HOLES + 2)
+
 typedef struct {
 	int count;
-	uint8_t *rec[40];
-	uint32_t len[40];
+	uint8_t *rec[MAX_PDB_RECORDS];
+	uint32_t len[MAX_PDB_RECORDS];
 	char name[33];
 } Pdb;
 
@@ -43,10 +45,18 @@ static int load_pdb(const char *path, Pdb *db)
 	memcpy(db->name, d, 32);
 	db->name[32] = 0;
 	db->count = d[76] << 8 | d[77];
-	if (db->count > 40) db->count = 40;
+	if (db->count < 1 || db->count > MAX_PDB_RECORDS || 78 + db->count * 8 > n) {
+		free(d);
+		return 0;
+	}
 	for (i = 0; i < db->count; i++) {
 		uint32_t a = be32(d + 78 + 8 * i);
 		uint32_t b = i + 1 < db->count ? be32(d + 78 + 8 * (i + 1)) : (uint32_t)n;
+		if (a < 78 + 8U * db->count || b < a || b > (uint32_t)n) {
+			while (i) free(db->rec[--i]);
+			free(d);
+			return 0;
+		}
 		db->len[i] = b - a;
 		db->rec[i] = malloc(b - a ? b - a : 1);
 		memcpy(db->rec[i], d + a, b - a);
@@ -278,6 +288,21 @@ static void header_versions(const uint8_t *rec, uint32_t len)
 }
 
 /* Checks every hole of any course. */
+static int terrain_record(const Pdb *db, const Course *c, Hole *h, int k)
+{
+	int dir = c->hole_count + 1;
+	uint16_t detailed, compact;
+
+	if (db->count <= dir) return 0;
+	detailed = course_terrain_record(db->rec[dir], db->len[dir], c->hole_count, db->count, k, 0);
+	compact = course_terrain_record(db->rec[dir], db->len[dir], c->hole_count, db->count, k, 1);
+	if (!detailed) return 0;
+	CHECK(terrain_mesh_parse(&h->terrain_mesh, h, db->rec[detailed], db->len[detailed]));
+	if (compact == detailed) return 1;
+	CHECK(compact && terrain_mesh_parse(&h->terrain_mesh, h, db->rec[compact], db->len[compact]));
+	return 2;
+}
+
 static int any_course(const char *pa, const char *pb)
 {
 	Pdb a, b;
@@ -286,7 +311,7 @@ static int any_course(const char *pa, const char *pb)
 	SurfaceGrid g;
 	static uint8_t row[SURF_ROW_MAX];
 	uint32_t total = 0;
-	int i, k;
+	int i, k, meshes = 0;
 
 	if (!load_pdb(pa, &a) || !load_pdb(pb, &b)) {
 		printf("FAIL can't read the PDBs\n");
@@ -296,11 +321,12 @@ static int any_course(const char *pa, const char *pb)
 	for (i = 0; i < a.count && i < b.count; i++)
 		CHECK(a.len[i] == b.len[i] && memcmp(a.rec[i], b.rec[i], a.len[i]) == 0);
 	CHECK(course_parse(&c, a.rec[0], a.len[0]) == HOLE_OK);
-	CHECK(a.count == c.hole_count + 1);
-	for (k = 1; k < a.count; k++) {
+	CHECK(a.count >= c.hole_count + 1);
+	for (k = 1; k <= c.hole_count && k < a.count; k++) {
 		total += a.len[k];
 		CHECK(a.len[k] < 16384);
 		if (hole_parse(&h, a.rec[k], a.len[k]) != HOLE_OK) { CHECK(!"hole parses"); continue; }
+		meshes += terrain_record(&a, &c, &h, k);
 		CHECK(h.number == k && h.par == c.par[k - 1] && h.tees[0].yards == c.yards[k - 1]);
 		surface_size(&h, &g);
 		rows_seen = rows_bad = 0;
@@ -313,11 +339,70 @@ static int any_course(const char *pa, const char *pb)
 			CHECK(surface_at(&g, h.tees[i].pos.x, h.tees[i].pos.y) == SURF_TEE);
 		CHECK(surface_at(&g, h.aim.x, h.aim.y) != SURF_OOB);
 	}
-	printf("%s: %d holes, %u bytes in hole records\n", a.name, a.count - 1, total);
+	CHECK(a.count == c.hole_count + 1 + (meshes ? 1 + meshes : 0));
+	printf("%s: %d holes, %u bytes in hole records, %d terrain meshes\n", a.name, c.hole_count, total, meshes);
 	for (i = 0; i < a.count; i++) free(a.rec[i]);
 	for (i = 0; i < b.count; i++) free(b.rec[i]);
 	printf("%d checks, %d failed\n", checks, fails);
 	return fails ? 1 : 0;
+}
+
+static void terrain_directory(void)
+{
+	const uint8_t legacy[] = {'M','S','H','1', 0,4, 0,5};
+	uint8_t pair[] = {'M','S','H','2', 0,4, 0,5, 0,6, 0,0};
+
+	CHECK(course_terrain_record(legacy, sizeof legacy, 2, 6, 2, 1) == 5);
+	CHECK(course_terrain_record(pair, sizeof pair, 2, 7, 1, 0) == 4);
+	CHECK(course_terrain_record(pair, sizeof pair, 2, 7, 1, 1) == 5);
+	CHECK(course_terrain_record(pair, sizeof pair, 2, 7, 2, 1) == 6);
+	CHECK(!course_terrain_record(pair, sizeof pair - 1, 2, 7, 1, 1));
+	CHECK(!course_terrain_record(pair, sizeof pair, 2, 8, 1, 0));
+	pair[7] = 0;
+	pair[9] = 5;
+	CHECK(!course_terrain_record(pair, sizeof pair, 2, 6, 1, 0));
+	pair[5] = 0;
+	pair[7] = 4;
+	CHECK(!course_terrain_record(pair, sizeof pair, 2, 6, 1, 1));
+	pair[5] = 5;
+	pair[9] = 6;
+	CHECK(!course_terrain_record(pair, sizeof pair, 2, 7, 1, 0));
+}
+
+static void mesh_record(const uint8_t *rec, uint32_t len)
+{
+	static const uint8_t mesh[] = {
+		0, 0, 0, 0, 0, 2, 0, 2,
+		0, 0, 0, 4, 0, 6,
+		0, 16 | SURF_ROUGH, 0, 32 | SURF_GREEN, 0, 32 | SURF_BUNKER
+	};
+	Hole h;
+	uint8_t *b, *tail;
+
+	if (hole_parse(&h, rec, len) != HOLE_OK) return;
+	if (h.green_mesh) len = (uint32_t)(h.green_mesh - rec);
+	if (h.putting_curves) len = (uint32_t)(h.putting_curves - rec);
+	b = malloc(len + sizeof mesh);
+	memcpy(b, rec, len);
+	tail = b + len;
+	memcpy(tail, mesh, sizeof mesh);
+	b[1] = 1;
+	CHECK(hole_parse(&h, b, len) == HOLE_OK && !h.green_mesh);
+	b[1] = 2;
+	CHECK(hole_parse(&h, b, len + sizeof mesh) == HOLE_OK && h.green_mesh == tail);
+	CHECK(hole_parse(&h, b, len + sizeof mesh - 1) == HOLE_ERR_SHORT);
+	tail[0] = 0xff;
+	CHECK(hole_parse(&h, b, len + sizeof mesh) == HOLE_ERR_VALUE);
+	tail[0] = mesh[0];
+	tail[11] = 3;
+	CHECK(hole_parse(&h, b, len + sizeof mesh) == HOLE_ERR_VALUE);
+	tail[11] = mesh[11];
+	tail[17] = 16 | SURF_GREEN;
+	CHECK(hole_parse(&h, b, len + sizeof mesh) == HOLE_ERR_VALUE);
+	tail[17] = mesh[17];
+	tail[19] = 32 | SURF_COUNT;
+	CHECK(hole_parse(&h, b, len + sizeof mesh) == HOLE_ERR_VALUE);
+	free(b);
 }
 
 int main(int argc, char **argv)
@@ -342,7 +427,8 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	CHECK(strcmp(a.name, "Par386 Test") == 0);
-	CHECK(a.count == 4);
+	CHECK(a.count == 4 || a.count == 6 || a.count == 7);
+	terrain_directory();
 
 	/* Round trip through the dump. */
 	CHECK(a.count == b.count);
@@ -359,6 +445,7 @@ int main(int argc, char **argv)
 
 	/* Hole fields. */
 	CHECK(hole_parse(&h, a.rec[1], a.len[1]) == HOLE_OK);
+	if (a.count > 4) CHECK(terrain_record(&a, &c, &h, 1) == a.count - 5);
 	CHECK(h.number == 1 && h.par == 4);
 	CHECK(h.width == 200 && h.length == 440);
 	CHECK(h.hm_w == 32 && h.hm_h == 64 && h.hm_shift == 3);
@@ -424,7 +511,7 @@ int main(int argc, char **argv)
 	/* Bad records. */
 	bad = malloc(a.len[1]);
 	memcpy(bad, a.rec[1], a.len[1]);
-	bad[1] = 2;    /* version */
+	bad[1] = HOLE_VERSION + 1;
 	CHECK(hole_parse(&h, bad, a.len[1]) == HOLE_ERR_VERSION);
 	memcpy(bad, a.rec[1], a.len[1]);
 	bad[3] = 9;    /* par */
@@ -466,6 +553,7 @@ int main(int argc, char **argv)
 	fuzz(a.rec[0], a.len[0], 0);
 	header_versions(a.rec[0], a.len[0]);
 	fuzz(a.rec[1], a.len[1], 1);
+	mesh_record(a.rec[1], a.len[1]);
 
 	for (i = 0; i < a.count; i++) free(a.rec[i]);
 	for (i = 0; i < b.count; i++) free(b.rec[i]);

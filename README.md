@@ -7,18 +7,22 @@ Play nine courses, take turns with up to four players on one Palm, or play again
 Enjoy,<br>
 Dan
 
-<p align="center"><img src="doc/images/gameplay.gif" width="320" alt="Par 386 on a Tungsten TX, from the title and clubhouse to a three-click drive, its overhead flight and a practice putt" /></p>
+<p align="center"><img src="doc/images/gameplay.gif" width="320" alt="Par 386 on a Tungsten TX, from the title to a drive at Banksia Heath, the ball flight on the map and a practice putt at Bracken Mere" /></p>
 
 ## Screenshots
 
 <table>
   <tr>
     <td align="center"><img src="doc/images/tx-title.png" width="200" alt="The Par 386 title over a golfer and a fairway" /><br>Title</td>
-    <td align="center"><img src="doc/images/tx-tee.png" width="200" alt="A golfer at the tee with the fairway and aim marker ahead" /><br>On the tee</td>
+    <td align="center"><img src="doc/images/tx-tee.png" width="200" alt="A golfer at the tee with mown fairway bands and the flag in the distance" /><br>Banksia Heath tee</td>
   </tr>
   <tr>
     <td align="center"><img src="doc/images/tx-flight.png" width="200" alt="An overhead map with a ball trail and a live carry distance" /><br>Ball flight</td>
-    <td align="center"><img src="doc/images/tx-green.png" width="200" alt="A low view of the practice green with an aim line toward the cup" /><br>Practice green</td>
+    <td align="center"><img src="doc/images/tx-green.png" width="200" alt="The putting green at The Warren with slope guides and an aim line toward the cup" /><br>Bracken Mere practice green</td>
+  </tr>
+  <tr>
+    <td align="center"><img src="doc/images/tx-character.png" width="200" alt="Character editor with outfit colour controls and a preview of a golfer in a gold shirt" /><br>Character editor on the TX</td>
+    <td align="center"><img src="doc/images/iiix-green.png" width="200" alt="The practice green with slope guides on a 160 by 160 Palm IIIx screen" /><br>Putting on the IIIx</td>
   </tr>
 </table>
 
@@ -27,15 +31,17 @@ Dan
     <td align="center"><img src="doc/images/dana-tee.png" width="560" alt="The Dana tee view with a hole map on the left and shot controls on the right" /><br>AlphaSmart Dana tee view</td>
   </tr>
   <tr>
-    <td align="center"><img src="doc/images/dana-courses.png" width="560" alt="The Dana course list beside the Auld Kirk preview" /><br>AlphaSmart Dana course picker</td>
+    <td align="center"><img src="doc/images/dana-courses.png" width="560" alt="The Dana course list beside the Banksia Heath preview" /><br>AlphaSmart Dana course picker</td>
   </tr>
 </table>
 
-Captured on a Tungsten TX and an AlphaSmart Dana in the [Frond emulator](https://github.com/roge-rm/frond).
+Captured from the current source build on an emulated Tungsten TX, Palm IIIx and AlphaSmart Dana. [Frond emulator](https://github.com/roge-rm/frond)
 
 ## Devices
 
 One build runs on Palm OS 3.1 and up, from a Palm IIIx in greys to a Tungsten TX in colour. The title and menus fill the available display on supported tall and landscape colour screens. Older Palms play tones. Palm OS 5 devices with sound streams also play sampled strikes, landings, splashes and cup sounds. Settings offers On, Effects and Off.
+
+On updated holes, the game uses detailed terrain on ARM Palms such as the TX and compact terrain on older 68k models such as the IIIx. Both show the curved greens, fringes and bunkers where the course includes them. The TX uses native ARM code to speed up full-shot views.
 
 On the AlphaSmart Dana, the 560×160 layout shows the course between a small hole map and the shot controls. Tap the small map to aim, or open **Map** for a larger view from tee to green. The ball trail stays visible in the small map during the shot. The course picker shows the preview beside the list, round setup puts players beside the tee and hole options, and an 18-hole scorecard shows both nines together.
 
@@ -45,17 +51,19 @@ Frond checks have covered the IIIx, TX, Zire 72, Sony Clié models and the Dana.
 
 ## Install
 
-Download `Par386-0.9.0.zip` from the [0.9.0 release](https://github.com/roge-rm/par386/releases/tag/v0.9.0). Install `Par386.prc` and at least one course file (`Par386-*.pdb`) with HotSync. If you already have the courses, you can update with the standalone PRC. You can also copy course files to an SD card in `/PALM/Programs/Par386/`, `/PALM/Launcher/` or the root of the card. A card course is copied into Palm memory while you play it, so leave about 70 KB free.
+Download the ZIP from the [latest release](https://github.com/roge-rm/par386/releases/latest). Install `Par386.prc` and at least one course file (`Par386-*.pdb`) with HotSync. Update the course files along with the game to get the newest course visuals.
+
+You can also copy course files to an SD card in `/PALM/Programs/Par386/`, `/PALM/Launcher/` or the root of the card. A card course is copied into Palm memory while you play it, so leave room for the whole course.
 
 The nine courses are Auld Kirk, Banksia Heath, Bracken Mere, Carrig Head, Cascade Springs, Crocodile Bend, Falesia Grove, Saffron Dunes and Sakura Bay. You can have up to 12 courses in the picker.
 
 ## Playing
 
-Pick a course under **Courses**, then choose **Play a round**. Pick a game, set the player slots and choose **Tee off**. Par 386 picks a club for the distance. Tap the club to change it, tap the view to aim, or open **Map** and tap a target to check its yardage. **Book** shows approximate distances to hazards along that line.
+Pick a course under **Courses**, then choose **Play a round**. Pick a game, set the player slots and choose **Tee off**. Par 386 picks a club for the distance. Tap the club to change it, tap the view to aim, or open **Map** and tap a target to check its yardage. The on-course aim marker fades after you aim. **Book** shows approximate distances to hazards along that line.
 
 Tap **Swing** to start the meter. Tap again to set power, then tap as the marker comes back to the snap line. An early or late snap sends the shot off line. On the green, tap **Putt** to start and tap once more to set power. The cup mark on the meter allows for green speed and slope.
 
-Leaving the round saves it. Choose **Continue round** in the clubhouse to carry on. Under **Player**, you can set the first human player’s name (up to eight characters), golfer, skin colour and handedness.
+Leaving the round saves it. Choose **Continue round** in the clubhouse to carry on. Under **Player**, set a name of up to eight characters for the first human player. Tap **Aa** to switch between uppercase and lowercase. Open **Edit Character** to change their gender, handedness, skin colour and the colours of their shoes, pants, shirt and hat. The preview updates as you make changes.
 
 ## Games and practice
 
@@ -126,7 +134,7 @@ Pen, on any device:
 | Swing or Putt | Start the meter. Tap again for power and, on a swing, snap |
 | The club on the panel | Open the club picker. On the green, only the putter is available |
 | Shape on the panel | Next shot shape |
-| Map on the panel | Tap a spot to aim there and see its yardage. Back returns to the scene with the target marked |
+| Map on the panel | Tap a spot to aim there and see its yardage. Tap Near for a closer view and Hole to see the whole hole. Back returns to the scene with the target marked |
 | Book on the map's panel | Approximate near and far yardages from the ball to hazards along your aim. A `+` means no far edge is shown |
 | Card on the map's panel | Scorecard |
 

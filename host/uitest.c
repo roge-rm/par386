@@ -147,6 +147,10 @@ static void screens(uint8_t scale)
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_PLAYER_NAME);
 	draw(&s, &f);
 	save(&s, "player-name");
+	CHECK(front_key(&f, KEY_BACK) == FR_REDRAW && f.screen == SCR_PLAYER);
+	CHECK(front_tap(&f, 80, 54) == FR_REDRAW && f.screen == SCR_CHARACTER);
+	draw(&s, &f);
+	save(&s, "character-editor");
 	sfree(&s);
 }
 
@@ -202,6 +206,16 @@ static void dana_front(void)
 	draw(&s, &f);
 	save(&s, "dana-players");
 	CHECK(front_dana_tap(&f, 400, 58) == (FR_PLAY | FR_REDRAW));
+	front_clubhouse(&f, 0);
+	f.menu.sel = MAIN_PLAYER;
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_PLAYER);
+	CHECK(front_dana_tap(&f, 280, 54) == FR_REDRAW && f.screen == SCR_CHARACTER);
+	CHECK(front_dana_tap(&f, 270, 73) == (FR_REDRAW | FR_CHARACTER | FR_CHARACTER_POSE) &&
+	      f.character.shoes == OUTFIT_NAVY);
+	draw(&s, &f);
+	save(&s, "dana-character-editor");
+	CHECK(front_dana_tap(&f, 313, 137) == FR_REDRAW && f.screen == SCR_PLAYER);
+	CHECK(f.player.shoes == OUTFIT_DEFAULT);
 	sfree(&s);
 }
 
@@ -296,6 +310,7 @@ static void player_input(void)
 {
 	Front f;
 	int i;
+	const int change = FR_REDRAW | FR_CHARACTER | FR_CHARACTER_POSE;
 
 	front_init(&f);
 	CHECK(strcmp(f.player.name, PLAYER_DEFAULT_NAME) == 0);
@@ -305,28 +320,134 @@ static void player_input(void)
 	CHECK(front_action(&f, MAIN_PLAYER + 1) == MAIN_PLAYER);
 	f.menu.sel = MAIN_PLAYER + 1;
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_PLAYER);
-	CHECK(front_tap(&f, 30, 54) == (FR_REDRAW | FR_PLAYER) && f.player.golfer == GOLFER_FEMALE);
-	CHECK(front_tap(&f, 30, 72) == (FR_REDRAW | FR_PLAYER) && f.player.skin == SKIN_MEDIUM);
-	CHECK(front_key(&f, KEY_LEFT) == (FR_REDRAW | FR_PLAYER) && f.player.skin == SKIN_LIGHT);
-	CHECK(front_key(&f, KEY_LEFT) == (FR_REDRAW | FR_PLAYER) && f.player.skin == SKIN_DARK);
-	CHECK(front_tap(&f, 30, 90) == (FR_REDRAW | FR_PLAYER) && f.player.left);
+	CHECK(f.menu.count == 3);
+	CHECK(front_tap(&f, 30, 54) == FR_REDRAW && f.screen == SCR_CHARACTER);
+	CHECK(front_tap(&f, 70, 31) == change && f.character.golfer == GOLFER_FEMALE);
+	CHECK(front_key(&f, KEY_DOWN) == (FR_REDRAW | FR_CHARACTER));
+	CHECK(front_key(&f, KEY_SELECT) == change && f.character.left);
+	CHECK(front_tap(&f, 70, 59) == change && f.character.skin == SKIN_MEDIUM);
+	CHECK(front_key(&f, KEY_LEFT) == change && f.character.skin == SKIN_LIGHT);
+	CHECK(front_key(&f, KEY_LEFT) == change && f.character.skin == SKIN_DARK);
+	CHECK(front_tap(&f, 70, 73) == change && f.character.shoes == OUTFIT_NAVY);
+	CHECK(front_tap(&f, 70, 87) == change && f.character.pants == OUTFIT_NAVY);
+	CHECK(front_key(&f, KEY_RIGHT) == change && f.character.pants == OUTFIT_GREEN);
+	CHECK(front_tap(&f, 70, 101) == change && f.character.shirt == OUTFIT_NAVY);
+	CHECK(front_tap(&f, 70, 115) == change && f.character.hat == OUTFIT_NAVY);
+	CHECK(front_tap(&f, 133, 73) == 0);
+	CHECK(f.player.golfer == GOLFER_MALE && f.player.skin == SKIN_LIGHT && !f.player.left);
+	CHECK(f.player.shoes == OUTFIT_DEFAULT && f.player.pants == OUTFIT_DEFAULT &&
+	      f.player.shirt == OUTFIT_DEFAULT && f.player.hat == OUTFIT_DEFAULT);
+	CHECK(front_tap(&f, 47, 137) == (FR_REDRAW | FR_PLAYER) && f.screen == SCR_PLAYER);
+	CHECK(f.player.golfer == GOLFER_FEMALE && f.player.skin == SKIN_DARK && f.player.left);
+	CHECK(f.player.shoes == OUTFIT_NAVY && f.player.pants == OUTFIT_GREEN &&
+	      f.player.shirt == OUTFIT_NAVY && f.player.hat == OUTFIT_NAVY);
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_CHARACTER);
+	CHECK(front_key(&f, KEY_SELECT) == change && f.character.golfer == GOLFER_MALE);
+	CHECK(front_key(&f, KEY_BACK) == FR_REDRAW && f.screen == SCR_PLAYER && f.player.golfer == GOLFER_FEMALE);
 	CHECK(front_tap(&f, 30, 36) == FR_REDRAW && f.screen == SCR_PLAYER_NAME);
-	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.player_name[0] == 0);
-	CHECK(front_tap(&f, 24, 51) == FR_REDRAW && strcmp(f.player_name, "A") == 0);
-	CHECK(front_key(&f, KEY_DOWN) == FR_REDRAW);
-	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && strcmp(f.player_name, "AG") == 0);
-	CHECK(front_tap(&f, 80, 125) == FR_REDRAW && strcmp(f.player_name, "A") == 0);
-	CHECK(front_tap(&f, 30, 139) == (FR_REDRAW | FR_PLAYER) && strcmp(f.player.name, "A") == 0);
+	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_NAME) && f.player_name[0] == 0);
+	CHECK(front_tap(&f, 24, 51) == (FR_REDRAW | FR_NAME) && strcmp(f.player_name, "A") == 0);
+	CHECK(front_key(&f, KEY_DOWN) == (FR_REDRAW | FR_NAME));
+	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_NAME) && strcmp(f.player_name, "AG") == 0);
+	CHECK(front_tap(&f, 65, 125) == (FR_REDRAW | FR_NAME) && strcmp(f.player_name, "A") == 0);
+	CHECK(front_tap(&f, 133, 125) == (FR_REDRAW | FR_NAME));
+	CHECK(front_tap(&f, 46, 51) == (FR_REDRAW | FR_NAME) && strcmp(f.player_name, "Ab") == 0);
+	CHECK(front_tap(&f, 133, 125) == (FR_REDRAW | FR_NAME));
+	CHECK(front_tap(&f, 68, 51) == (FR_REDRAW | FR_NAME) && strcmp(f.player_name, "AbC") == 0);
+	CHECK(front_tap(&f, 30, 139) == (FR_REDRAW | FR_PLAYER) && strcmp(f.player.name, "AbC") == 0);
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_PLAYER_NAME);
-	for (i = 0; i < 10; i++) CHECK(front_text(&f, 'a' + i) == FR_REDRAW);
-	CHECK(strcmp(f.player_name, "Aabcdefg") == 0);
+	for (i = 0; i < 10; i++) CHECK(front_text(&f, 'a' + i) == (FR_REDRAW | FR_NAME));
+	CHECK(strcmp(f.player_name, "AbCabcde") == 0);
 	CHECK(front_text(&f, '|') == 0);
-	CHECK(front_text(&f, 27) == FR_REDRAW && strcmp(f.player.name, "A") == 0);
+	CHECK(front_text(&f, 27) == FR_REDRAW && strcmp(f.player.name, "AbC") == 0);
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW);
-	CHECK(front_text(&f, '\b') == FR_REDRAW);
-	CHECK(front_text(&f, ' ') == FR_REDRAW);
+	CHECK(front_text(&f, '\b') == (FR_REDRAW | FR_NAME) && strcmp(f.player_name, "Ab") == 0);
+	CHECK(front_tap(&f, 103, 125) == (FR_REDRAW | FR_NAME));
+	CHECK(front_text(&f, ' ') == (FR_REDRAW | FR_NAME));
 	CHECK(front_text(&f, '\r') == (FR_REDRAW | FR_PLAYER) && strcmp(f.player.name, PLAYER_DEFAULT_NAME) == 0);
 	CHECK(front_key(&f, KEY_BACK) == FR_REDRAW && f.screen == SCR_MENU && f.menu.sel == MAIN_PLAYER + 1);
+}
+
+static void name_updates(int w, int h, uint8_t scale, uint8_t depth)
+{
+	Surface s, shown, full;
+	Front f;
+	uint8_t wide = w == 560;
+	int step;
+
+	surface_wh(&s, w, h, scale, depth);
+	surface_wh(&shown, w, h, scale, depth);
+	surface_wh(&full, w, h, scale, depth);
+	gfx_centre(&s, 1);
+	gfx_centre(&full, 1);
+	front_init(&f);
+	front_clubhouse(&f, 0);
+	f.menu.sel = MAIN_PLAYER;
+	front_key(&f, KEY_SELECT);
+	front_key(&f, KEY_SELECT);
+	front_draw(&f, &s);
+	gfx_copy(&shown, &s, 0, 0, w, h);
+
+	for (step = 0; step < 4; step++) {
+		static const int16_t x[] = { 103, 133, 24, 24 };
+		static const int16_t y[] = { 125, 125, 51, 51 };
+		static const int16_t wide_x[] = { 330, 400, 150, 150 };
+		static const uint8_t counts[] = { 1, 2, 3, 1 };
+		uint8_t old_key = f.name_key, old_lower = f.name_lower, i, n;
+		URect dirty[3];
+		int r = wide ? front_dana_tap(&f, wide_x[step], y[step]) : front_tap(&f, x[step], y[step]);
+
+		CHECK(r == (FR_REDRAW | FR_NAME));
+		n = front_name_update(&f, &s, old_key, old_lower, dirty);
+		CHECK(n == counts[step]);
+		for (i = 0; i < n; i++)
+			gfx_copy(&shown, &s, dirty[i].x, dirty[i].y, dirty[i].w, dirty[i].h);
+		front_draw(&f, &full);
+		CHECK(memcmp(shown.bits, full.bits, (size_t)s.rowBytes * s.h) == 0);
+	}
+	CHECK(strcmp(f.player_name, "aa") == 0);
+	sfree(&s);
+	sfree(&shown);
+	sfree(&full);
+}
+
+/* The updates must copy enough for the display to match a full redraw. */
+static void character_updates(int w, int h, uint8_t scale, uint8_t depth)
+{
+	static const uint8_t counts[] = { 2, 2, 3 };
+	Surface s, shown, full;
+	Front f;
+	uint8_t step;
+
+	surface_wh(&s, w, h, scale, depth);
+	surface_wh(&shown, w, h, scale, depth);
+	surface_wh(&full, w, h, scale, depth);
+	gfx_centre(&s, 1);
+	gfx_centre(&full, 1);
+	front_init(&f);
+	front_clubhouse(&f, 0);
+	f.menu.sel = MAIN_PLAYER;
+	front_key(&f, KEY_SELECT);
+	front_tap(&f, 30, 54);
+	front_draw(&f, &s);
+	gfx_copy(&shown, &s, 0, 0, w, h);
+	for (step = 0; step < sizeof counts; step++) {
+		uint8_t old = f.character_row, n, i;
+		URect dirty[3];
+		int r = step == 0 ? front_key(&f, KEY_DOWN) : step == 1 ? front_key(&f, KEY_RIGHT) :
+		                    front_tap(&f, 70, 115);
+
+		CHECK(r == (FR_REDRAW | FR_CHARACTER | (step ? FR_CHARACTER_POSE : 0)));
+		n = front_character_update(&f, &s, old, (r & FR_CHARACTER_POSE) != 0, dirty);
+		CHECK(n == counts[step]);
+		for (i = 0; i < n; i++)
+			gfx_copy(&shown, &s, dirty[i].x, dirty[i].y, dirty[i].w, dirty[i].h);
+		front_draw(&f, &full);
+		CHECK(memcmp(shown.bits, full.bits, (size_t)s.rowBytes * s.h) == 0);
+	}
+	sfree(&s);
+	sfree(&shown);
+	sfree(&full);
 }
 
 /* The courses screen: lists the installed courses and Back, picks one, and
@@ -586,6 +707,12 @@ int main(int argc, char **argv)
 	pic_double(8);
 	input();
 	player_input();
+	name_updates(160, 160, 1, 2);
+	name_updates(320, 480, 2, 8);
+	name_updates(560, 160, 1, 4);
+	character_updates(160, 160, 1, 2);
+	character_updates(320, 448, 2, 8);
+	character_updates(560, 160, 1, 4);
 	courses(1);
 	courses(2);
 	bad_bands();

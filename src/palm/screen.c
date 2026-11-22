@@ -545,6 +545,7 @@ Int16 ScreenResize(void)
 
 void ScreenGame(Boolean playing)
 {
+	if (!playing) gS.smooth_y1 = 0;
 	if (!playing && gLCD.bits) {
 		ScreenDropKept();
 		gS = gLCD;
@@ -639,7 +640,17 @@ static void Blit(const URect *d)
 void ScreenShow(const URect *d)
 {
 	Int16 x0, y0, x1, y1;
+	URect edge;
 
+	if (d->w <= 0 || d->h <= 0) return;
+	if (g16 && gS.smooth_y1 && d->y < gS.smooth_y1) {
+		/* An overlay pixel can change the blend of its neighbours. */
+		edge.x = d->x - 1;
+		edge.y = d->y - 1;
+		edge.w = d->w + 2;
+		edge.h = d->h + 2;
+		d = &edge;
+	}
 	if (!gOff || !gS.bits || !Clip(d, &x0, &y0, &x1, &y1)) return;
 	if (g16) gfx_to16(&gS, gOffBits, gOffRb, x0, y0, x1 - x0, y1 - y0, gLE);
 	Blit(d);
@@ -684,6 +695,7 @@ Boolean ScreenKeep(void)
 		gHaveBg = true;
 	}
 	gfx_copy(&gBgS, &gS, 0, 0, gS.w, gS.h);
+	gBgS.smooth_y1 = gS.smooth_y1;
 	return true;
 }
 
@@ -699,7 +711,10 @@ void ScreenRestore(const URect *d)
 
 void ScreenRestoreAll(void)
 {
-	if (gHaveBg) gfx_copy(&gS, &gBgS, 0, 0, gS.w, gS.h);
+	if (gHaveBg) {
+		gfx_copy(&gS, &gBgS, 0, 0, gS.w, gS.h);
+		gS.smooth_y1 = gBgS.smooth_y1;
+	}
 }
 
 #ifdef DEBUG
@@ -886,6 +901,7 @@ UInt32 ScreenDissolveTo(Surface *m, Int16 y1, UInt16 ms, ScreenStep step)
 		k++;
 	}
 	gfx_copy(&gS, m, 0, 0, gS.w, gS.h);
+	gS.smooth_y1 = m->smooth_y1;
 	return worst;
 }
 

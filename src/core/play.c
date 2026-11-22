@@ -17,6 +17,10 @@ enum { HEARD_LAND = 1, HEARD_LIP = 2 };
 #define AIM_STEP  182   /* a degree */
 #define MAP_AIM_STEP 910  /* five degrees */
 #define AIM_EDGE  56    /* the marker this far off the centre draws the scene again */
+#define AIM_MARK_FULL 4
+#define AIM_MARK_NEW  5
+#define AIM_HOLD_MS   1120
+#define AIM_FADE_MS   160 /* per fade step */
 #define ROW_A     (STRIP_Y + 2)     /* the panel's two rows of boxes */
 #define ROW_B     (STRIP_Y + 14)
 #define ROW_H     11
@@ -55,6 +59,10 @@ enum { HEARD_LAND = 1, HEARD_LIP = 2 };
 #define MAP_BACK_X (MAP_CARD_X - 1 - CARD_W)
 #define BOOK_X     2
 #define BOOK_W     BOX_W(4)
+#define ZOOM_W     BOX_W(4)
+#define ZOOM_STRIP (MAP_BACK_X > BOOK_X + BOOK_W + 1 + ZOOM_W)
+#define ZOOM_X     (ZOOM_STRIP ? BOOK_X + BOOK_W + 1 : 2)
+#define ZOOM_Y     (ZOOM_STRIP ? ROW_B : STRIP_Y - ROW_H - 2)
 #define BOOK_LINES 3
 #define BOOK_TEXT  (BOOK_LINES * 16 + 1)
 #define S16       (MTR_SNAP * 16)
@@ -62,7 +70,7 @@ enum { HEARD_LAND = 1, HEARD_LIP = 2 };
 
 static void SEC_UI launch(Play *p);
 static void SEC_UI stopped(const Play *p);
-static void SEC_UI result(Play *p);
+static void SEC_MENU result(Play *p);
 static int SEC_MENU book_tap(Play *p, int16_t x, int16_t y);
 static int SEC_DANA wide_book_hit(const Surface *s, int16_t x, int16_t y);
 
@@ -188,11 +196,13 @@ static void SEC_UI setup(Play *p)
 	if (p->rv.ball.x == h->tees[h->tee].pos.x && p->rv.ball.y == h->tees[h->tee].pos.y) to = h->aim;
 	p->rv.aim = vec2_angle(vec2_sub(to, p->rv.ball));
 	p->aim = p->rv.aim;
+	p->aim_mark = 0;
 	p->shape = SHAPE_NORMAL;
 	set_club(p, p->lie == LIE_GREEN || p->lie == LIE_FRINGE ? CLUB_PT : ball_pick(pin_yards(p), p->lie));
 	p->state = PS_AIM;
 	p->target_range = 0;
 	p->target_set = 0;
+	p->map_near = 0;
 	p->cam_ok = 0;
 	p->redraw = R_ALL;
 	p->shown = -2;
@@ -351,7 +361,7 @@ static int SEC_UI open_card(Play *p, uint8_t mode)
 void play_start(Play *p, const Hole *h, const SurfaceGrid *g, Round *r)
 {
 	int n;
-	uint8_t quick = p->quick, mapview = p->mapview;
+	uint8_t i, quick = p->quick, mapview = p->mapview;
 
 	play_init(p, h, g, rules_round_seed(r));
 	p->quick = quick;
@@ -361,6 +371,15 @@ void play_start(Play *p, const Hole *h, const SurfaceGrid *g, Round *r)
 		open_card(p, CARD_FINAL);
 		p->board = 1;
 		return;
+	}
+	/* A course update can reclaim a saved ball's sand as green or fringe. */
+	for (i = 0; i < r->players; i++) {
+		RoundPlayer *rp = &r->pl[i];
+		uint8_t sf;
+
+		if (!rp->taken || rp->holed || (rp->lie != LIE_BUNKER && rp->lie != LIE_PLUGGED)) continue;
+		sf = surface_at(g, rp->ball.x, rp->ball.y);
+		if (sf == SURF_GREEN || sf == SURF_FRINGE) rp->lie = ball_lie(sf);
 	}
 	/* r->turn may still be the player who just hit; the rules pick who is next */
 	n = rules_next(r, pin(p));
@@ -684,6 +703,14 @@ static int SEC_MENU close_book(Play *p)
 	return PL_MAP;
 }
 
+static int SEC_MENU map_zoom(Play *p)
+{
+	p->map_near ^= 1;
+	p->map_focus = p->target;
+	p->mg.ypp = 0;
+	return PL_MAP;
+}
+
 int play_key(Play *p, uint8_t key, uint32_t now)
 {
 	if (p->view == PLAY_CARD && p->card == CARD_CLUB) return club_key(p, key);
@@ -698,10 +725,12 @@ int play_key(Play *p, uint8_t key, uint32_t now)
 	if (key == KEY_CARD && p->round && !practice(p) && (p->state == PS_AIM || p->view == PLAY_MAP)) return open_card(p, CARD_VIEW);
 	if (p->view == PLAY_MAP) {
 		if (key == KEY_UP && p->state == PS_AIM) return open_book(p);
+		if (key == KEY_DOWN && p->state == PS_AIM) return map_zoom(p);
 		if (key == KEY_LEFT || key == KEY_RIGHT) {
 			p->aim = (angle)(p->aim + (key == KEY_LEFT ? MAP_AIM_STEP : -MAP_AIM_STEP));
 			map_point(p);
 			p->target_set = 1;
+			p->map_focus = p->target;
 			return PL_MAP;
 		}
 		if (key != KEY_SELECT && key != KEY_MAP && key != KEY_OTHER) return 0;
@@ -716,6 +745,7 @@ int play_key(Play *p, uint8_t key, uint32_t now)
 	case KEY_OTHER: case KEY_MAP:
 		if (!p->target_range) p->target_range = (fixed)mark_yards(p) << 16;
 		if (!p->target_set) map_point(p);
+		p->map_focus = p->target;
 		p->mg.ypp = 0;
 		p->view = PLAY_MAP;
 		return PL_MAP;
@@ -739,12 +769,14 @@ int play_key(Play *p, uint8_t key, uint32_t now)
 	}
 	case KEY_LEFT:
 		p->aim = (angle)(p->aim + AIM_STEP);
+		p->aim_mark = AIM_MARK_NEW;
 		p->target_set = 0;
 		p->target_range = 0;
 		p->redraw |= landscape(&p->geo) ? R_OVER | R_STRIP : R_OVER;
 		break;
 	case KEY_RIGHT:
 		p->aim = (angle)(p->aim - AIM_STEP);
+		p->aim_mark = AIM_MARK_NEW;
 		p->target_set = 0;
 		p->target_range = 0;
 		p->redraw |= landscape(&p->geo) ? R_OVER | R_STRIP : R_OVER;
@@ -795,6 +827,7 @@ static void SEC_UI aim_at(Play *p, int16_t tx)
 		a = (angle)(a - iatan2(e * (d + p->cam.back) / d, p->cam.f));
 	}
 	p->aim = a;
+	p->aim_mark = AIM_MARK_NEW;
 	p->redraw |= landscape(&p->geo) ? R_OVER | R_STRIP : R_OVER;
 }
 
@@ -811,6 +844,7 @@ static int SEC_MENU map_tap(Play *p, int16_t x, int16_t y, uint32_t now)
 	vec2 point, delta;
 	fixed range;
 
+	if (p->state == PS_AIM && on_box(x, y, ZOOM_X, ZOOM_Y, ZOOM_W)) return map_zoom(p);
 	if (y >= ROW_B && y < ROW_B + ROW_H) {
 		if (x >= BOOK_X && x < BOOK_X + BOOK_W && p->state == PS_AIM) return open_book(p);
 		if (p->round && !practice(p) && x >= MAP_CARD_X && x < MAP_CARD_X + CARD_W) return open_card(p, CARD_VIEW);
@@ -923,18 +957,6 @@ static void SEC_UI patch(Play *p, int16_t x, int16_t y, int16_t w, int16_t h)
 	dirty(p, x, y, w, h);
 }
 
-/* The aim marker: a white cross with a black edge, so it shows on dark
- * trees and light grass alike. */
-static void SEC_UI draw_mark(Play *p, Surface *s, int16_t x, int16_t y)
-{
-	int16_t u = s->scale;
-	over(s, x - 4 * u, y - u, 9 * u, 3 * u, UIC_BLACK);
-	over(s, x - u, y - 4 * u, 3 * u, 9 * u, UIC_BLACK);
-	over(s, x - 3 * u, y, 7 * u, u, UIC_WHITE);
-	over(s, x, y - 3 * u, u, 7 * u, UIC_WHITE);
-	patch(p, x - 4 * u, y - 4 * u, 9 * u, 9 * u);
-}
-
 /* The same target on the map and over the scene. */
 static void SEC_UI draw_target(Play *p, Surface *s, int16_t x, int16_t y)
 {
@@ -966,7 +988,80 @@ static void SEC_UI aim_dots(Play *p, Surface *s)
 	}
 }
 
-static void SEC_UI path_pt(const Play *p, int16_t k, fixed *x, fixed *y, fixed *z)
+/* Save the packed bytes touched by flight overlays on a scene without
+ * a kept copy. Overlapping patches come off in reverse order. */
+static void SEC_MENU flight_pixels(Play *p, Surface *s, const URect *r, uint8_t restore)
+{
+	int16_t x = r->x, y = r->y, x1 = x + r->w, y1 = y + r->h, b, n, j;
+	uint16_t size;
+	uint8_t *saved;
+
+	if (x < 0) x = 0;
+	if (y < 0) y = 0;
+	if (x1 > s->w) x1 = s->w;
+	if (y1 > s->h) y1 = s->h;
+	if (x >= x1 || y >= y1) return;
+	b = (int16_t)(((uint16_t)x << s->lg) >> 3);
+	n = (int16_t)((((uint16_t)x1 << s->lg) + 7) >> 3) - b;
+	size = (uint16_t)(n * (y1 - y));
+	if (restore) {
+		if (size > p->flight_saved) return;
+		p->flight_saved -= size;
+		saved = p->flight_under + p->flight_saved;
+	} else {
+		if (size > sizeof p->flight_under - p->flight_saved) return;
+		saved = p->flight_under + p->flight_saved;
+		p->flight_saved += size;
+	}
+	for (j = y; j < y1; j++) {
+		uint8_t *to = s->bits + MULU16(j, s->rowBytes) + b;
+		int16_t i;
+		for (i = 0; i < n; i++, saved++) {
+			if (restore) to[i] = *saved;
+			else *saved = to[i];
+		}
+	}
+}
+
+static void SEC_MENU flight_restore(Play *p, Surface *s)
+{
+	uint8_t k = p->npatch;
+	while (p->flight_saved && k) flight_pixels(p, s, &p->patch[--k], 1);
+	p->flight_saved = 0;
+}
+
+static void SEC_MENU flight_patch(Play *p, Surface *s, uint8_t save,
+                                    int16_t x, int16_t y, int16_t w, int16_t h)
+{
+	uint8_t k = p->npatch;
+	patch(p, x, y, w, h);
+	if (save && k < p->npatch) flight_pixels(p, s, &p->patch[k], 0);
+}
+
+static void SEC_MENU draw_mark(Play *p, Surface *s, int16_t x, int16_t y, uint8_t save)
+{
+	int16_t u = s->scale, i, j;
+
+	flight_patch(p, s, save, x - 4 * u, y - 4 * u, 9 * u, 9 * u);
+	if (p->aim_mark == AIM_MARK_FULL) {
+		over(s, x - 4 * u, y - u, 9 * u, 3 * u, UIC_BLACK);
+		over(s, x - u, y - 4 * u, 3 * u, 9 * u, UIC_BLACK);
+		over(s, x - 3 * u, y, 7 * u, u, UIC_WHITE);
+		over(s, x, y - 3 * u, u, 7 * u, UIC_WHITE);
+		return;
+	}
+	/* Thin the cross with an ordered pattern on colour and greyscale. */
+	for (j = 0; j < 9; j++)
+		for (i = 0; i < 9; i++) {
+			uint8_t rank = (uint8_t)(2 * ((i ^ j) & 1) + (j & 1));
+			uint8_t centre = (i == 4 && j > 0 && j < 8) || (j == 4 && i > 0 && i < 8);
+			if ((i < 3 || i > 5) && (j < 3 || j > 5)) continue;
+			if (rank < p->aim_mark)
+				over(s, x + (i - 4) * u, y + (j - 4) * u, u, u, centre ? UIC_WHITE : UIC_BLACK);
+		}
+}
+
+static void SEC_MENU path_pt(const Play *p, int16_t k, fixed *x, fixed *y, fixed *z)
 {
 	const BallPt *b = &p->shot.path[k];
 	*x = (fixed)b->x * 4096;
@@ -974,31 +1069,50 @@ static void SEC_UI path_pt(const Play *p, int16_t k, fixed *x, fixed *y, fixed *
 	*z = (fixed)b->z * 4096;
 }
 
-/* The ball at (x, y, z), bigger near the camera and always big in the
- * green view. White with a dark ring so it shows on the sky and on grass. */
-static void SEC_UI ball_at(Play *p, Surface *s, fixed x, fixed y, fixed z)
+/* The same ring marks first ground contact in the scene and on the map. */
+static void SEC_MENU landing_ring(Surface *s, int16_t x, int16_t y)
 {
-	int16_t sx, sy, u = s->scale, n;
+	int16_t u = s->scale;
+	uint8_t ink = s->depth >= 8 ? UIC_TEXT_HI : UIC_WHITE;
+
+	over(s, x - 2 * u, y - 3 * u, 5 * u, 2 * u, UIC_BLACK);
+	over(s, x - 2 * u, y + 2 * u, 5 * u, 2 * u, UIC_BLACK);
+	over(s, x - 3 * u, y - u, 2 * u, 3 * u, UIC_BLACK);
+	over(s, x + 2 * u, y - u, 2 * u, 3 * u, UIC_BLACK);
+	over(s, x - u, y - 2 * u, 3 * u, u, ink);
+	over(s, x - u, y + 2 * u, 3 * u, u, ink);
+	over(s, x - 2 * u, y - u, u, 3 * u, ink);
+	over(s, x + 2 * u, y - u, u, 3 * u, ink);
+}
+
+static int16_t SEC_MENU landing_point(const Play *p)
+{
+	int16_t k = p->shot.land_pt;
+	return p->club != CLUB_PT && k > 0 && k < p->shot.n && k <= p->shown ? k : -1;
+}
+
+/* The ball stays at least two logical pixels wide in the distance. */
+static void SEC_MENU ball_at(Play *p, Surface *s, uint8_t save, fixed x, fixed y, fixed z)
+{
+	int16_t sx, sy, u = s->scale;
 	fixed depth;
 
 	if (!render_point(&p->cam, x, y, z, &sx, &sy, &depth)) return;
 	if (p->rv.green) {
 		uint8_t dark = s->depth >= 8 ? UIC_BALL_DK : UIC_BLACK;
+		flight_patch(p, s, save, sx - 2 * u, sy - 2 * u, 5 * u, 5 * u);
 		over(s, sx - 2 * u, sy - u, 5 * u, 3 * u, dark);
 		over(s, sx - u, sy - 2 * u, 3 * u, 5 * u, dark);
 		over(s, sx - u, sy - u, 3 * u, 3 * u, UIC_WHITE);
-		patch(p, sx - 2 * u, sy - 2 * u, 5 * u, 5 * u);
 		return;
 	}
-	n = depth < (50L << 16) ? 2 * u : u;
-	over(s, sx - 1, sy - 1, n + 2, n + 2, s->depth >= 8 ? UIC_BALL_DK : UIC_BLACK);
-	over(s, sx, sy, n, n, UIC_WHITE);
-	patch(p, sx - 1, sy - 1, n + 2, n + 2);
+	flight_patch(p, s, save, sx - u, sy - u, 4 * u, 4 * u);
+	over(s, sx - u, sy - u, 4 * u, 4 * u, UIC_BLACK);
+	over(s, sx, sy, 2 * u, 2 * u, UIC_WHITE);
 }
 
-/* The ball at path point shown, with a trail of the points before it in
- * the air, smaller with distance. Once it's holed it's gone. */
-static void SEC_UI draw_ball(Play *p, Surface *s)
+/* The ball at path point shown, with its recent airborne trail. */
+static void SEC_MENU draw_ball(Play *p, Surface *s, uint8_t save)
 {
 	int16_t k = p->shown, j, sx, sy, u = s->scale;
 	uint8_t grey = s->depth >= 8;
@@ -1008,13 +1122,21 @@ static void SEC_UI draw_ball(Play *p, Surface *s)
 		if (j < 0 || j >= p->shot.fly_n || p->club == CLUB_PT) continue;
 		path_pt(p, j, &x, &y, &z);
 		if (render_point(&p->cam, x, y, z, &sx, &sy, &depth)) {
+			flight_patch(p, s, save, sx, sy, u, u);
 			over(s, sx, sy, u, u, grey ? UIC_BALL_LT : UIC_BLACK);
-			patch(p, sx, sy, u, u);
+		}
+	}
+	j = landing_point(p);
+	if (j >= 0) {
+		path_pt(p, j, &x, &y, &z);
+		if (render_point(&p->cam, x, y, z, &sx, &sy, &depth)) {
+			flight_patch(p, s, save, sx - 3 * u, sy - 3 * u, 7 * u, 7 * u);
+			landing_ring(s, sx, sy);
 		}
 	}
 	if (p->shot.result == SHOT_HOLED && k == p->shot.n - 1) return;
 	path_pt(p, k, &x, &y, &z);
-	ball_at(p, s, x, y, z);
+	ball_at(p, s, save, x, y, z);
 }
 
 /* Appends s to t at *n. */
@@ -1270,30 +1392,34 @@ static void SEC_UI result_dirty(Play *p, const Surface *s)
 	      (int16_t)((RENDER_STATUS + extra) * s->scale));
 }
 
-static void SEC_MENU landscape_flight_result(Surface *s, const Play *p, const char *action)
+static void SEC_MENU flight_result(Surface *s, const Play *p, int16_t lower)
 {
-	char t[24];
-	int16_t n = 0, x = SHAPE_X + BOX_W(10) + 1;
-	int16_t w = s->lw - 4 - (action ? BOX_W(9) + 1 : 0);
+	char t[21];
+	int16_t left = 2, end = s->lw - 2, w, n;
 
-	panel_club(s, p, 0);
+	if (landscape(s)) {
+		if (p->mishit) {
+			end -= BOX_W(7) + 1;
+			readout(s, end + 1, ROW_A, BOX_W(7), "Mis-hit", -1, UIC_PAPER);
+		} else {
+			panel_club(s, p, 0);
+			left = SHAPE_X;
+		}
+	} else if (p->mishit) {
+		readout(s, 2, STRIP_Y - ROW_H, BOX_W(7), "Mis-hit", -1, UIC_PAPER);
+	}
+	w = (end - left - 1) / 2;
+	n = 0;
 	add(t, &n, "Carry ");
 	n += play_num(t + n, (uint32_t)((p->shot.carry + FIX_HALF) >> 16));
-	add(t, &n, "y");
-	readout(s, SHAPE_X, ROW_A, BOX_W(10), t, -1, UIC_TEXT_HI);
+	if (w >= BOX_W(n + 1)) add(t, &n, "y");
+	readout(s, left, ROW_A, w, t, -1, UIC_TEXT_HI);
 	n = 0;
 	add(t, &n, "Total ");
 	n += play_num(t + n, (uint32_t)((p->shot.total + FIX_HALF) >> 16));
-	add(t, &n, "y");
-	readout(s, x, ROW_A, s->lw - 2 - x, t, -1, UIC_TEXT_HI);
-	n = 0;
-	add(t, &n, ball_lie_name(p->shot.lie));
-	if (p->mishit) add(t, &n, "  Mis-hit");
-	else if (p->shot.lie == LIE_GREEN) {
-		add(t, &n, "  ");
-		add(t, &n, p->msg2);
-	}
-	readout(s, 2, ROW_B, w, t, -1, UIC_TEXT_HI);
+	if (w >= BOX_W(n + 1)) add(t, &n, "y");
+	readout(s, left + w + 1, ROW_A, end - left - w - 1, t, -1, UIC_TEXT_HI);
+	readout(s, 2, ROW_B, lower, p->msg2, -1, UIC_TEXT_HI);
 }
 
 /* Keep the club in view when a result fits beside it. */
@@ -1308,8 +1434,8 @@ static void SEC_MENU shot_result(Surface *s, const Play *p)
 		button(s, s->lw - 2 - BOX_W(9), landscape(s) ? ROW_B : STRIP_Y - ROW_H, BOX_W(9), action);
 		if (landscape(s)) lower -= BOX_W(9) + 1;
 	}
-	if (landscape(s) && p->state == PS_RESULT && p->club != CLUB_PT && p->shot.result == SHOT_OK && !p->shot.lip) {
-		landscape_flight_result(s, p, action);
+	if (p->state == PS_RESULT && p->club != CLUB_PT && p->shot.result == SHOT_OK && !p->shot.lip) {
+		flight_result(s, p, lower);
 		return;
 	}
 	while (top[n]) n++;
@@ -1569,7 +1695,7 @@ static void SEC_UI done(Play *p, uint8_t strokes, uint8_t gimme)
 }
 
 /* The result line when the ball has stopped. */
-static void SEC_UI result(Play *p)
+static void SEC_MENU result(Play *p)
 {
 	const Shot *sh = &p->shot;
 	int16_t n = 0;
@@ -1592,11 +1718,17 @@ static void SEC_UI result(Play *p)
 		add(a, &n, "Out of bounds");
 		n = 0;
 		add(b, &n, "Stroke and distance");
-	} else if (sh->lie == LIE_GREEN) {
+	} else if (p->club != CLUB_PT && !sh->lip) {
 		vec2 d = vec2_sub(pin(p), sh->stop);
-		add(a, &n, "On the green");
-		n = play_num(b, (uint32_t)((vec2_len(d) + FIX_HALF) >> 16));
-		add(b, &n, "y to pin");
+		add(a, &n, "Carry ");
+		n += play_num(a + n, (uint32_t)((sh->carry + FIX_HALF) >> 16));
+		add(a, &n, " Total ");
+		play_num(a + n, (uint32_t)((sh->total + FIX_HALF) >> 16));
+		n = 0;
+		add(b, &n, ball_lie_name(sh->lie));
+		add(b, &n, " Pin ");
+		n += play_num(b + n, (uint32_t)((vec2_len(d) + FIX_HALF) >> 16));
+		add(b, &n, "y");
 	} else {
 		add(a, &n, ball_lie_name(sh->lie));
 		add(a, &n, ", ");
@@ -1764,6 +1896,7 @@ void play_resized(Play *p)
 	if (p->golf) p->golf->w = 0;
 	p->cam_ok = 0;
 	p->npatch = 0;
+	p->flight_saved = 0;
 	p->redraw |= R_ALL;
 	/* a shot's map half drawn at the old size starts again */
 	if (!p->onmap && p->mprep < 3) p->mprep = 0;
@@ -1785,9 +1918,8 @@ void play_settle(Play *p)
 	else if (!r->over && (n = rules_next(r, pin(p))) >= 0) r->turn = (uint8_t)n;
 }
 
-/* The golfer's pose for where the swing is: address while aiming, half way
- * back then the top as the meter goes up, the top on the way down and the
- * finish once the ball is struck. With the putter he stays at address.
+/* Address while aiming, backswing on the meter and impact at the start of
+ * flight. With the putter he stays at address.
  * During the swing only s gets the new pose unless an overlay is over him,
  * to keep the meter's frames short: the kept copy catches up with the
  * finish, which every swing ends with. */
@@ -1803,8 +1935,13 @@ static void SEC_UI pose(Play *p, Surface *s, Surface *bg)
 	if (p->club == CLUB_PT || p->state == PS_AIM) want = POSE_ADDRESS;
 	else if (p->state == PS_UP) want = p->mpos < (S16 + W16) / 2 ? POSE_BACK : POSE_TOP;
 	else if (p->state == PS_DOWN) want = POSE_TOP;
+	else if (p->state == PS_FLY && p->shown < 3 && g->pose[POSE_IMPACT].p) want = POSE_IMPACT;
 	else want = POSE_FINISH;
 	if (want == g->shown && ball == g->ball) return;
+	if (!bg && p->flight_saved) {
+		flight_restore(p, s);
+		p->redraw |= R_OVER;
+	}
 	if (render_pose(s, g, want, ball, &x, &y, &w, &h) < 0) return;
 	/* overlays over him come off the kept copy and go on again */
 	for (k = 0; k < p->npatch; k++) {
@@ -1890,7 +2027,9 @@ static void SEC_UI box_pad(MapBox *b)
 /* Yards a pixel that b needs on s. */
 static fixed SEC_UI box_ypp(const MapBox *b, const Surface *s)
 {
-	fixed a = (b->x1 - b->x0) / s->w, c = (b->y1 - b->y0) / (int16_t)((s->lh - RENDER_STATUS) * s->scale);
+	int16_t vh = (int16_t)((s->lh - RENDER_STATUS) * s->scale);
+	fixed a = (b->x1 - b->x0) / (s->fullview ? vh : s->w);
+	fixed c = (b->y1 - b->y0) / (s->fullview ? s->w : vh);
 	return a > c ? a : c;
 }
 
@@ -1911,6 +2050,24 @@ static void SEC_UI shot_box(const Play *p, const Surface *s, MapBox *b)
 	box_pad(b);
 	box_pad(&a);
 	if (box_ypp(&a, s) <= box_ypp(b, s) + (box_ypp(b, s) >> 1)) *b = a;
+}
+
+/* Keep the pin in view if it leaves enough room for the lie and nearby hazards. */
+static void SEC_MENU aim_box(const Play *p, const Surface *s, MapBox *b)
+{
+	MapBox a;
+	vec2 pn = pin(p);
+	fixed ypp;
+
+	b->x0 = b->x1 = p->rv.ball.x;
+	b->y0 = b->y1 = p->rv.ball.y;
+	box_add(b, p->map_focus.x, p->map_focus.y);
+	a = *b;
+	box_add(&a, pn.x, pn.y);
+	box_pad(b);
+	box_pad(&a);
+	ypp = box_ypp(b, s);
+	if (box_ypp(&a, s) <= ypp + (ypp >> 1)) *b = a;
 }
 
 /* Path point k on the map, in pixels. */
@@ -1986,14 +2143,12 @@ static void SEC_UI map_ball(Play *p, Surface *s)
 	p->under.w = 0;
 	if (p->mg.ypp <= 0) return;
 	if (k > p->mdrawn) {
+		int16_t land = landing_point(p);
 		trail(p, s, p->mdrawn < 0 ? 0 : p->mdrawn, k);
-		if (sh->fly_n > 0 && sh->fly_n < sh->n && k >= sh->fly_n) {
-			/* where it came down: a black ring, over the roll's trail */
-			map_xy(p, sh->fly_n, &x, &y);
-			mput(p, s, x - 3 * u, y - 3 * u, 7 * u, u, UIC_BLACK);
-			mput(p, s, x - 3 * u, y + 3 * u, 7 * u, u, UIC_BLACK);
-			mput(p, s, x - 3 * u, y - 2 * u, u, 5 * u, UIC_BLACK);
-			mput(p, s, x + 3 * u, y - 2 * u, u, 5 * u, UIC_BLACK);
+		if (land >= 0) {
+			map_xy(p, land, &x, &y);
+			landing_ring(s, x, y);
+			dirty(p, x - 3 * u, y - 3 * u, 7 * u, 7 * u);
 		}
 		p->mdrawn = k;
 	}
@@ -2019,14 +2174,13 @@ static void SEC_UI map_ball(Play *p, Surface *s)
 	mput(p, s, x - u, y - u, 3 * u, 3 * u, UIC_WHITE);
 }
 
-/* The panel's live readout: the carry so far in the air, the total on the
- * ground. Drawn only when it changes. */
+/* Show carry up to first contact, then total. Draw only when it changes. */
 static void SEC_UI map_live(Play *p, Surface *s, uint8_t force)
 {
 	char t[12];
 	int16_t n = 0, k = p->shown < 0 ? 0 : p->shown;
 	const BallPt *b = &p->shot.path[k];
-	uint8_t roll = k >= p->shot.fly_n;
+	uint8_t roll = k >= p->shot.fly_n || landing_point(p) >= 0;
 	fixed d = vec2_len(vec2_make((fixed)b->x * 4096 - p->shot.start.x, (fixed)b->y * 4096 - p->shot.start.y));
 	uint16_t v = (uint16_t)((d + FIX_HALF) >> 16);
 
@@ -2211,6 +2365,7 @@ int play_frame(Play *p, Surface *s, Surface *bg, uint32_t now)
 	p->gdirty.w = 0;
 	if (p->redraw & R_ALL) {
 		p->npatch = 0;
+		p->flight_saved = 0;
 		p->redraw = R_STRIP | R_OVER;
 		dirty(p, 0, 0, s->w, s->h);
 	}
@@ -2295,6 +2450,20 @@ int play_frame(Play *p, Surface *s, Surface *bg, uint32_t now)
 		break;
 	}
 
+	if (p->aim_mark) {
+		uint8_t level = p->aim_mark;
+		uint32_t age = now - p->aim_time;
+		if (p->state != PS_AIM || p->rv.green || p->target_set) level = 0;
+		else if (level != AIM_MARK_NEW && age >= AIM_HOLD_MS) {
+			if (age >= AIM_HOLD_MS + 3 * AIM_FADE_MS) level = 0;
+			else level = (uint8_t)(3 - (age - AIM_HOLD_MS) / AIM_FADE_MS);
+		}
+		if (level != p->aim_mark) {
+			p->aim_mark = level;
+			p->redraw |= R_OVER;
+		}
+	}
+
 	pose(p, s, bg);
 	if (p->redraw & R_OVER) {
 		int16_t mx = 0, my = 0, ok = 0;
@@ -2309,6 +2478,8 @@ int play_frame(Play *p, Surface *s, Surface *bg, uint32_t now)
 				return PL_RENDER;
 			}
 		}
+		if (!bg && p->flight_saved) flight_restore(p, s);
+		p->flight_saved = 0;
 		for (k = 0; k < p->npatch; k++) {
 			URect *r = &p->patch[k];
 			if (bg) gfx_copy(s, bg, r->x, r->y, r->w, r->h);
@@ -2317,12 +2488,21 @@ int play_frame(Play *p, Surface *s, Surface *bg, uint32_t now)
 		p->npatch = 0;
 		if (ok && p->rv.green) aim_dots(p, s);
 		if (ok && p->target_set) draw_target(p, s, mx, my);
-		else if (ok && !p->rv.green) draw_mark(p, s, mx, my);
+		else if (p->aim_mark) {
+			if (!ok) p->aim_mark = 0;
+			else {
+				if (p->aim_mark == AIM_MARK_NEW) {
+					p->aim_mark = AIM_MARK_FULL;
+					p->aim_time = now;
+				}
+				draw_mark(p, s, mx, my, !bg);
+			}
+		}
 		if (p->state >= PS_FLY && p->shown >= 0) {
-			draw_ball(p, s);
+			draw_ball(p, s, !bg);
 		} else if (p->rv.green) {
 			/* the green view leaves the ball to us */
-			ball_at(p, s, p->rv.ball.x, p->rv.ball.y, hole_height(p->rv.hole, p->rv.ball.x, p->rv.ball.y));
+			ball_at(p, s, 0, p->rv.ball.x, p->rv.ball.y, hole_height(p->rv.hole, p->rv.ball.x, p->rv.ball.y));
 		}
 	}
 	if (!s->fullview && (p->redraw & R_STRIP)) draw_strip(p, s);
@@ -2335,6 +2515,7 @@ int play_frame(Play *p, Surface *s, Surface *bg, uint32_t now)
 		draw_meter(p, s, a - 3, b + 3);
 	}
 	p->redraw = 0;
+	if (p->aim_mark) flags |= PL_ANIM;
 	if (p->dirty.w > 0 || p->gdirty.w > 0) flags |= PL_DIRTY;
 	return flags;
 }
@@ -2428,6 +2609,7 @@ void play_status(Surface *s, const Play *p, const char *info)
 	if (p->cpu && p->state == PS_RESULT) {
 		/* a computer golfer's shot: who and which shot, and where it went */
 		char t[24];
+		const char *where = p->shot.result == SHOT_OK && p->club != CLUB_PT && !p->shot.lip ? p->msg2 : p->msg1;
 		int16_t n = 0;
 		face(s);
 		add(t, &n, p->round->pl[p->cur].name);
@@ -2435,7 +2617,7 @@ void play_status(Surface *s, const Play *p, const char *info)
 		play_num(t + n, p->stroke);
 		panel_club(s, p, 0);
 		readout(s, SHAPE_X, ROW_A, s->lw - 2 - SHAPE_X, t, -1, UIC_PAPER);
-		readout(s, 2, ROW_B, s->lw - 4, p->msg1, -1, UIC_TEXT_HI);
+		readout(s, 2, ROW_B, s->lw - 4, where, -1, UIC_TEXT_HI);
 		return;
 	}
 	if (p->cpu && p->state == PS_DONE) {
@@ -2454,10 +2636,11 @@ void play_status(Surface *s, const Play *p, const char *info)
 		if (s->fullview) {
 			readout(s, SHAPE_X, ROW_A, BOX_W(9), t, -1, UIC_TEXT_HI);
 			landscape_hole(s, p, ROSE_X - 1);
-			readout(s, BOOK_X + BOOK_W + 1, ROW_B, MAP_BACK_X - BOOK_X - BOOK_W - 2,
+			readout(s, ZOOM_X + ZOOM_W + 1, ROW_B, MAP_BACK_X - ZOOM_X - ZOOM_W - 2,
 			        p->rv.hole->name, -1, UIC_PAPER);
 		} else readout(s, SHAPE_X, ROW_A, ROSE_X - SHAPE_X - 1, t, -1, UIC_TEXT_HI);
 		button(s, BOOK_X, ROW_B, BOOK_W, "Book");
+		button(s, ZOOM_X, ZOOM_Y, ZOOM_W, p->map_near ? "Hole" : "Near");
 		button(s, MAP_BACK_X, ROW_B, CARD_W, "Back");
 		if (p->round && !practice(p)) button(s, MAP_CARD_X, ROW_B, CARD_W, "Card");
 		rose(p, s, 1);
@@ -2668,7 +2851,7 @@ void play_card(Surface *s, Play *p)
 	                           p->card == CARD_STATS ? p->stat_player : p->page, p->csel);
 }
 
-static inline void SEC_UI map_screen_xy(const Surface *s, int16_t *x, int16_t *y)
+static inline void SEC_MENU map_screen_xy(const Surface *s, int16_t *x, int16_t *y)
 {
 	if (s->fullview) {
 		int16_t across = *x;
@@ -2680,6 +2863,8 @@ static inline void SEC_UI map_screen_xy(const Surface *s, int16_t *x, int16_t *y
 void play_map(Surface *s, Play *p)
 {
 	RenderMap m;
+	MapBox local;
+	const MapBox *box = 0;
 	Surface map;
 	Surface *view = s;
 	char t[12];
@@ -2691,12 +2876,16 @@ void play_map(Surface *s, Play *p)
 		fly_map_draw(p, s);
 		return;
 	}
+	if (aiming && p->map_near) {
+		aim_box(p, s, &local);
+		box = &local;
+	}
 	if (s->fullview) {
 		map = *s;
 		map.h = map.lh = STRIP_Y;
 		view = &map;
-		if (render_dana_map(view, &p->rv, &m, aiming ? &p->target : 0) != 0) return;
-	} else if (render_target_map(s, &p->rv, &m, aiming ? &p->target : 0) != 0) return;
+		if (render_dana_map(view, &p->rv, &m, aiming ? &p->target : 0, box) != 0) return;
+	} else if (render_target_map(s, &p->rv, &m, aiming ? &p->target : 0, box) != 0) return;
 	/* the last shot's path, dotted */
 	if (p->have_shot) {
 		int16_t last_x = -3000, last_y = -3000;
@@ -2764,6 +2953,7 @@ int play_dana_aim(Play *p, vec2 point)
 	range = vec2_len(delta);
 	if (range < FIX_ONE) return 0;
 	p->target = point;
+	p->map_focus = point;
 	p->target_range = range;
 	p->target_set = 1;
 	p->aim = vec2_angle(delta);

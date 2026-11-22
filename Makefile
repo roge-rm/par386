@@ -60,6 +60,9 @@ $(BUILD)/%.o: src/palm/%.c src/palm/*.h src/core/*.h | $(BUILD)
 $(BUILD)/%.o: src/core/%.c src/core/*.h | $(BUILD)
 	@echo CC $<; $(CC) $(CFLAGS) -c $< -o $@
 
+RENDER_INC = src/core/terrainmesh.inc src/core/puttingcurves.inc
+$(BUILD)/render.o: $(RENDER_INC)
+
 $(BUILD)/par386-sections.s $(BUILD)/par386-sections.ld &: src/par386.def | $(BUILD)
 	m68k-palmos-multigen -b $(BUILD)/par386-sections src/par386.def
 
@@ -159,16 +162,16 @@ host-test: build/hosttest
 	$(MAKE) rules-test
 	$(MAKE) arm-test
 
-build/hosttest: host/hosttest.c $(HOSTSRC) src/core/*.h | $(BUILD)
+build/hosttest: host/hosttest.c $(HOSTSRC) src/core/*.h $(RENDER_INC) | $(BUILD)
 	$(HOSTCC) host/hosttest.c $(HOSTSRC) -lm -o $@
 
-build/coursetest: host/coursetest.c $(HOSTSRC) src/core/*.h | $(BUILD)
+build/coursetest: host/coursetest.c $(HOSTSRC) src/core/*.h $(RENDER_INC) | $(BUILD)
 	$(HOSTCC) host/coursetest.c $(HOSTSRC) -lm -o $@
 
 COURSES  = $(notdir $(wildcard courses/*))
 courses: $(foreach c,$(COURSES),build/courses/Par386-$(shell echo $(c) | sed 's/./\u&/').pdb)
 
-build/courses/Par386-%.pdb: tools/coursec.py
+build/courses/Par386-%.pdb: tools/coursec.py tools/terrainmesh.py
 	python3 tools/coursec.py build courses/$(shell echo $* | tr A-Z a-z) $@
 
 build/courses/Par386-Test.pdb: $(wildcard courses/test/*)
@@ -212,7 +215,7 @@ course-test: build/coursetest build/courses/Par386-Test.pdb
 	python3 -c "import sys; from PIL import Image; Image.open(sys.argv[1]).save(sys.argv[2])" \
 		build/m2-test-hole-surface.ppm $(DEBUGDIR)/m2-test-hole-surface.png
 
-build/uitest: host/uitest.c $(HOSTSRC) src/core/*.h | $(BUILD)
+build/uitest: host/uitest.c $(HOSTSRC) src/core/*.h $(RENDER_INC) | $(BUILD)
 	$(HOSTCC) host/uitest.c $(HOSTSRC) -lm -o $@
 
 # Draws each screen at 160x160 2-bit and 320x320 8-bit from the packed
@@ -233,7 +236,7 @@ ui-ref: build/uitest $(ART)/art.rcp
 	build/uitest $(ART) build/ui
 	python3 tools/refcmp.py build/ui build/ui-png host/ref --update $(UIREFS)
 
-build/rendertest: host/rendertest.c $(HOSTSRC) src/core/*.h | $(BUILD)
+build/rendertest: host/rendertest.c $(HOSTSRC) src/core/*.h $(RENDER_INC) | $(BUILD)
 	$(HOSTCC) host/rendertest.c $(HOSTSRC) -lm -o $@
 
 # Draws the test hole from the tee, mid-fairway, near the green and the
@@ -242,6 +245,8 @@ build/rendertest: host/rendertest.c $(HOSTSRC) src/core/*.h | $(BUILD)
 # and the 320x480 and 480x320 screens, writes PNGs to $(DEBUGDIR)/m3 and
 # compares them with host/ref/. render-ref stores the current ones there.
 REFS     = tee-160 tee-320 fairway-160 fairway-320 approach-160 approach-320 green-160 green-320 \
+           rough-bunker-160 rough-bunker-320 rough-bunker-putt-160 rough-bunker-putt-320 \
+           in-bunker-160 in-bunker-320 fringe-address-160 fringe-address-320 \
            d4-tee-160 d4-green-160 d1-tee-160 d1-green-160 d8-tee-320-16 \
            tee-320x480-16 green-320x480-16 map-320x480 tee-480x320-16 green-480x320-16 map-480x320 \
            h4-tee-320 h4-map-320 h4-green-320 h2-tee-320 h8-tee-320 \
@@ -257,7 +262,7 @@ render-ref: build/rendertest build/courses/Par386-Test.pdb $(ART)/obj.rcp
 	build/rendertest build/courses/Par386-Test.pdb $(ART) build/render
 	python3 tools/refcmp.py build/render $(DEBUGDIR)/m3 host/ref --update $(REFS)
 
-build/courserender: host/courserender.c $(HOSTSRC) src/core/*.h | $(BUILD)
+build/courserender: host/courserender.c $(HOSTSRC) src/core/*.h $(RENDER_INC) | $(BUILD)
 	$(HOSTCC) host/courserender.c $(HOSTSRC) -lm -o $@
 
 # Every hole of a course (CR, Auld Kirk unless set) from the tee, the landing
@@ -277,7 +282,7 @@ course-render: build/courserender build/coursetest build/courses/$(CRPDB) $(ART)
 	build/courserender build/courses/$(CRPDB) $(ART) build/course-render
 	python3 tools/refcmp.py build/course-render $(DEBUGDIR)/$(CROUT) -
 
-build/physicstest: host/physicstest.c $(HOSTSRC) src/core/*.h | $(BUILD)
+build/physicstest: host/physicstest.c $(HOSTSRC) src/core/*.h $(RENDER_INC) | $(BUILD)
 	$(HOSTCC) host/physicstest.c $(HOSTSRC) -lm -o $@
 
 # Plays shots on flat, sloped and made-up holes and the test hole: the carry
@@ -289,7 +294,7 @@ physics-test: build/physicstest build/courses/Par386-Test.pdb
 	build/physicstest build/courses/Par386-Test.pdb build/physics
 	python3 tools/topng.py build/physics $(DEBUGDIR)/m6 host-
 
-build/rulestest: host/rulestest.c $(HOSTSRC) src/core/*.h | $(BUILD)
+build/rulestest: host/rulestest.c $(HOSTSRC) src/core/*.h $(RENDER_INC) | $(BUILD)
 	$(HOSTCC) host/rulestest.c $(HOSTSRC) -lm -o $@
 
 # Turn order, the honour, scores and totals, the saved round's record, two
@@ -306,7 +311,7 @@ rules-test: build/rulestest build/courses/Par386-Test.pdb $(ART)/art.rcp
 cpu-round: build/rulestest build/courses/$(CRPDB)
 	build/rulestest --cpu build/courses/$(CRPDB) 8 $(or $(TEE),0)
 
-build/armtest: host/armtest.c src/arm/to16arm.c src/arm/terraarm.c $(HOSTSRC) src/core/*.h src/arm/*.h | $(BUILD)
+build/armtest: host/armtest.c src/arm/to16arm.c src/arm/terraarm.c $(HOSTSRC) src/core/*.h $(RENDER_INC) src/arm/*.h | $(BUILD)
 	$(HOSTCC) -Isrc/arm host/armtest.c src/arm/to16arm.c src/arm/terraarm.c $(HOSTSRC) -lm -o $@
 
 # Runs the 16-bit conversion and the renderer's loops through the ARM

@@ -473,7 +473,9 @@ def main():
         "# Made by tools/mkauldkirk.py.\n"
         "name Auld Kirk\n" + "".join("tee %s\n" % t for t in TEES) +
         "holes %d\n" % len(HOLES) +
-        "scenery 1         # the links backdrop: sea, hills and the kirk\n")
+        "scenery 1         # the links backdrop: sea, hills and the kirk\n"
+        "terrain-mesh 16 putting\n"
+        "terrain-mesh 17 putting dunes\n")
     total, pars = 0, 0
     for n, d in enumerate(HOLES, 1):
         par, yards = make_hole(n, d, out)

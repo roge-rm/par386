@@ -8,7 +8,9 @@
 
 #define COURSE_VERSION    4      /* 1 to 3 are read too: scenery 0, the usual wind and green speed */
 #define GREEN_USUAL       10     /* Course.green: the usual speed, also given by 0 */
-#define HOLE_VERSION      1
+#define HOLE_VERSION      6
+#define GREEN_VERT_MAX    512
+#define GREEN_TRI_MAX     768
 #define COURSE_MAX_HOLES  36
 #define COURSE_MAX_TEES   4
 #define HOLE_PINS         4
@@ -20,6 +22,10 @@
 #define HOLE_MAX_HM_H     128
 #define HOLE_MAX_SHAPES   128
 #define HOLE_MAX_VERTS    64
+#define HOLE_CURVE_VERT_MAX   128
+#define HOLE_CURVE_VERT_TOTAL 1024
+#define VISUAL_SHAPE_MAX  32
+#define VISUAL_VERT_MAX  768
 #define HOLE_MAX_OBJECTS  1024
 
 /* Surface types. Shapes are drawn in order and later ones win. */
@@ -65,11 +71,24 @@ typedef struct {
 	uint8_t type, variant, scale;    /* scale: 64 is normal size */
 } HoleObject;
 
+/* A validated terrain record. The caller keeps its data locked. */
+typedef struct {
+	const uint8_t *data;
+	uint16_t tiles, vertices, triangles;
+	uint8_t mow_phase;          /* long mowing pattern's origin modulo 24 yd */
+} TerrainMesh;
+
 /* Points into the record it was parsed from, which must stay put. */
 typedef struct {
 	const uint8_t *heights;    /* hm_w * hm_h bytes, row 0 at y = 0 */
 	const uint8_t *shapes;
 	const uint8_t *objects;
+	const uint8_t *green_mesh; /* optional putting material rows, see course format */
+	const uint8_t *green_geometry; /* optional putting terrain, see course format */
+	const uint8_t *visual_shapes; /* optional visual contours, see course format */
+	const uint8_t *sand_atlas; /* optional bunker relief, see course format */
+	const uint8_t *putting_curves; /* optional putting contours, see course format */
+	TerrainMesh terrain_mesh;  /* optional full-shot mesh, in its own record */
 	fixed base, step;          /* height of byte 0, height per byte step, yards */
 	vec2 aim;                  /* where the first shot aims */
 	vec2 pins[HOLE_PINS];
@@ -99,6 +118,10 @@ typedef void (*SurfaceRowFn)(void *ctx, uint16_t row, const uint8_t *bytes, uint
 /* Both return HOLE_OK or an error and never read past len. */
 int SEC_CORE course_parse(Course *c, const uint8_t *buf, uint32_t len);
 int SEC_CORE hole_parse(Hole *h, const uint8_t *buf, uint32_t len);
+/* Returns the hole's optional terrain record index, or zero.
+ * If compact is set, use the compact mesh when present. */
+uint16_t SEC_DANA course_terrain_record(const uint8_t *buf, uint32_t len, uint8_t holes,
+                                        uint16_t records, uint16_t hole, int compact);
 
 /* Plays the hole from tee set set: its own tee, else the nearest longer one,
  * else the first. */
@@ -118,7 +141,7 @@ fixed SEC_CORE hole_height(const Hole *h, fixed x, fixed y);
 void SEC_CORE surface_size(const Hole *h, SurfaceGrid *g);
 /* Draws the shapes into the grid a row at a time, from row 0, through put.
  * row needs SURF_ROW_MAX bytes. */
-void SEC_CORE surface_raster(const Hole *h, uint8_t *row, SurfaceRowFn put, void *ctx);
+void SEC_DANA surface_raster(const Hole *h, uint8_t *row, SurfaceRowFn put, void *ctx);
 /* Surface at (x, y). Off the grid it's out of bounds, or water past a water cell on the edge. */
 uint8_t SEC_CORE surface_at(const SurfaceGrid *g, fixed x, fixed y);
 

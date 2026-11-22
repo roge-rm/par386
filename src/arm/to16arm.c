@@ -40,6 +40,8 @@ unsigned long TO16ARM_ENTRY to16arm_entry(const void *emul, void *user, void *ca
 	a.mask = b[TO16_MASK];
 	a.lo = b[TO16_LO];
 	a.hi = b[TO16_HI];
+	a.width = (int16_t)be16(b + TO16_WIDTH);
+	a.smooth_y1 = (int16_t)be16(b + TO16_SMOOTH_Y1);
 	to16_run(&a);
 	return 0;
 }

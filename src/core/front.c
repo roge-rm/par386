@@ -1,4 +1,5 @@
 #include "front.h"
+#include <stddef.h>
 #include "dana.h"
 #include "records.h"
 #include "sound.h"
@@ -26,15 +27,118 @@
 #define DANA_LINE_Y 38
 #define DANA_LINE_H 16
 
-enum { PLAYER_NAME, PLAYER_GOLFER, PLAYER_SKIN, PLAYER_HAND, PLAYER_BACK };
-enum { NAME_SPACE = 36, NAME_DEL, NAME_CLEAR, NAME_DONE, NAME_CANCEL, NAME_KEYS };
+enum { PLAYER_NAME, PLAYER_CHARACTER, PLAYER_BACK };
+enum { NAME_SPACE = 36, NAME_DEL, NAME_CLEAR, NAME_CASE, NAME_DONE, NAME_CANCEL, NAME_KEYS };
+enum { CHARACTER_DONE = 7, CHARACTER_CANCEL, CHARACTER_ROWS };
+
+#define CHARACTER_X 15
+#define CHARACTER_Y 25
+#define CHARACTER_ROW_H 14
+#define CHARACTER_ROW_W 101
+#define CHARACTER_BUTTON_Y 130
+#define CHARACTER_BUTTON_W 65
 
 static int SEC_DANA dana_surface(const Surface *s);
 static void SEC_DANA dana_front_draw(const Front *f, Surface *s, const char *plate);
 
 static const char name_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-static const char *const name_actions[] = { "Space", "Del", "Clear", "Done", "Cancel" };
-static const PlayerProfile default_player = { PLAYER_DEFAULT_NAME, GOLFER_MALE, SKIN_LIGHT, 0 };
+static const uint8_t name_edit_edges[] = { 14, 56, 82, 124, 146 };
+static const char *const name_actions[] = { "Space", "Del", "Clear", "Aa", "Done", "Cancel" };
+static const PlayerProfile default_player = {
+	PLAYER_DEFAULT_NAME, GOLFER_MALE, SKIN_LIGHT, 0,
+	OUTFIT_DEFAULT, OUTFIT_DEFAULT, OUTFIT_DEFAULT, OUTFIT_DEFAULT
+};
+
+static const char outfit_colours[] = "Default|Navy|Green|Red|Gold|White|Grey";
+static const struct {
+	const char *label, *values;
+	uint8_t offset, count;
+} character_options[CHARACTER_DONE] = {
+	{ "Gender", "Man|Woman",        offsetof(PlayerProfile, golfer), GOLFER_MODELS },
+	{ "Hand",  "Right|Left",         offsetof(PlayerProfile, left),   2 },
+	{ "Skin",  "Light|Medium|Dark",  offsetof(PlayerProfile, skin),   SKIN_COLOURS },
+	{ "Shoes", outfit_colours, offsetof(PlayerProfile, shoes), OUTFIT_COLOURS },
+	{ "Pants", outfit_colours, offsetof(PlayerProfile, pants), OUTFIT_COLOURS },
+	{ "Shirt", outfit_colours, offsetof(PlayerProfile, shirt), OUTFIT_COLOURS },
+	{ "Hat",   outfit_colours, offsetof(PlayerProfile, hat),   OUTFIT_COLOURS }
+};
+
+static void SEC_DANA character_box(uint8_t row, URect *b)
+{
+	if (row < CHARACTER_DONE) {
+		b->x = CHARACTER_X;
+		b->y = CHARACTER_Y + row * CHARACTER_ROW_H;
+		b->w = CHARACTER_ROW_W;
+		b->h = CHARACTER_ROW_H - 1;
+	} else {
+		b->x = 14 + (row - CHARACTER_DONE) * (CHARACTER_BUTTON_W + 1);
+		b->y = CHARACTER_BUTTON_Y;
+		b->w = CHARACTER_BUTTON_W;
+		b->h = 15;
+	}
+}
+
+static void SEC_DANA character_draw_row(const Front *f, Surface *s, uint8_t row, URect *b, uint8_t label)
+{
+	int16_t n;
+	const char *value;
+	uint8_t selected = row == f->character_row;
+
+	character_box(row, b);
+	if (row < CHARACTER_DONE) {
+		uint8_t choice = ((const uint8_t *)&f->character)[character_options[row].offset];
+		int16_t label_w = row == 0 ? 50 : 42;
+		if (label) {
+			const char *t = ui_part(character_options[row].label, 0, 0, &n);
+			ui_fill(s, b->x, b->y, label_w, b->h, UIC_TITLE);
+			ui_text(s, b->x + 1, b->y + 3, t, n, UIC_TEXT_HI, -1);
+		}
+		value = ui_part(character_options[row].values, '|', choice, &n);
+		b->x += label_w;
+		b->w -= label_w;
+	} else {
+		value = ui_part(row == CHARACTER_DONE ? "Done" : "Cancel", 0, 0, &n);
+	}
+	ui_fill(s, b->x, b->y, b->w, b->h, selected ? UIC_TITLE : UIC_BRASS);
+	ui_bevel(s, b->x, b->y, b->w, b->h, selected ? UIC_BAR_LT : UIC_BRASS_LT, UIC_BRASS_DK);
+	ui_ctext(s, b->x + b->w / 2, b->y + (b->h - UI_CHAR) / 2 + 1, value, n,
+	         selected ? UIC_TEXT_HI : UIC_INK, -1);
+}
+
+static void SEC_DANA character_clear_preview(Surface *s, URect *b)
+{
+	b->x = CHARACTER_PREVIEW_X;
+	b->y = CHARACTER_PREVIEW_Y;
+	b->w = CHARACTER_PREVIEW_W;
+	b->h = CHARACTER_PREVIEW_H;
+	ui_fill(s, b->x, b->y, b->w, b->h, UIC_PAPER_DK);
+}
+
+static void SEC_DANA character_draw(const Front *f, Surface *s)
+{
+	URect b;
+	uint8_t row;
+
+	character_clear_preview(s, &b);
+	ui_bevel(s, b.x - 1, b.y - 1, b.w + 2, b.h + 2, UIC_INK, UIC_BRASS_LT);
+	for (row = 0; row < CHARACTER_ROWS; row++) character_draw_row(f, s, row, &b, 1);
+}
+
+uint8_t front_character_update(const Front *f, Surface *s, uint8_t old_row, uint8_t preview, URect *dirty)
+{
+	uint8_t n = 0, i;
+
+	if (old_row != f->character_row) character_draw_row(f, s, old_row, &dirty[n++], 0);
+	character_draw_row(f, s, f->character_row, &dirty[n++], 0);
+	if (preview) character_clear_preview(s, &dirty[n++]);
+	for (i = 0; i < n; i++) {
+		dirty[i].x = s->ox + dirty[i].x * s->scale;
+		dirty[i].y = s->oy + dirty[i].y * s->scale;
+		dirty[i].w *= s->scale;
+		dirty[i].h *= s->scale;
+	}
+	return n;
+}
 
 static void SEC_MENU main_menu(Front *f)
 {
@@ -273,7 +377,7 @@ int front_preview_band(Surface *s, const uint8_t *d, uint32_t len)
 }
 
 /* The keyboard's letter grid, editing keys and confirmation buttons. */
-static void SEC_MENU name_key_box(uint8_t key, URect *box)
+static void SEC_MENU name_key_box(uint8_t key, URect *box, uint8_t wide)
 {
 	box->h = 11;
 	if (key < NAME_SPACE) {
@@ -281,19 +385,25 @@ static void SEC_MENU name_key_box(uint8_t key, URect *box)
 		box->y = (int16_t)(46 + (key % 6) * 12);
 		box->w = 21;
 	} else if (key < NAME_DONE) {
-		box->x = (int16_t)(14 + (key - NAME_SPACE) * 44);
+		uint8_t i = key - NAME_SPACE;
+		box->x = name_edit_edges[i];
 		box->y = 120;
-		box->w = 43;
+		box->w = name_edit_edges[i + 1] - box->x - 1;
 	} else {
 		box->x = (int16_t)(14 + (key - NAME_DONE) * 66);
 		box->y = 134;
 		box->w = 65;
 	}
+	if (wide) {
+		box->x = DANA_CENTER_X + 18 + (int16_t)((box->x - 14) * 50 / 22);
+		box->w = (int16_t)((box->w + 1) * 50 / 22 - 2);
+	}
 }
 
-static const char *SEC_MENU name_letter(uint8_t key)
+static char SEC_MENU name_letter(const Front *f, uint8_t key)
 {
-	return name_chars + (key % 6) * 6 + key / 6;
+	char c = name_chars[(key % 6) * 6 + key / 6];
+	return f->name_lower && c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c;
 }
 
 static uint8_t SEC_MENU name_len(const char *name)
@@ -303,28 +413,77 @@ static uint8_t SEC_MENU name_len(const char *name)
 	return n;
 }
 
-static void SEC_MENU name_draw(const Front *f, Surface *s)
+static void SEC_MENU name_field(const Front *f, Surface *s, URect *b, uint8_t wide)
 {
-	uint8_t key, len = name_len(f->player_name);
+	uint8_t len = name_len(f->player_name);
 
-	ui_fill(s, 14, 26, 131, 15, UIC_TITLE);
-	ui_bevel(s, 14, 26, 131, 15, UIC_INK, UIC_PAPER_DK);
-	ui_text(s, 20, 30, f->player_name, len, UIC_PAPER, -1);
-	if (len < PLAYER_NAME_MAX) ui_fill(s, 20 + len * UI_CHAR, 38, 6, 1, UIC_PAPER);
-	for (key = 0; key < NAME_KEYS; key++) {
-		URect b;
-		int16_t n = 1;
-		const char *t;
-		uint8_t selected = key == f->name_key;
-		if (key >= NAME_SPACE) {
-			t = name_actions[key - NAME_SPACE];
-			for (n = 0; t[n]; n++) {}
-		} else t = name_letter(key);
-		name_key_box(key, &b);
-		ui_fill(s, b.x, b.y, b.w, b.h, selected ? UIC_TITLE : UIC_BRASS);
-		ui_bevel(s, b.x, b.y, b.w, b.h, selected ? UIC_BAR_LT : UIC_BRASS_LT, UIC_BRASS_DK);
-		ui_ctext(s, b.x + b.w / 2, b.y + 2, t, n, selected ? UIC_TEXT_HI : UIC_INK, -1);
+	b->x = wide ? DANA_CENTER_X + 18 : 14;
+	b->y = wide ? 27 : 26;
+	b->w = wide ? 298 : 131;
+	b->h = 15;
+	ui_fill(s, b->x, b->y, b->w, b->h, UIC_TITLE);
+	ui_bevel(s, b->x, b->y, b->w, b->h, UIC_INK, wide ? UIC_WHITE : UIC_PAPER_DK);
+	ui_text(s, b->x + 6, b->y + 4, f->player_name, len, UIC_PAPER, -1);
+	if (len < PLAYER_NAME_MAX) ui_fill(s, b->x + 6 + len * UI_CHAR, b->y + 12, 6, 1, UIC_PAPER);
+}
+
+static void SEC_MENU name_draw_key(const Front *f, Surface *s, uint8_t key, URect *b, uint8_t wide)
+{
+	char letter;
+	int16_t n = 1;
+	const char *t;
+	uint8_t selected = key == f->name_key;
+
+	if (key < NAME_SPACE) {
+		letter = name_letter(f, key);
+		t = &letter;
+	} else {
+		t = key == NAME_CASE && f->name_lower ? "aA" : name_actions[key - NAME_SPACE];
+		ui_part(t, 0, 0, &n);
 	}
+	name_key_box(key, b, wide);
+	ui_fill(s, b->x, b->y, b->w, b->h, selected ? UIC_TITLE : UIC_BRASS);
+	ui_bevel(s, b->x, b->y, b->w, b->h, selected ? UIC_BAR_LT : UIC_BRASS_LT, UIC_BRASS_DK);
+	ui_ctext(s, b->x + b->w / 2, b->y + 2, t, n, selected ? UIC_TEXT_HI : UIC_INK, -1);
+}
+
+static void SEC_MENU name_draw(const Front *f, Surface *s, uint8_t wide)
+{
+	URect b;
+	uint8_t key;
+
+	name_field(f, s, &b, wide);
+	for (key = 0; key < NAME_KEYS; key++) name_draw_key(f, s, key, &b, wide);
+}
+
+uint8_t front_name_update(const Front *f, Surface *s, uint8_t old_key, uint8_t old_lower, URect *dirty)
+{
+	uint8_t wide = dana_surface(s), n = 1;
+	int16_t ox = s->ox, oy = s->oy;
+	uint8_t i;
+
+	if (wide) s->ox = s->oy = 0;
+	name_field(f, s, &dirty[0], wide);
+	if (old_lower != f->name_lower) {
+		URect last;
+		for (i = 0; i < NAME_KEYS; i++) name_draw_key(f, s, i, &last, wide);
+		name_key_box(0, &dirty[n], wide);
+		dirty[n].w = last.x + last.w - dirty[n].x;
+		dirty[n].h = last.y + last.h - dirty[n].y;
+		n++;
+	} else if (old_key != f->name_key) {
+		name_draw_key(f, s, old_key, &dirty[n++], wide);
+		name_draw_key(f, s, f->name_key, &dirty[n++], wide);
+	}
+	for (i = 0; i < n; i++) {
+		dirty[i].x = s->ox + dirty[i].x * s->scale;
+		dirty[i].y = s->oy + dirty[i].y * s->scale;
+		dirty[i].w *= s->scale;
+		dirty[i].h *= s->scale;
+	}
+	s->ox = ox;
+	s->oy = oy;
+	return n;
 }
 
 static void SEC_MENU event_setup(const Front *f, Surface *s)
@@ -350,6 +509,7 @@ void front_draw(const Front *f, Surface *s)
 	const char *plate = f->screen == SCR_PLAYERS ? "PLAYERS" : f->screen == SCR_COURSES ? "COURSES" :
 	                    f->screen == SCR_SETTINGS ? "SETTINGS" : f->screen == SCR_GAMES ? "GAMES" :
 	                    f->screen == SCR_PLAYER ? "PLAYER" : f->screen == SCR_PLAYER_NAME ? "NAME" :
+	                    f->screen == SCR_CHARACTER ? "CHARACTER" :
 	                    f->screen == SCR_PRACTICE ? "PRACTICE" : "CLUBHOUSE";
 	int16_t n;
 
@@ -368,8 +528,12 @@ void front_draw(const Front *f, Surface *s)
 	for (n = 0; plate[n]; n++) {}
 	ui_ctext(s, PLATE_CX + 1, PLATE_Y + (PLATE_H - UI_CHAR) / 2 + 1, plate, n, UIC_BRASS_LT, -1);
 	ui_ctext(s, PLATE_CX, PLATE_Y + (PLATE_H - UI_CHAR) / 2, plate, n, UIC_BRASS_DK, -1);
+	if (f->screen == SCR_CHARACTER) {
+		character_draw(f, s);
+		return;
+	}
 	if (f->screen == SCR_PLAYER_NAME) {
-		name_draw(f, s);
+		name_draw(f, s, 0);
 		return;
 	}
 	if (f->screen == SCR_COURSES && line_course(f, f->menu.sel) != 0xFF) {
@@ -571,24 +735,19 @@ void front_dana(Front *f, uint8_t wide)
 
 static void SEC_MENU player_menu(Front *f, uint8_t sel)
 {
-	static const char *const skins[SKIN_COLOURS] = { "|Skin: Light", "|Skin: Medium", "|Skin: Dark" };
-	const char *a = "Name: ", *b = f->player.golfer == GOLFER_FEMALE ? "|Golfer: Female" : "|Golfer: Male";
-	const char *c = skins[f->player.skin < SKIN_COLOURS ? f->player.skin : SKIN_LIGHT];
-	const char *d = f->player.left ? "|Hand: Left|Back" : "|Hand: Right|Back";
+	const char *a = "Name: ", *b = "|Edit Character|Back";
 	uint8_t n = 0, k, len = name_len(f->player.name);
 
 	while (*a) f->player_list[n++] = *a++;
 	for (k = 0; k < len; k++) f->player_list[n++] = f->player.name[k] == '|' ? ' ' : f->player.name[k];
 	while (*b) f->player_list[n++] = *b++;
-	while (*c) f->player_list[n++] = *c++;
-	while (*d) f->player_list[n++] = *d++;
 	f->player_list[n] = 0;
 	f->screen = SCR_PLAYER;
 	ui_menu_init(&f->menu, f->player_list, 16, 36, 128, 18);
 	f->menu.sel = sel;
 }
 
-static int SEC_MENU player_pick(Front *f, uint8_t i, int8_t d)
+static int SEC_MENU player_pick(Front *f, uint8_t i)
 {
 	switch (i) {
 	case PLAYER_NAME: {
@@ -596,25 +755,67 @@ static int SEC_MENU player_pick(Front *f, uint8_t i, int8_t d)
 		for (k = 0; k <= PLAYER_NAME_MAX; k++) f->player_name[k] = f->player.name[k];
 		f->player_name[PLAYER_NAME_MAX] = 0;
 		f->name_key = NAME_CLEAR;
+		f->name_lower = 0;
 		f->screen = SCR_PLAYER_NAME;
 		return FR_REDRAW;
 	}
-	case PLAYER_GOLFER:
-		f->player.golfer ^= 1;
-		break;
-	case PLAYER_SKIN:
-		f->player.skin = (uint8_t)((f->player.skin + SKIN_COLOURS + d) % SKIN_COLOURS);
-		break;
-	case PLAYER_HAND:
-		f->player.left ^= 1;
-		break;
+	case PLAYER_CHARACTER:
+		f->character = f->player;
+		f->character_row = 0;
+		f->screen = SCR_CHARACTER;
+		return FR_REDRAW;
 	default:
 		front_clubhouse(f, f->saved);
 		f->menu.sel = (uint8_t)(MAIN_PLAYER + (f->saved ? 1 : 0));
 		return FR_REDRAW;
 	}
-	player_menu(f, i);
-	return FR_REDRAW | FR_PLAYER;
+}
+
+static int SEC_DANA character_pick(Front *f, uint8_t row, int8_t d)
+{
+	if (row < CHARACTER_DONE) {
+		uint8_t count = character_options[row].count;
+		uint8_t *choice = (uint8_t *)&f->character + character_options[row].offset;
+		*choice = (uint8_t)((*choice + count + d) % count);
+		f->character_row = row;
+		return FR_REDRAW | FR_CHARACTER | FR_CHARACTER_POSE;
+	}
+	if (row == CHARACTER_DONE) f->player = f->character;
+	player_menu(f, PLAYER_CHARACTER);
+	return FR_REDRAW | (row == CHARACTER_DONE ? FR_PLAYER : 0);
+}
+
+static int SEC_DANA character_key(Front *f, uint8_t key)
+{
+	switch (key) {
+	case KEY_UP: case KEY_DOWN: {
+		int8_t d = key == KEY_UP ? -1 : 1;
+		f->character_row = (uint8_t)((f->character_row + CHARACTER_ROWS + d) % CHARACTER_ROWS);
+		return FR_REDRAW | FR_CHARACTER;
+	}
+	case KEY_LEFT: case KEY_RIGHT: {
+		int8_t d = key == KEY_LEFT ? -1 : 1;
+		if (f->character_row < CHARACTER_DONE) return character_pick(f, f->character_row, d);
+		f->character_row = f->character_row == CHARACTER_DONE ? CHARACTER_CANCEL : CHARACTER_DONE;
+		return FR_REDRAW | FR_CHARACTER;
+	}
+	case KEY_SELECT: return character_pick(f, f->character_row, 1);
+	case KEY_BACK: return character_pick(f, CHARACTER_CANCEL, 1);
+	default: return 0;
+	}
+}
+
+static int SEC_DANA character_tap(Front *f, int16_t x, int16_t y)
+{
+	uint8_t row;
+
+	for (row = 0; row < CHARACTER_ROWS; row++) {
+		URect b;
+		character_box(row, &b);
+		if (x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h)
+			return character_pick(f, row, 1);
+	}
+	return 0;
 }
 
 static int SEC_MENU name_input(Front *f, uint16_t chr)
@@ -639,23 +840,24 @@ static int SEC_MENU name_input(Front *f, uint16_t chr)
 	}
 	if (chr == '\b') {
 		if (n) f->player_name[n - 1] = 0;
-		return FR_REDRAW;
+		return FR_REDRAW | FR_NAME;
 	}
 	if (chr < 32 || chr > 126 || chr == '|') return 0;
 	if (n < PLAYER_NAME_MAX) {
 		f->player_name[n] = (char)chr;
 		f->player_name[n + 1] = 0;
 	}
-	return FR_REDRAW;
+	return FR_REDRAW | FR_NAME;
 }
 
 static int SEC_MENU name_pick(Front *f, uint8_t key)
 {
-	if (key < NAME_SPACE) return name_input(f, (uint8_t)*name_letter(key));
+	if (key < NAME_SPACE) return name_input(f, (uint8_t)name_letter(f, key));
 	switch (key) {
 	case NAME_SPACE: return name_input(f, ' ');
 	case NAME_DEL: return name_input(f, '\b');
-	case NAME_CLEAR: f->player_name[0] = 0; return FR_REDRAW;
+	case NAME_CLEAR: f->player_name[0] = 0; return FR_REDRAW | FR_NAME;
+	case NAME_CASE: f->name_lower ^= 1; return FR_REDRAW | FR_NAME;
 	case NAME_DONE: return name_input(f, '\r');
 	default: return name_input(f, 27);
 	}
@@ -672,7 +874,7 @@ int front_text(Front *f, uint16_t chr)
 
 static int SEC_MENU open_item(Front *f, uint8_t i)
 {
-	if (f->screen == SCR_PLAYER) return player_pick(f, i, 1);
+	if (f->screen == SCR_PLAYER) return player_pick(f, i);
 	if (f->screen == SCR_SETTINGS) {
 		if (i == 0) {
 			f->sound = (uint8_t)((f->sound + 1) % SOUND_MODES);
@@ -799,6 +1001,7 @@ static int SEC_MENU key_in(Front *f, uint8_t key)
 		f->screen = SCR_MENU;
 		return FR_REDRAW;
 	}
+	if (f->screen == SCR_CHARACTER) return character_key(f, key);
 	if (f->screen == SCR_PLAYER_NAME) {
 		int16_t d;
 		switch (key) {
@@ -811,7 +1014,7 @@ static int SEC_MENU key_in(Front *f, uint8_t key)
 		default: return 0;
 		}
 		f->name_key = (uint8_t)((f->name_key + NAME_KEYS + d) % NAME_KEYS);
-		return FR_REDRAW;
+		return FR_REDRAW | FR_NAME;
 	}
 	if (f->dialog) {
 		switch (key) {
@@ -836,9 +1039,6 @@ static int SEC_MENU key_in(Front *f, uint8_t key)
 		f->oldSel = f->menu.sel;
 		return FR_REDRAW | FR_LINES;
 	}
-	if (f->screen == SCR_PLAYER && f->menu.sel >= PLAYER_GOLFER && f->menu.sel <= PLAYER_HAND &&
-	    (key == KEY_LEFT || key == KEY_RIGHT))
-		return player_pick(f, f->menu.sel, key == KEY_LEFT ? -1 : 1);
 	switch (key) {
 	/* on the courses screen the preview changes too, so all of it is redrawn */
 	case KEY_UP: f->oldSel = f->menu.sel; ui_menu_move(&f->menu, -1); return FR_REDRAW | (f->screen == SCR_COURSES ? 0 : FR_LINES);
@@ -881,11 +1081,12 @@ static int SEC_MENU tap_in(Front *f, int16_t x, int16_t y)
 		f->screen = SCR_MENU;
 		return FR_REDRAW;
 	}
+	if (f->screen == SCR_CHARACTER) return character_tap(f, x, y);
 	if (f->screen == SCR_PLAYER_NAME) {
 		uint8_t key;
 		for (key = 0; key < NAME_KEYS; key++) {
 			URect b;
-			name_key_box(key, &b);
+			name_key_box(key, &b, 0);
 			if (x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h) {
 				f->name_key = key;
 				return name_pick(f, key);
@@ -1012,36 +1213,6 @@ static void SEC_DANA dana_event(const Front *f, Surface *s)
 	}
 }
 
-static void SEC_DANA dana_name_box(uint8_t key, URect *b)
-{
-	name_key_box(key, b);
-	b->x = DANA_CENTER_X + 18 + (int16_t)((b->x - 14) * 50 / 22);
-	b->w = (int16_t)((b->w + 1) * 50 / 22 - 2);
-}
-
-static void SEC_DANA dana_name(const Front *f, Surface *s)
-{
-	uint8_t key, len = name_len(f->player_name);
-
-	dana_box(s, DANA_CENTER_X, DANA_CENTER_W, "NAME");
-	ui_fill(s, DANA_CENTER_X + 18, 27, 298, 15, UIC_TITLE);
-	ui_bevel(s, DANA_CENTER_X + 18, 27, 298, 15, UIC_INK, UIC_WHITE);
-	ui_text(s, DANA_CENTER_X + 24, 31, f->player_name, len, UIC_PAPER, -1);
-	if (len < PLAYER_NAME_MAX) ui_fill(s, DANA_CENTER_X + 24 + len * UI_CHAR, 39, 6, 1, UIC_PAPER);
-	for (key = 0; key < NAME_KEYS; key++) {
-		URect b;
-		int16_t n;
-		uint8_t selected = key == f->name_key;
-		const char *t = key < NAME_SPACE ? name_letter(key) : name_actions[key - NAME_SPACE];
-		dana_name_box(key, &b);
-		if (key < NAME_SPACE) n = 1;
-		else ui_part(t, 0, 0, &n);
-		ui_fill(s, b.x, b.y, b.w, b.h, selected ? UIC_TITLE : UIC_BRASS);
-		ui_bevel(s, b.x, b.y, b.w, b.h, selected ? UIC_BAR_LT : UIC_BRASS_LT, UIC_BRASS_DK);
-		ui_ctext(s, b.x + b.w / 2, b.y + 2, t, n, selected ? UIC_TEXT_HI : UIC_INK, -1);
-	}
-}
-
 static void dana_front_draw(const Front *f, Surface *s, const char *plate)
 {
 	int16_t ox = s->ox, oy = s->oy;
@@ -1052,7 +1223,13 @@ static void dana_front_draw(const Front *f, Surface *s, const char *plate)
 	if (f->screen == SCR_TITLE) {
 		dana_well(s, 208, 141, 144, "PRESS ANY BUTTON", 1);
 	} else if (f->screen == SCR_PLAYER_NAME) {
-		dana_name(f, s);
+		dana_box(s, DANA_CENTER_X, DANA_CENTER_W, "NAME");
+		name_draw(f, s, 1);
+	} else if (f->screen == SCR_CHARACTER) {
+		dana_box(s, (DANA_SCREEN_W - 176) / 2, 176, plate);
+		s->ox = ox;
+		s->oy = oy;
+		character_draw(f, s);
 	} else {
 		split = dana_menus(f, &left, &right);
 		dana_box(s, left.x - 8, left.w + 16, plate);
@@ -1080,14 +1257,15 @@ int front_dana_tap(Front *f, int16_t x, int16_t y)
 	uint8_t split;
 	int i;
 
-	if (f->screen == SCR_TITLE || f->dialog) return front_tap(f, x - (DANA_SCREEN_W - 160) / 2, y);
+	if (f->screen == SCR_TITLE || f->screen == SCR_CHARACTER || f->dialog)
+		return front_tap(f, x - (DANA_SCREEN_W - 160) / 2, y);
 	if (f->screen == SCR_PLAYER_NAME) {
 		uint8_t key;
 		for (key = 0; key < NAME_KEYS; key++) {
 			URect b;
-			dana_name_box(key, &b);
+			name_key_box(key, &b, 1);
 			if (x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h) {
-				name_key_box(key, &b);
+				name_key_box(key, &b, 0);
 				return front_tap(f, b.x, b.y);
 			}
 		}

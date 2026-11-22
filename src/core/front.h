@@ -26,6 +26,10 @@
 #define PREVIEW_Y 110
 #define PREVIEW_W 104
 #define PREVIEW_H 32
+#define CHARACTER_PREVIEW_X 119
+#define CHARACTER_PREVIEW_Y 29
+#define CHARACTER_PREVIEW_W 26
+#define CHARACTER_PREVIEW_H 93
 /* A course's scenery when the platform can't tell it: no preview. */
 #define SCENERY_UNKNOWN 0xFF
 
@@ -54,10 +58,16 @@ enum { KEY_NONE, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_SELECT, KEY_OTHER, K
 #define FR_GIMMES 256
 /* A player preference changed: the platform saves it. */
 #define FR_PLAYER 512
+/* The name editor stayed open, so redraw just its changed areas. */
+#define FR_NAME   1024
+/* Redraw the character editor's changed controls and, when needed, its preview. */
+#define FR_CHARACTER      2048
+#define FR_CHARACTER_POSE 4096
 
 /* The screens past the title are the menu board with a list. Games picks
  * the mode, players who plays each slot. */
-enum { SCR_TITLE, SCR_MENU, SCR_PLAYERS, SCR_COURSES, SCR_SETTINGS, SCR_GAMES, SCR_PRACTICE, SCR_PLAYER, SCR_PLAYER_NAME };
+enum { SCR_TITLE, SCR_MENU, SCR_PLAYERS, SCR_COURSES, SCR_SETTINGS, SCR_GAMES, SCR_PRACTICE,
+       SCR_PLAYER, SCR_PLAYER_NAME, SCR_CHARACTER };
 
 /* A player slot nobody plays. Others are CPU_* (rules.h). */
 #define SLOT_OFF 0xFF
@@ -98,8 +108,11 @@ typedef struct {
 	uint8_t sound;           /* SOUND_* */
 	char settings_list[64];  /* "Sound: On|CPU: Quick|Shot view: Map|Gimmies: 2 ft|Back" */
 	PlayerProfile player;
+	PlayerProfile character;              /* draft appearance until Done */
+	uint8_t character_row;
 	char player_list[64];
 	char player_name[PLAYER_NAME_MAX + 1]; /* draft name until Done */
+	uint8_t name_lower;                   /* lowercase letters on the name keyboard */
 	uint8_t name_key;                     /* selected key on the name screen */
 	char players_list[RULES_PLAYERS * 13 + 16 + 15 + 14];
 	uint8_t tee;             /* the tee set picked on the players screen, 0 the longest */
@@ -129,6 +142,11 @@ int SEC_MENU front_tap(Front *f, int16_t x, int16_t y);
 int SEC_DANA front_dana_tap(Front *f, int16_t x, int16_t y);
 /* A printable character, Backspace, Return or Escape in the name editor. */
 int SEC_MENU front_text(Front *f, uint16_t chr);
+/* Redraws the name editor in place. Dirty has room for three pixel rectangles. */
+uint8_t SEC_MENU front_name_update(const Front *f, Surface *s, uint8_t old_key, uint8_t old_lower, URect *dirty);
+/* Redraws changed controls and clears the preview if requested. Returns up to
+ * three pixel rectangles for a centred surface. */
+uint8_t SEC_DANA front_character_update(const Front *f, Surface *s, uint8_t old_row, uint8_t preview, URect *dirty);
 /* Opens a dialog with an OK button over the menu, such as when there's no course to play. */
 void SEC_MENU front_message(Front *f, const char *title, const char *text);
 /* Back to the clubhouse menu, with Continue round if saved isn't 0. */

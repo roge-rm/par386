@@ -914,6 +914,54 @@ static void press_tests(const Hole *h, const SurfaceGrid *g)
 	free(bg.bits);
 }
 
+static void aim_marker_test(const Hole *h, const SurfaceGrid *g, int keep)
+{
+	Play p;
+	Surface s = {0}, bg;
+	uint32_t t = UINT32_MAX - 500;
+	size_t view, i, full = 0, faded = 0;
+	int f;
+
+	s.scale = keep ? 1 : 2;
+	s.depth = keep ? 2 : 8;
+	s.w = s.h = (int16_t)(160 * s.scale);
+	s.rowBytes = (uint16_t)(s.w * s.depth / 8);
+	view = (size_t)(s.h - RENDER_STATUS * s.scale) * s.rowBytes;
+	s.bits = malloc((size_t)s.h * s.rowBytes);
+	gfx_init(&s);
+	bg = s;
+	bg.bits = malloc((size_t)bg.h * bg.rowBytes);
+	memset(bg.bits, 0x55, (size_t)bg.h * bg.rowBytes);
+	memcpy(s.bits, bg.bits, view);
+	play_init(&p, h, g, 7);
+	CHECK(!(play_frame(&p, &s, keep ? &bg : NULL, t) & PL_ANIM));
+	CHECK(memcmp(s.bits, bg.bits, view) == 0);
+
+	play_key(&p, KEY_LEFT, t + 1);
+	f = play_frame(&p, &s, keep ? &bg : NULL, t + 1);
+	CHECK((f & (PL_ANIM | PL_DIRTY | PL_RENDER)) == (PL_ANIM | PL_DIRTY));
+	for (i = 0; i < view; i++) full += s.bits[i] != bg.bits[i];
+	CHECK(full > 0);
+	CHECK(play_frame(&p, &s, keep ? &bg : NULL, t + 501) == PL_ANIM);
+	f = play_frame(&p, &s, keep ? &bg : NULL, t + 1501);
+	CHECK((f & (PL_ANIM | PL_DIRTY | PL_RENDER)) == (PL_ANIM | PL_DIRTY));
+	for (i = 0; i < view; i++) faded += s.bits[i] != bg.bits[i];
+	CHECK(faded > 0 && faded < full);
+	CHECK(play_frame(&p, &s, keep ? &bg : NULL, t + 1701) == PL_DIRTY);
+	CHECK(memcmp(s.bits, bg.bits, view) == 0);
+
+	/* A slow recenter starts the marker's timer after the draw. */
+	play_tap(&p, 2, 60, t + 1800);
+	CHECK(play_frame(&p, &s, keep ? &bg : NULL, t + 1800) == PL_RENDER);
+	CHECK(play_frame(&p, &s, keep ? &bg : NULL, t + 5000) & PL_ANIM);
+	CHECK(memcmp(s.bits, bg.bits, view) != 0);
+	play_key(&p, KEY_SELECT, t + 5100);
+	CHECK(play_frame(&p, &s, keep ? &bg : NULL, t + 5100) & PL_DIRTY);
+	CHECK(memcmp(s.bits, bg.bits, view) == 0);
+	free(bg.bits);
+	free(s.bits);
+}
+
 static void meter_tests(const Hole *h, const SurfaceGrid *g)
 {
 	Play p;
@@ -1261,16 +1309,17 @@ static void green_tests(const Hole *h, const SurfaceGrid *g)
 	CHECK(play_key(&p, KEY_UP, 3000) == 0 && p.club == CLUB_PT);
 	green_view(&p, &s, &bg);
 	play_frame(&p, &s, &bg, 3100);
-	/* the ball shows low in the middle and the cup about a third of the way down */
+	/* The cup is above the ball with room to see the grid behind both. */
 	{
-		int16_t sx, sy;
+		int16_t sx, sy, ball_y;
 		fixed depth;
 		CHECK(render_point(&p.cam, p.rv.ball.x, p.rv.ball.y, hole_height(h, p.rv.ball.x, p.rv.ball.y), &sx, &sy, &depth));
 		printf("green view: ball at %d,%d, ", sx, sy);
-		CHECK(sx == 80 && sy > 100 && sy < 135);
+		CHECK(sx == 80 && sy > 90 && sy < 120);
+		ball_y = sy;
 		CHECK(render_point(&p.cam, pin.x, pin.y, hole_height(h, pin.x, pin.y), &sx, &sy, &depth));
 		printf("cup at %d,%d\n", sx, sy);
-		CHECK(sx > 60 && sx < 100 && sy > 30 && sy < 70);
+		CHECK(sx > 60 && sx < 100 && sy > 30 && sy < 70 && ball_y - sy >= 25);
 	}
 	save(&s, "green-aim");
 	/* aim with the keys and a tap, and the view stays */
@@ -1420,6 +1469,8 @@ int main(int argc, char **argv)
 	slope_tests();
 	putt_tests();
 	test_hole(&h, &g);
+	aim_marker_test(&h, &g, 1);
+	aim_marker_test(&h, &g, 0);
 	meter_tests(&h, &g);
 	landscape_meter_test(&h, &g);
 	press_tests(&h, &g);

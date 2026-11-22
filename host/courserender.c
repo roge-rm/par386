@@ -1,5 +1,5 @@
 /* Draws every hole of a course for looking at. Run by `make course-render`:
- *   courserender COURSE.pdb ARTDIR OUTDIR
+ *   courserender COURSE.pdb ARTDIR OUTDIR [HOLE]
  * Per hole: the tee view, the landing area (the aim point, looking at the
  * pin), near the green (40 yd short of the pin) and the hole map, at
  * 160x160 2-bit and 320x320 8-bit, as PGMs of pixel values (tools/refcmp.py
@@ -47,9 +47,10 @@ static uint8_t *pdb_record(const uint8_t *d, uint32_t n, int k, uint32_t *len)
 	uint32_t a, b;
 	uint8_t *r;
 
-	if (k >= count) return NULL;
+	if (k < 0 || k >= count || 78 + 8 * (uint32_t)count > n) return NULL;
 	a = be32(d + 78 + 8 * k);
 	b = k + 1 < count ? be32(d + 78 + 8 * (k + 1)) : n;
+	if (a < 78 + 8 * (uint32_t)count || a >= b || b > n) return NULL;
 	*len = b - a;
 	r = malloc(*len);
 	memcpy(r, d + a, *len);
@@ -128,19 +129,20 @@ static angle toward(vec2 from, vec2 to) { return iatan2(to.y - from.y, to.x - fr
 
 int main(int argc, char **argv)
 {
-	uint8_t *pdb, *crec, *hrec;
-	uint32_t n, clen, hlen, total = 0;
+	uint8_t *pdb, *crec, *hrec, *manifest;
+	uint32_t n, clen, hlen, manifest_len = 0, total = 0;
 	Course c;
 	Hole h;
 	SurfaceGrid g;
 	uint8_t row[SURF_ROW_MAX];
 	RenderArt art[2];
-	RenderView v;
+	RenderView v = {0};
 	RenderStats st;
-	int k, i, scale, yards = 0, par = 0;
+	int k, i, scale, first = 1, last, yards = 0, par = 0;
+	uint16_t records;
 
-	if (argc != 4) {
-		printf("usage: courserender COURSE.pdb ARTDIR OUTDIR\n");
+	if (argc != 4 && argc != 5) {
+		printf("usage: courserender COURSE.pdb ARTDIR OUTDIR [HOLE]\n");
 		return 2;
 	}
 	outdir = argv[3];
@@ -149,17 +151,40 @@ int main(int argc, char **argv)
 	crec = pdb_record(pdb, n, 0, &clen);
 	CHECK(crec && course_parse(&c, crec, clen) == HOLE_OK);
 	if (fails) return 1;
+	last = c.hole_count;
+	if (argc == 5) {
+		char *end;
+		long wanted = strtol(argv[4], &end, 10);
+		if (*end || wanted < 1 || wanted > last) {
+			fputs("hole number out of range\n", stderr);
+			return 2;
+		}
+		first = last = (int)wanted;
+	}
+	records = (uint16_t)((pdb[76] << 8) | pdb[77]);
+	manifest = pdb_record(pdb, n, c.hole_count + 1, &manifest_len);
 	art_load(&art[0], argv[2], 1, c.scenery);
 	art_load(&art[1], argv[2], 2, c.scenery);
 	CHECK(art[0].backdrop.len && art[1].backdrop.len);
 	printf("%s: %d holes, scenery %d\n", c.name, c.hole_count, c.scenery);
 
-	for (k = 1; k <= c.hole_count; k++) {
+	for (k = first; k <= last; k++) {
 		vec2 spot[3];
+		uint8_t *mesh[2] = {0};
+		TerrainMesh quality[2] = {{0}};
+		uint32_t mesh_len;
+		uint16_t mesh_index;
 		static const char *names[3] = { "tee", "landing", "green" };
 		hrec = pdb_record(pdb, n, k, &hlen);
 		CHECK(hrec && hole_parse(&h, hrec, hlen) == HOLE_OK);
 		if (!hrec || fails) return 1;
+		for (scale = 1; scale <= 2; scale++) {
+			mesh_index = course_terrain_record(manifest, manifest_len, c.hole_count, records,
+			                                   (uint16_t)k, scale == 1);
+			if (!mesh_index) continue;
+			mesh[scale - 1] = pdb_record(pdb, n, mesh_index, &mesh_len);
+			CHECK(mesh[scale - 1] && terrain_mesh_parse(&quality[scale - 1], &h, mesh[scale - 1], mesh_len));
+		}
 		h.turn = (uint16_t)(c.turn[k - 1] << 8);
 		total += hlen;
 		yards += c.yards[k - 1];
@@ -196,15 +221,18 @@ int main(int argc, char **argv)
 			if (i == 0 && h.par == 3) v.aim = toward(v.ball, h.pins[0]);
 			for (scale = 1; scale <= 2; scale++) {
 				Surface s;
-				uint32_t wn;
+				uint32_t visual, wn;
 				uint8_t *work;
 				int x, y, left = 0;
 				surface(&s, scale);
-				wn = render_work_size(&s);
+				h.terrain_mesh = quality[scale - 1];
+				visual = h.terrain_mesh.data ? render_scene_visual_size(&s, &v) : 0;
+				wn = visual ? visual : render_work_size(&s);
 				work = malloc(wn);
 				memset(s.bits, s.depth == 8 ? SENTINEL : 0x55, (size_t)s.rowBytes * s.h);
 				memset(&st, 0, sizeof st);
-				CHECK(render_scene(&s, &v, &art[scale - 1], work, &st) == 0);
+				CHECK((visual ? render_scene_visual(&s, &v, &art[scale - 1], work, &st) :
+				                render_scene(&s, &v, &art[scale - 1], work, &st)) == 0);
 				free(work);
 				if (s.depth == 8)
 					for (y = 0; y < s.h; y++)
@@ -231,6 +259,8 @@ int main(int argc, char **argv)
 			free(s.bits);
 		}
 		free(grid);
+		free(mesh[0]);
+		free(mesh[1]);
 		free(hrec);
 	}
 	printf("par %d, %d yd, hole records %u bytes, course %u bytes\n", par, yards, total, total + clen);
@@ -245,6 +275,7 @@ int main(int argc, char **argv)
 		free((void *)art[scale].backdrop.p);
 	}
 	free(crec);
+	free(manifest);
 	free(pdb);
 	printf("%d checks, %d failed\n", checks, fails);
 	return fails ? 1 : 0;

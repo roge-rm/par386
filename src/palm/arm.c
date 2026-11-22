@@ -25,19 +25,38 @@ static UInt8 *gPalLE;
 typedef char To16Size[sizeof(To16) == TO16_SIZE ? 1 : -1];
 typedef char To16Offs[TO16_AT(d, TO16_D) && TO16_AT(pal, TO16_PAL) && TO16_AT(dith, TO16_DITH)
 	&& TO16_AT(srb, TO16_SRB) && TO16_AT(x0, TO16_X0) && TO16_AT(y1, TO16_Y1)
-	&& TO16_AT(le, TO16_LE) && TO16_AT(hi, TO16_HI) ? 1 : -1];
+	&& TO16_AT(le, TO16_LE) && TO16_AT(hi, TO16_HI) && TO16_AT(width, TO16_WIDTH)
+	&& TO16_AT(smooth_y1, TO16_SMOOTH_Y1) ? 1 : -1];
 
 /* and the renderer's jobs as terraarm.c reads them */
 #define AT(s, f, o) (offsetof(s, f) == (o))
 typedef char TerraRowOffs[AT(TerraRow, grey, TR_GREY) && AT(TerraRow, dpys, TR_DPYS) && AT(TerraRow, rb, TR_RB)
 	&& AT(TerraRow, gs, TR_GS) && AT(TerraRow, tq, TR_TQ) && AT(TerraRow, wlv, TR_WLV) && AT(TerraRow, ymax, TR_YMAX)
-	&& AT(TerraRow, lg, TR_LG) && AT(TerraRow, hm, TR_HM) && AT(TerraRow, spans, TR_SIZE) ? 1 : -1];
+	&& AT(TerraRow, lg, TR_LG) && AT(TerraRow, hm, TR_HM) && AT(TerraRow, material, TR_MATERIAL)
+	&& AT(TerraRow, cut, TR_CUT) && AT(TerraRow, prior_material, TR_PRIOR_MATERIAL)
+	&& AT(TerraRow, prior_y, TR_PRIOR_Y) && AT(TerraRow, prior_sand_px, TR_PRIOR_SAND)
+	&& AT(TerraRow, sand_relief, TR_SAND_RELIEF) && AT(TerraRow, sand_light, TR_SAND_LIGHT)
+	&& AT(TerraRow, prior_relief, TR_PRIOR_RELIEF)
+	&& AT(TerraRow, spans, TR_SIZE) ? 1 : -1];
 typedef char TerraTrisOffs[AT(TerraTris, grey, TT_GREY) && AT(TerraTris, rb, TT_RB) && AT(TerraTris, n, TT_N)
-	&& AT(TerraTris, lg, TT_LG) && sizeof(TerraTris) == TT_SIZE && sizeof(TerraTri) == 16 ? 1 : -1];
+	&& AT(TerraTris, lg, TT_LG) && AT(TerraTris, turf, TT_TURF) && AT(TerraTris, noise, TT_NOISE)
+	&& AT(TerraTris, mow_phase, TT_MOW_PHASE) && AT(TerraTurf, depth, 18)
+	&& sizeof(TerraTris) == TT_SIZE && sizeof(TerraTri) == 16 && sizeof(TerraTurf) == TT_TURF_SIZE ? 1 : -1];
 typedef char TerraSkyOffs[AT(TerraSky, grey, TS_GREY) && AT(TerraSky, pos, TS_POS) && AT(TerraSky, w, TS_W)
 	&& AT(TerraSky, bw, TS_BW) && AT(TerraSky, lg, TS_LG) && AT(TerraSky, px, TS_SIZE) ? 1 : -1];
 typedef char TerraMapOffs[AT(TerraMap, grey, TM_GREY) && AT(TerraMap, ypp, TM_YPP) && AT(TerraMap, rb, TM_RB)
 	&& AT(TerraMap, gh, TM_GH) && AT(TerraMap, lg, TM_LG) && sizeof(TerraMap) == TM_SIZE ? 1 : -1];
+typedef char TerraCurveOffs[AT(TerraCurveShade, light, TC_LIGHT) && AT(TerraCurveShade, bayer, TC_BAYER)
+	&& AT(TerraCurveShade, spans, TC_SPANS) && AT(TerraCurveShade, rb, TC_RB)
+	&& AT(TerraCurveShade, count, TC_COUNT) && AT(TerraCurveShade, noise, TC_NOISE)
+	&& sizeof(TerraCurveShade) == TC_SIZE ? 1 : -1];
+
+typedef char TerraMeshOffs[AT(TerraMeshProject, light, TMP_LIGHT) &&
+	AT(TerraMeshProject, origin_side, TMP_ORIGIN_SIDE) && AT(TerraMeshProject, low, TMP_LOW) &&
+	AT(TerraMeshProject, fx, TMP_FX) && AT(TerraMeshProject, count, TMP_COUNT) &&
+	AT(TerraMeshProject, projected, TMP_PROJECTED) && sizeof(TerraMeshProject) == TMP_PROJECTED + 1 &&
+	AT(MeshPoint, x, MP_X) && AT(MeshPoint, u, MP_U) && AT(MeshPoint, light, MP_LIGHT) &&
+	sizeof(MeshPoint) == MP_SIZE ? 1 : -1];
 
 #ifndef NO_ARM
 static void SEC_CORE ArmTo16(const To16 *a)

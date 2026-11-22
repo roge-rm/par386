@@ -32,8 +32,8 @@ os.makedirs(ART, exist_ok=True)
 meta = json.load(open(os.path.join(src, 'meta.json')))
 paths = sorted(glob.glob(os.path.join(src, 'f[0-9][0-9].png')))
 frame_nums = [int(os.path.basename(path)[1:3]) for path in paths]
-if female and frame_nums != [1, 2, 4, 13]:
-    raise SystemExit('Render female frames 1,2,4,13')
+if female and frame_nums != [1, 2, 4, 8, 13]:
+    raise SystemExit('Render female frames 1,2,4,8,13')
 big = [np.asarray(Image.open(p).convert('RGBA')).astype(np.float64) / 255 for p in paths]
 # club alone (render.py), so the thin shaft survives the shrink
 clubs = [np.asarray(Image.open(os.path.join(src, f'c{n:02d}.png')).convert('RGBA')).astype(np.float64) / 255
@@ -42,7 +42,7 @@ clubs = [np.asarray(Image.open(os.path.join(src, f'c{n:02d}.png')).convert('RGBA
 SIZES = (40, 80) if female else (20, 40, 60, 80)
 TITLE_ONLY = {} if female else {80: (1, 4, 13)}
 # frames made after those at a size, with their own grain, so the others stay as they were
-LATE = {} if female else {80: (2,)}
+LATE = {40: (8,), 80: (8,)} if female else {80: (2, 8)}
 rng = np.random.default_rng(386)
 
 RGB, RAMPS, _, _ = mkpal.build()
@@ -58,7 +58,8 @@ ALLOWED = np.array(ALLOWED)
 WEIGHT = np.array([3.0, 4.0, 2.0])
 
 # common crop over all frames, so every frame shares the same feet anchor
-a_all = np.max([b[..., 3] for b in big + clubs], axis=0)
+crop = [i for i, n in enumerate(frame_nums) if not female or n != 8]
+a_all = np.max([b[i][..., 3] for b in (big, clubs) for i in crop], axis=0)
 ys, xs = np.nonzero(a_all > 0.02)
 y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
 a0 = big[0][..., 3]

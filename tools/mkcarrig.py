@@ -449,7 +449,8 @@ def main():
         "name Carrig Head\n" + "".join("tee %s\n" % t for t in TEES) +
         "holes %d\n" % len(HOLES) +
         "scenery 2         # the clifftop backdrop: the Atlantic, the far headland and its lighthouse\n"
-        "wind 15           # off the Atlantic, harder than the usual 10\n")
+        "wind 15           # off the Atlantic, harder than the usual 10\n"
+        "terrain-mesh 11 putting bunkers\n")
     total, pars, tot_t = 0, 0, [0, 0]
     for n, d in enumerate(HOLES, 1):
         par, yards, others = make_hole(n, d, out)
