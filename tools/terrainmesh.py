@@ -26,6 +26,7 @@ MOW_CONTRAST = 13
 MAX_BYTES = 60000
 MANIFEST = b"MSH1"
 QUALITY_MANIFEST = b"MSH2"
+GRID_MANIFEST = b"MSH3"
 
 
 def corners(width, length, outlines, col_step, row_step, green_step):
@@ -701,9 +702,10 @@ def record_indices(records, holes):
     """Read the optional table after the ordinary hole records."""
     table = records[holes + 1] if len(records) > holes + 1 else b""
     magic = table[:4]
-    if magic not in (MANIFEST, QUALITY_MANIFEST):
+    stride = {MANIFEST: 1, QUALITY_MANIFEST: 2, GRID_MANIFEST: 3}.get(magic)
+    if stride is None:
         return ()
-    count = holes * (2 if magic == QUALITY_MANIFEST else 1)
+    count = holes * stride
     if len(table) != 4 + 2 * count:
         raise ValueError("wrong manifest size")
     indices = unpack_from(">%dH" % count, table, 4)
@@ -712,8 +714,10 @@ def record_indices(records, holes):
         raise ValueError("invalid mesh record indices")
     if magic == MANIFEST:
         return [(i, 0) for i in indices]
-    pairs = list(zip(indices[::2], indices[1::2]))
-    if not any(compact for _, compact in pairs):
+    if magic == GRID_MANIFEST and not all(indices[2::stride]):
+        raise ValueError("missing lie-grid record")
+    pairs = list(zip(indices[::stride], indices[1::stride]))
+    if magic == QUALITY_MANIFEST and not any(compact for _, compact in pairs):
         raise ValueError("quality manifest has no compact meshes")
     if any(compact and not detailed for detailed, compact in pairs):
         raise ValueError("compact mesh without detailed mesh")

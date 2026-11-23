@@ -60,6 +60,7 @@ static void terrain_row_le(const To16 *a, const uint8_t *p, To16Pixel *q)
 	const uint16_t *pal = a->pal;
 	int16_t x = a->x0;
 	int16_t stop = a->x1 < a->width ? a->x1 : (int16_t)(a->width - 1);
+	int words = !((uintptr_t)q & 3);
 
 	if (!x && x < a->x1) {
 		q[x] = pal[p[x]];
@@ -76,10 +77,18 @@ static void terrain_row_le(const To16 *a, const uint8_t *p, To16Pixel *q)
 		/* Screen runs in one ramp need only palette lookups. */
 		if (current == up && current == down && current == neighbours &&
 		    (current >> 24) == (uint32_t)(((uint16_t)p[x + 4] + 4) & 0x78)) {
-			q[x] = pal[p[x]];
-			q[x + 1] = pal[p[x + 1]];
-			q[x + 2] = pal[p[x + 2]];
-			q[x + 3] = pal[p[x + 3]];
+			uint16_t a0 = pal[p[x]], a1 = pal[p[x + 1]];
+			uint16_t b0 = pal[p[x + 2]], b1 = pal[p[x + 3]];
+			if (words) {
+				To16Word *out = (To16Word *)(q + x);
+				out[0] = a0 | ((uint32_t)a1 << 16);
+				out[1] = b0 | ((uint32_t)b1 << 16);
+			} else {
+				q[x] = a0;
+				q[x + 1] = a1;
+				q[x + 2] = b0;
+				q[x + 3] = b1;
+			}
 		} else {
 			int16_t i;
 			for (i = x; i < x + 4; i++) q[i] = terrain_colour(a, p, above, below, i);
@@ -94,13 +103,22 @@ static void terrain_row(const To16 *a, const uint8_t *p, uint8_t *q, int16_t y)
 	const uint8_t *above = p - a->srb, *below = p + a->srb;
 	int16_t x;
 
-	for (x = a->x0; x < a->x1; x++) {
-		uint16_t v;
-		if (a->mask) {
-			uint8_t t = a->dith[((y & 3) << 2) + (x & 3)];
-			if (t < a->lo || t >= a->hi) continue;
+	if (a->mask) {
+		uint8_t column;
+		const uint8_t *pattern = a->dith + ((y & 3) << 2);
+		for (column = 0; column < 4; column++) {
+			if (pattern[column] < a->lo || pattern[column] >= a->hi) continue;
+			for (x = (int16_t)(((a->x0 + 3 - column) & ~3) + column); x < a->x1; x += 4) {
+				uint16_t v = terrain_colour(a, p, above, below, x);
+				if (a->le) v = (uint16_t)((v << 8) | (v >> 8));
+				q[x << 1] = (uint8_t)(v >> 8);
+				q[(x << 1) + 1] = (uint8_t)v;
+			}
 		}
-		v = terrain_colour(a, p, above, below, x);
+		return;
+	}
+	for (x = a->x0; x < a->x1; x++) {
+		uint16_t v = terrain_colour(a, p, above, below, x);
 		if (a->le) v = (uint16_t)((v << 8) | (v >> 8));
 		q[x << 1] = (uint8_t)(v >> 8);
 		q[(x << 1) + 1] = (uint8_t)v;

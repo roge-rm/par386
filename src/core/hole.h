@@ -124,10 +124,11 @@ typedef void (*SurfaceRowFn)(void *ctx, uint16_t row, const uint8_t *bytes, uint
 /* Both return HOLE_OK or an error and never read past len. */
 int SEC_CORE course_parse(Course *c, const uint8_t *buf, uint32_t len);
 int SEC_CORE hole_parse(Hole *h, const uint8_t *buf, uint32_t len);
-/* Returns the hole's optional terrain record index, or zero.
- * If compact is set, use the compact mesh when present. */
+/* Returns the mesh or lie-grid record index, or zero.
+ * The compact lookup falls back to the detailed mesh. */
+enum { COURSE_TERRAIN_DETAIL, COURSE_TERRAIN_COMPACT, COURSE_TERRAIN_GRID };
 uint16_t SEC_DANA course_terrain_record(const uint8_t *buf, uint32_t len, uint8_t holes,
-                                        uint16_t records, uint16_t hole, int compact);
+                                        uint16_t records, uint16_t hole, int kind);
 
 /* Plays the hole from tee set set: its own tee, else the nearest longer one,
  * else the first. */

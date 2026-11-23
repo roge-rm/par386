@@ -119,9 +119,9 @@ int course_parse(Course *c, const uint8_t *buf, uint32_t len)
 }
 
 uint16_t course_terrain_record(const uint8_t *buf, uint32_t len, uint8_t holes,
-                                uint16_t records, uint16_t hole, int compact)
+                                uint16_t records, uint16_t hole, int kind)
 {
-	uint16_t i, stride, detailed, small, index = 0, next = (uint16_t)(holes + 2);
+	uint16_t i, stride, detailed, small, grid, index = 0, next = (uint16_t)(holes + 2);
 	int has_compact = 0;
 
 	if (!buf || !hole || hole > holes || holes > COURSE_MAX_HOLES ||
@@ -129,19 +129,25 @@ uint16_t course_terrain_record(const uint8_t *buf, uint32_t len, uint8_t holes,
 	    buf[0] != 'M' || buf[1] != 'S' || buf[2] != 'H') return 0;
 	if (buf[3] == '1') stride = 2;
 	else if (buf[3] == '2') stride = 4;
+	else if (buf[3] == '3') stride = 6;
 	else return 0;
 	if (len != 4 + (uint32_t)stride * holes) return 0;
 	for (i = 1, buf += 4; i <= holes; i++, buf += stride) {
 		detailed = GET16(buf);
-		small = stride == 4 ? GET16(buf + 2) : 0;
+		small = stride >= 4 ? GET16(buf + 2) : 0;
+		grid = stride == 6 ? GET16(buf + 4) : 0;
 		if (detailed && detailed != next++) return 0;
 		if (small) {
 			if (!detailed || small != next++) return 0;
 			has_compact = 1;
 		}
-		if (i == hole) index = compact && small ? small : detailed;
+		if (stride == 6 && grid != next++) return 0;
+		if (i == hole) {
+			if (kind == COURSE_TERRAIN_GRID) index = grid;
+			else index = kind == COURSE_TERRAIN_COMPACT && small ? small : detailed;
+		}
 	}
-	return next == records && (stride == 2 || has_compact) ? index : 0;
+	return next == records && (stride != 4 || has_compact) ? index : 0;
 }
 
 void hole_use_tee(Hole *h, uint8_t set)

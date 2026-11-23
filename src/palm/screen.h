@@ -55,6 +55,8 @@ UInt32 ScreenDissolve(Int16 y1, UInt16 ms);
  * changes. ScreenSpareHas returns it only if it's there. */
 Surface *ScreenSpare(void);
 Surface *ScreenSpareHas(void);
+/* Makes the spare surface the kept scene and gives up its spare slot. */
+Boolean ScreenKeepSpare(void);
 void ScreenSpareDrop(void);
 /* A frame drawn during ScreenDissolveTo: sets *changed to what it changed
  * (pixels; w 0 for nothing). */

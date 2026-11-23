@@ -233,6 +233,21 @@ def noise_table():
     return out
 
 
+def mottle_table():
+    """Bilinear grass noise on a wrapped 128 by 128 grid of eighth texels."""
+    noise = noise_table()
+    out = bytearray()
+    for v in range(128):
+        y, fy = divmod(v, 8)
+        for u in range(128):
+            x, fx = divmod(u, 8)
+            nx, ny = (x + 1) & 15, (y + 1) & 15
+            a = noise[y * 16 + x] * (8 - fx) + noise[y * 16 + nx] * fx
+            b = noise[ny * 16 + x] * (8 - fx) + noise[ny * 16 + nx] * fx
+            out.append((((a * (8 - fy) + b * fy + 32) >> 6) + 1) & 255)
+    return out
+
+
 def rows_c(vals, per=16):
     return '\n'.join('\t' + ', '.join(str(v) for v in vals[i:i + per]) + ',' for i in range(0, len(vals), per))
 

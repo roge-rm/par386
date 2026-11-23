@@ -1004,6 +1004,26 @@ int main(int argc, char **argv)
 				CHECK(p.mg.ypp < ypp && p.target.x == target.x && p.target.y == target.y);
 				save(&s, "dana-map-near");
 			}
+			{
+				Surface fresh;
+				RenderMap m;
+				int same_map = 1;
+				uint8_t *cached = panels.map_cache;
+
+				p.target_set = 1;
+				p.target = vec2_make(p.rv.ball.x + 4 * FIX_ONE, p.rv.ball.y + 24 * FIX_ONE);
+				surface_wh(&fresh, DANA_RAIL_W, 96, 1, 4);
+				fresh.fullview = 1;
+				CHECK(dana_draw(&panels, &left, &right, &p) & DANA_LEFT);
+				CHECK(cached && panels.map_cache == cached);
+				CHECK(render_target_map(&fresh, &p.rv, &m, &p.target, NULL) == 0);
+				for (y = 0; y < fresh.h; y++)
+					same_map &= !memcmp(fresh.bits + y * fresh.rowBytes,
+					                    left.bits + (y + 30) * s.rowBytes, fresh.rowBytes);
+				CHECK(same_map && panels.map.bx == m.bx && panels.map.py == m.py);
+				sfree(&fresh);
+				dana_drop(&panels);
+			}
 			for (y = 0; y < s.h; y++) {
 				memset(left.bits + y * s.rowBytes, 0x5a, DANA_RAIL_W / 2);
 				memset(right.bits + y * s.rowBytes, 0x5a, DANA_RAIL_W / 2);

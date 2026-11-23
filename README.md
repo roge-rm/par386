@@ -1,28 +1,28 @@
 # Par 386
 
-Par 386 is a golf game for Palm OS in the style of early ’90s PC golf games. Pick a club, aim down the fairway and time a three-click swing. Follow the ball on the overhead map, then read the slope on the green and putt out.
+Par 386 is a golf game for Palm OS in the style of early ’90s PC golf games. Pick a club, aim down the fairway and time a three-click swing. Follow the ball in the 3D view or on the overhead map, then read the slope on the green and putt out.
 
 Play nine courses, take turns with up to four players on one Palm, or play against computer golfers. There are two-round tournaments, a driving range and a practice green. Leave a round and pick it up again from the clubhouse.
 
 Enjoy,<br>
 Dan
 
-<p align="center"><img src="doc/images/gameplay.gif" width="320" alt="Par 386 on a Tungsten TX, from the title to a drive at Banksia Heath, the ball flight on the map and a practice putt at Bracken Mere" /></p>
+<p align="center"><img src="doc/images/gameplay.gif" width="320" alt="Par 386 on a Tungsten TX, from the Kelp Shore title to a drive, ball flight on the map and a putt at Carrig Head" /></p>
 
 ## Screenshots
 
 <table>
   <tr>
-    <td align="center"><img src="doc/images/tx-title.png" width="200" alt="The Par 386 title over a golfer and a fairway" /><br>Title</td>
-    <td align="center"><img src="doc/images/tx-tee.png" width="200" alt="A golfer at the tee with mown fairway bands and the flag in the distance" /><br>Banksia Heath tee</td>
+    <td align="center"><img src="doc/images/tx-title.png" width="200" alt="The Par 386 title over the Kelp Shore fairway at Carrig Head" /><br>Title</td>
+    <td align="center"><img src="doc/images/tx-tee.png" width="200" alt="A golfer at the Kelp Shore tee with mown fairway bands and the shoreline to the left" /><br>Kelp Shore tee on the TX</td>
   </tr>
   <tr>
     <td align="center"><img src="doc/images/tx-flight.png" width="200" alt="An overhead map with a ball trail and a live carry distance" /><br>Ball flight</td>
-    <td align="center"><img src="doc/images/tx-green.png" width="200" alt="The putting green at The Warren with slope guides and an aim line toward the cup" /><br>Bracken Mere practice green</td>
+    <td align="center"><img src="doc/images/tx-green.png" width="200" alt="The Carrig Head green with slope guides and an aim line toward the cup" /><br>Putting at Carrig Head on the TX</td>
   </tr>
   <tr>
     <td align="center"><img src="doc/images/tx-character.png" width="200" alt="Character editor with outfit colour controls and a preview of a golfer in a gold shirt" /><br>Character editor on the TX</td>
-    <td align="center"><img src="doc/images/iiix-green.png" width="200" alt="The practice green with slope guides on a 160 by 160 Palm IIIx screen" /><br>Putting on the IIIx</td>
+    <td align="center"><img src="doc/images/iiix-green.png" width="200" alt="The Carrig Head green with slope guides on a 160 by 160 Palm IIIx screen" /><br>Putting on the IIIx</td>
   </tr>
 </table>
 
@@ -35,25 +35,25 @@ Dan
   </tr>
 </table>
 
-Captured on an emulated Tungsten TX, Palm IIIx and AlphaSmart Dana. [Frond emulator](https://github.com/roge-rm/frond)
+Captured from the 0.11.0 development build on a Tungsten TX, Palm IIIx and AlphaSmart Dana in Frond. [Frond emulator](https://github.com/roge-rm/frond)
 
 ## Devices
 
-One build runs on Palm OS 3.1 and up, from a Palm IIIx in greys to a Tungsten TX in colour. The title and menus fill the available display on supported tall and landscape colour screens. Older Palms play tones. Palm OS 5 devices with sound streams also play sampled strikes, landings, splashes and cup sounds. Settings offers On, Effects and Off.
+One build runs on Palm OS 3.1 and up. The game supports 1-bit monochrome, 2-bit and 4-bit greyscale and 8-bit and 16-bit colour, depending on the device. The title uses an in-game view from Carrig Head. The title and menus fill supported tall and landscape colour screens. Older Palms play tones. Palm OS 5 devices with sound streams also play sampled strikes, landings, splashes and cup sounds. Settings offers On, Effects and Off.
 
-The included courses use detailed terrain on ARM Palms such as the TX and compact terrain on older 68k models such as the IIIx. Both show curved greens, fringes and bunkers. The TX uses native ARM code to speed up full-shot views.
+The included courses use detailed terrain meshes on ARM Palms such as the TX and compact meshes on 68k models such as the IIIx and Dana. The game uses curved contours for putting on every supported display. The TX uses native ARM code for terrain drawing and display conversion.
 
 On the AlphaSmart Dana, the 560×160 layout shows the course between a small hole map and the shot controls. Tap the small map to aim, or open **Map** for a larger view from tee to green. The ball trail stays visible in the small map during the shot. The course picker shows the preview beside the list, round setup puts players beside the tee and hole options, and an 18-hole scorecard shows both nines together.
 
 Standard landscape puts the hole and shot details in the bottom bar, which becomes a full-width meter during the swing.
 
-Frond checks have covered the IIIx, TX, Zire 72, Sony Clié models and the Dana.
+Frond checks have covered the Palm IIIx, Tungsten TX, Zire 72, Sony CLIÉ and AlphaSmart Dana.
 
 ## Install
 
-Download the ZIP from the [latest release](https://github.com/roge-rm/par386/releases/latest). Install `Par386.prc` and at least one course file (`Par386-*.pdb`) with HotSync. Update the course files along with the game to get the newest course visuals.
+Install `Par386.prc` and at least one course file (`Par386-*.pdb`) from the same ZIP with HotSync. [Download the latest release](https://github.com/roge-rm/par386/releases/latest).
 
-The app is about 1.2 MB and each course uses about 1.2 to 1.7 MB. Older course files still load if your Palm has limited space.
+The 0.11.0 build uses about 1.3 MB, and each bundled course uses about 1.3 to 1.9 MB. This build requires a terrain mesh and putting contours for each hole. The current course packs also include precomputed lie grids for faster loading. If you see **Update course**, install the current course PDB.
 
 You can also copy course files to an SD card in `/PALM/Programs/Par386/`, `/PALM/Launcher/` or the root of the card. A card course is copied into Palm memory while you play it, so leave room for the whole course.
 
@@ -62,6 +62,8 @@ The nine courses are Auld Kirk, Banksia Heath, Bracken Mere, Carrig Head, Cascad
 ## Playing
 
 Pick a course under **Courses**, then choose **Play a round**. Pick a game, set the player slots and choose **Tee off**. Par 386 picks a club for the distance. Tap the club to change it, tap the view to aim, or open **Map** and tap a target to check its yardage. The on-course aim marker fades after you aim. **Book** shows approximate distances to hazards along that line.
+
+On standard layouts, use **Shot view** in Settings to switch between the overhead map and the 3D view during a shot.
 
 Tap **Swing** to start the meter. Tap again to set power, then tap as the marker comes back to the snap line. An early or late snap sends the shot off line. On the green, tap **Putt** to start and tap once more to set power. The cup mark on the meter allows for green speed and slope.
 
@@ -146,8 +148,7 @@ On the Dana keyboard, use Left and Right to aim, Up and Down to change clubs, an
 
 You need prc-tools-remix, `arm-palmos-gcc`, PilRC, the Palm OS SDK 5r3 at `../palm-os-sdk/sdk-5r3`, and Python 3 with Pillow and NumPy.
 
-- `make` builds a debug `build/Par386.prc` and the course files.
-- `make release` builds the release PRC and the course files.
+- `make release` builds `build/Par386.prc` and the course files. The 0.11.0 debug build currently exceeds the Palm code segment limit.
 - `make host-test` builds and tests the game core with GCC, ASan and UBSan.
 - `make courses` compiles the courses into `build/courses/`. See the [course format](doc/course-format.md) to make your own.
 

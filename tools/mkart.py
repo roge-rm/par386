@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Makes the title and menu pictures and packs them for the Palm.
 
-Draws both screens with the mockup scripts (tools/mockup/mock1b2.py) over the
-rendered course scene (tools/mockup/r/scene_bg_960.png, from render.py) and
-the address frame of the golfer, then writes:
+Draws the logo and clubhouse board over game renders from Carrig Head's
+15th fairway, then writes:
   OUT/Pic2-ID.bin   4 greys: flat greys by region, ordered dither between
   OUT/Pic8-ID.bin   8 bits on the master palette
   OUT/Pal8-1000.bin the master palette (tools/mkpal.py), RGB
@@ -23,7 +22,7 @@ import struct
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
+from PIL import Image, ImageDraw, ImageEnhance
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import mkpal   # noqa: E402
@@ -31,9 +30,7 @@ import mkpal   # noqa: E402
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 MOCK = HERE / 'mockup'
-SCENE = MOCK / 'r/scene_bg_960.png'
-# the finish of the swing, from tools/golfer/: 40 px for 160 screens, 80 for 320
-GOLFER = {1: ROOT / 'art/golfer/f13-40.png', 2: ROOT / 'art/golfer/f13-80.png'}
+TITLE_SCENES = ROOT / 'art/title'
 PIC_TITLE, PIC_MENU, PIC_PREVIEW = 1000, 1100, 1200
 DANA_TITLE, DANA_MENU = 4100, 4110
 FULL_SCREENS = ((320, 480, 4000, 4010), (480, 320, 4020, 4030))
@@ -55,21 +52,9 @@ def ui_colours():
     return [tuple(int(v) for v in m) for m in re.findall(r'X\(UIC_\w+,\s*(\d+),\s*(\d+),\s*(\d+),\s*\d+\)', text)]
 
 
-def title(m, S, scene=None):
-    c = m['C'](S)
-    if scene is None:
-        scene = Image.open(SCENE).convert('RGB').resize((c.N, c.N), Image.LANCZOS)
+def title(m, scene):
+    c = m['C'](2)
     c.img.paste(scene)
-    # The golfer at the finish, on the tee at the bottom centre, with a soft shadow.
-    g = Image.open(GOLFER[S]).convert('RGBA')
-    feet_x, feet_y = 50 * S, 141 * S
-    sh = Image.new('L', (c.N, c.N))
-    ImageDraw.Draw(sh).ellipse([feet_x - 2 * S, feet_y - 3 * S, feet_x + g.width + 4 * S, feet_y + 2 * S], fill=130)
-    sh = sh.filter(ImageFilter.GaussianBlur(1.2 * S))
-    c.img.paste((10, 30, 10), (0, 0), sh)
-    c.img.paste(g, (feet_x, feet_y - g.height), g)
-    c.px = c.img.load()
-    c.d = ImageDraw.Draw(c.img)
     yb = m['logo'](c, y=4, size=28)
     m['ribbon'](c, yb + 1, 'CHAMPIONSHIP GOLF')
     return c
@@ -89,23 +74,16 @@ def menu_board(m, c):
     m['plaque'](c, 38, 5, 84, 13, '')
 
 
-def menu(m, S):
-    c = title(m, S)
-    m['dim'](c)
-    menu_board(m, c)
-    return c
-
-
-def full_screen(m, width, height):
-    """Fill the display with the course and keep the foreground in the centre square."""
-    portrait = height > width
-    source = Image.open(SCENE).convert('RGB')
-    scene = ImageOps.fit(source, (width, height), Image.LANCZOS, centering=(0.5, 0.5 if portrait else 0.75))
+def full_screen(m, scene):
+    """Keep the clubhouse board in the centre square."""
+    width, height = scene.size
     x, y = (width - 320) // 2, (height - 320) // 2
     centre = (x, y, x + 320, y + 320)
 
     splash = scene.copy()
-    splash.paste(title(m, 2, scene.crop(centre)).img, (x, y))
+    logo_y = y // 2
+    logo_area = (x, logo_y, x + 320, logo_y + 320)
+    splash.paste(title(m, scene.crop(logo_area)).img, (x, logo_y))
 
     board = m['C'](2)
     backdrop = ImageEnhance.Brightness(scene).enhance(0.38)
@@ -152,34 +130,15 @@ def lum(c):
     return (c[0] * 30 + c[1] * 59 + c[2] * 11) / 25500
 
 
-def scenery_grey(scene):
-    """Map sky and turf separately so both use the four greys."""
-    w, h = scene.size
-    p = scene.load()
-    blue = [[p[x, y][2] >= p[x, y][1] for x in range(w)] for y in range(h)]
-    def span(vals):
-        vals = sorted(vals)
-        return vals[len(vals) // 50], vals[-len(vals) // 50 - 1]
-    blo, bhi = span([lum(p[x, y]) for y in range(h) for x in range(w) if blue[y][x]])
-    glo, ghi = span([lum(p[x, y]) for y in range(h) for x in range(w) if not blue[y][x]])
-    rows = []
-    for y in range(h):
-        row = []
-        for x in range(w):
-            L = lum(p[x, y])
-            if blue[y][x]:
-                v = 0.0 + 1.05 * (L - blo) / (bhi - blo)
-            else:
-                v = 0.38 + 0.7 * (L - glo) / (ghi - glo)
-            row.append(dither(v, x, y))
-        rows.append(row)
-    return rows
+def grey_scene(name):
+    image = Image.open(TITLE_SCENES / name).convert('L')
+    w, h = image.size
+    p = image.load()
+    return [[3 - p[x, y] // 85 for x in range(w)] for y in range(h)]
 
 
 def title_overlay(m, rows, ox):
-    """Draw the logo, ribbon and golfer in flat greys."""
-    g = Image.open(GOLFER[1]).convert('RGBA')
-    feet_x, feet_y = ox + 50, 141
+    """Draw the logo and ribbon in flat greys."""
     yb = [0]
     def logo(c):
         yb[0] = m['logo'](c, y=4, size=28)
@@ -193,20 +152,10 @@ def title_overlay(m, rows, ox):
             c = lg[x, y]
             if c != MAGENTA:
                 rows[y][ox + x] = BLACK if c == (70, 30, 6) else DARK if c == (10, 10, 30) else WHITE
-    # Golfer: a black figure with the cap, glove and shoes light.
-    gp = g.load()
-    for j in range(g.height):
-        for i in range(g.width):
-            r, gg, b, a = gp[i, j]
-            if a < 128:
-                continue
-            L = (r * 50 + gg * 40 + b * 10) / 25500
-            rows[feet_y - g.height + j][feet_x + i] = LIGHT if L > 0.7 else BLACK
 
 
 def title_grey(m):
-    scene = Image.open(SCENE).convert('RGB').resize((160, 160), Image.LANCZOS)
-    rows = scenery_grey(scene)
+    rows = grey_scene('square-grey.png')
     title_overlay(m, rows, 0)
     # A black strip for PRESS ANY BUTTON.
     for y in range(144, 157):
@@ -215,10 +164,7 @@ def title_grey(m):
 
 
 def dana_grey(m):
-    source = Image.open(SCENE).convert('RGB')
-    w, h = source.size
-    scene = source.crop((0, 9 * h // 32, w, 17 * h // 24)).resize((560, 160), Image.LANCZOS)
-    rows = scenery_grey(scene)
+    rows = grey_scene('dana-grey.png')
     backdrop = [[min(BLACK, v + ((x + y) & 1)) for x, v in enumerate(row)] for y, row in enumerate(rows)]
     title_overlay(m, rows, 200)
     return rows, backdrop
@@ -376,7 +322,10 @@ def main():
     m = load_mockup()
     gt = title_grey(m)
     grey = {PIC_TITLE: gt, PIC_MENU: menu_grey(gt)}
-    hi = {PIC_TITLE: title(m, 2).img, PIC_MENU: menu(m, 2).img}
+    wide = Image.open(TITLE_SCENES / 'wide.png').convert('RGB')
+    tall = Image.open(TITLE_SCENES / 'tall.png').convert('RGB')
+    square = wide.crop((80, 0, 400, 320))
+    hi = dict(zip((PIC_TITLE, PIC_MENU), full_screen(m, square)))
     pal = palette()
     (out / 'Pal8-1000.bin').write_bytes(bytes(pal))
     rcp = ['/* Made by tools/mkart.py. */', f'DATA "Pal8" ID 1000 "{out / "Pal8-1000.bin"}"']
@@ -392,8 +341,8 @@ def main():
             gi.putdata([(3 - v) * 85 for row in g for v in row])
             gi.resize((480, 480), Image.NEAREST).save(prev / f'art-{pid}-160-grey.png')
             q.convert('RGB').save(prev / f'art-{pid}-320.png')
-    for w, h, title_id, menu_id in FULL_SCREENS:
-        for pid, img in zip((title_id, menu_id), full_screen(m, w, h)):
+    for (w, h, title_id, menu_id), scene in zip(FULL_SCREENS, (tall, wide)):
+        for pid, img in zip((title_id, menu_id), full_screen(m, scene)):
             q = to8(img, pal, Image.Dither.NONE)
             total += write_bands(out, rcp, pid, 8, rows8(q))
             if prev:

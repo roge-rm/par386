@@ -1141,13 +1141,15 @@ static void SEC_MENU ball_disc(Surface *s, int16_t x, int16_t y, uint8_t close, 
 static void SEC_MENU flight_address(const Play *p, int16_t k, int16_t *x, int16_t *y)
 {
 	int16_t ax, ay;
+	int16_t scale;
 	fixed depth, z;
 
 	if (k < 0 || k >= 4 || p->rv.green || !p->golf || !p->golf->mesh_style) return;
 	z = hole_height(p->rv.hole, p->rv.ball.x, p->rv.ball.y);
 	if (!render_point(&p->cam, p->rv.ball.x, p->rv.ball.y, z, &ax, &ay, &depth)) return;
-	*x += (p->golf->bx - ax) * (4 - k) / 4;
-	*y += (p->golf->by - ay) * (4 - k) / 4;
+	scale = p->golf->half ? 2 : 1;
+	*x += (p->golf->bx * scale - ax) * (4 - k) / 4;
+	*y += (p->golf->by * scale - ay) * (4 - k) / 4;
 }
 
 static void SEC_MENU ball_at(Play *p, Surface *s, uint8_t save, fixed x, fixed y, fixed z)

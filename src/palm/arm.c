@@ -16,9 +16,10 @@
 #define kArmTo16 1000
 #define kArmTerra 1001
 
-static MemHandle gArmH, gTerraH;
+static MemHandle gArmH, gTerraH, gMottleH;
 static NativeFuncType *gArmTo16, *gArmTerra;
 static UInt8 *gPalLE;
+static const Int8 *gMottle;
 
 /* m68k-palmos-gcc lays To16 out as to16arm.c reads it */
 #define TO16_AT(f, o) (offsetof(To16, f) == (o))
@@ -41,6 +42,8 @@ typedef char TerraRowOffs[AT(TerraRow, grey, TR_GREY) && AT(TerraRow, dpys, TR_D
 typedef char TerraTrisOffs[AT(TerraTris, grey, TT_GREY) && AT(TerraTris, rb, TT_RB) && AT(TerraTris, n, TT_N)
 	&& AT(TerraTris, lg, TT_LG) && AT(TerraTris, turf, TT_TURF) && AT(TerraTris, noise, TT_NOISE)
 	&& AT(TerraTris, mow_phase, TT_MOW_PHASE) && AT(TerraTris, reflection, TT_REFLECTION) && AT(TerraTurf, depth, 18)
+	&& AT(TerraTris, shade_grass, TT_SHADE_GRASS) && AT(TerraTris, green_u, TT_GREEN_U)
+	&& AT(TerraTris, green_v, TT_GREEN_V)
 	&& sizeof(TerraTris) == TT_SIZE && sizeof(TerraTri) == 16 && sizeof(TerraTurf) == TT_TURF_SIZE ? 1 : -1];
 typedef char TerraSkyOffs[AT(TerraSky, grey, TS_GREY) && AT(TerraSky, pos, TS_POS) && AT(TerraSky, w, TS_W)
 	&& AT(TerraSky, bw, TS_BW) && AT(TerraSky, lg, TS_LG) && AT(TerraSky, px, TS_SIZE) ? 1 : -1];
@@ -50,19 +53,60 @@ typedef char TerraCurveOffs[AT(TerraCurveShade, light, TC_LIGHT) && AT(TerraCurv
 	&& AT(TerraCurveShade, spans, TC_SPANS) && AT(TerraCurveShade, rb, TC_RB)
 	&& AT(TerraCurveShade, count, TC_COUNT) && AT(TerraCurveShade, noise, TC_NOISE)
 	&& sizeof(TerraCurveShade) == TC_SIZE ? 1 : -1];
+typedef char TerraCurveLightOffs[AT(TerraCurveLight, out, TCL_OUT) && AT(TerraCurveLight, heights, TCL_HEIGHTS)
+	&& AT(TerraCurveLight, camx, TCL_CAMX) && AT(TerraCurveLight, camy, TCL_CAMY)
+	&& AT(TerraCurveLight, z, TCL_Z) && AT(TerraCurveLight, zref, TCL_ZREF)
+	&& AT(TerraCurveLight, base, TCL_BASE) && AT(TerraCurveLight, dx, TCL_DX)
+	&& AT(TerraCurveLight, dy, TCL_DY) && AT(TerraCurveLight, dz, TCL_DZ)
+	&& AT(TerraCurveLight, f, TCL_F) && AT(TerraCurveLight, cx, TCL_CX)
+	&& AT(TerraCurveLight, rx, TCL_RX) && AT(TerraCurveLight, ry, TCL_RY)
+	&& AT(TerraCurveLight, cols, TCL_COLS) && AT(TerraCurveLight, step, TCL_STEP)
+	&& AT(TerraCurveLight, hw, TCL_HW) && AT(TerraCurveLight, hh, TCL_HH)
+	&& AT(TerraCurveLight, shift, TCL_SHIFT) && sizeof(TerraCurveLight) == TCL_SIZE ? 1 : -1];
 typedef char TerraEdgesOffs[AT(TerraEdges, bits, 0) && AT(TerraEdges, marks, 4)
 	&& AT(TerraEdges, rb, 8) && AT(TerraEdges, w, 10) && AT(TerraEdges, vh, 12)
 	&& AT(TerraEdges, horizon, 14) && AT(TerraEdges, y, 16)
 	&& AT(TerraEdges, end, 18) && sizeof(TerraEdges) == 20 ? 1 : -1];
+typedef char TerraObjectOffs[AT(TerraObject, bits, TOBJ_BITS) && AT(TerraObject, src, TOBJ_SRC)
+	&& AT(TerraObject, clip, TOBJ_CLIP) && AT(TerraObject, us, TOBJ_US) && AT(TerraObject, vs, TOBJ_VS)
+	&& AT(TerraObject, pixels, TOBJ_PIXELS) && AT(TerraObject, rb, TOBJ_RB) && AT(TerraObject, vh, TOBJ_VH)
+	&& AT(TerraObject, x0, TOBJ_X0) && AT(TerraObject, y0, TOBJ_Y0) && AT(TerraObject, c0, TOBJ_C0)
+	&& AT(TerraObject, c1, TOBJ_C1) && AT(TerraObject, dh, TOBJ_DH) && AT(TerraObject, sw, TOBJ_SW)
+	&& AT(TerraObject, sh, TOBJ_SH) && AT(TerraObject, scale, TOBJ_SCALE)
+	&& sizeof(TerraObject) == TOBJ_SIZE ? 1 : -1];
+typedef char TerraMeshLightOffs[AT(TerraMeshLight, heights, TML_HEIGHTS) && AT(TerraMeshLight, out, TML_OUT)
+	&& AT(TerraMeshLight, gain, TML_GAIN) && AT(TerraMeshLight, width, TML_WIDTH) && AT(TerraMeshLight, height, TML_HEIGHT)
+	&& AT(TerraMeshLight, first, TML_FIRST) && AT(TerraMeshLight, end, TML_END)
+	&& sizeof(TerraMeshLight) == TML_SIZE ? 1 : -1];
+typedef char TerraMeshCheckOffs[AT(TerraMeshCheck, data, TMV_DATA) && AT(TerraMeshCheck, size, TMV_SIZE)
+	&& AT(TerraMeshCheck, width, TMV_WIDTH) && AT(TerraMeshCheck, length, TMV_LENGTH)
+	&& AT(TerraMeshCheck, tiles, TMV_TILES) && AT(TerraMeshCheck, vertices, TMV_VERTICES)
+	&& AT(TerraMeshCheck, triangles, TMV_TRIANGLES) && AT(TerraMeshCheck, mow_phase, TMV_MOW_PHASE)
+	&& sizeof(TerraMeshCheck) == TMV_ARG_SIZE ? 1 : -1];
 
 typedef char TerraMeshOffs[AT(TerraMeshProject, light, TMP_LIGHT) &&
 	AT(TerraMeshProject, origin_side, TMP_ORIGIN_SIDE) && AT(TerraMeshProject, low, TMP_LOW) &&
 	AT(TerraMeshProject, fx, TMP_FX) && AT(TerraMeshProject, count, TMP_COUNT) &&
-	AT(TerraMeshProject, projected, TMP_PROJECTED) && sizeof(TerraMeshProject) == TMP_PROJECTED + 1 &&
+	AT(TerraMeshProject, projected, TMP_PROJECTED) && AT(TerraMeshProject, next, TMP_NEXT) &&
+	AT(TerraMeshProject, bins, TMP_BINS) && AT(TerraMeshProject, triangles, TMP_TRIANGLES) &&
+	AT(TerraMeshProject, has_bunker, TMP_HAS_BUNKER) && sizeof(TerraMeshProject) == TMP_HAS_BUNKER + 2 &&
 	AT(MeshPoint, x, MP_X) && AT(MeshPoint, u, MP_U) && AT(MeshPoint, light, MP_LIGHT) &&
 	sizeof(MeshPoint) == MP_SIZE ? 1 : -1];
+typedef char TerraMeshFacesOffs[AT(TerraMeshFaces, draw, TMF_DRAW) && AT(TerraMeshFaces, points, TMF_POINTS) &&
+	AT(TerraMeshFaces, faces, TMF_FACES) && AT(TerraMeshFaces, order, TMF_ORDER) &&
+	AT(TerraMeshFaces, green_down, TMF_GREEN_DOWN) && AT(TerraMeshFaces, count, TMF_COUNT) &&
+	AT(TerraMeshFaces, bins, TMF_BINS) && AT(TerraMeshFaces, next, TMF_NEXT) &&
+	sizeof(TerraMeshFaces) == TMF_SIZE ? 1 : -1];
 
 #ifndef NO_ARM
+typedef struct {
+	UInt16 op;
+	void *job;
+	const Int8 *mottle;
+} TerraArgs;
+typedef char TerraArgsOffs[offsetof(TerraArgs, mottle) == TERRA_ARG_MOTTLE &&
+	sizeof(TerraArgs) == TERRA_ARG_SIZE ? 1 : -1];
+
 static void SEC_CORE ArmTo16(const To16 *a)
 {
 	To16 b = *a;
@@ -72,12 +116,10 @@ static void SEC_CORE ArmTo16(const To16 *a)
 
 static void SEC_CORE ArmTerra(uint8_t op, void *job)
 {
-	struct {
-		UInt16 op;
-		void *job;
-	} a;
+	TerraArgs a;
 	a.op = op;
 	a.job = job;
+	a.mottle = gMottle;
 	PceNativeCall(gArmTerra, &a);
 }
 #endif
@@ -103,6 +145,9 @@ void ArmOpen(void)
 	gTerraH = DmGetResource(kArmType, kArmTerra);
 	if (gTerraH) {
 		gArmTerra = (NativeFuncType *)MemHandleLock(gTerraH);
+		gMottleH = DmGetResource('Motl', 1000);
+		if (gMottleH && MemHandleSize(gMottleH) == TERRA_MOTTLE_SIZE)
+			gMottle = MemHandleLock(gMottleH);
 		render_terra_use(ArmTerra);
 	}
 #endif
@@ -114,6 +159,10 @@ void ArmClose(void)
 	render_terra_use(NULL);
 	if (gArmTo16) MemHandleUnlock(gArmH);
 	if (gArmTerra) MemHandleUnlock(gTerraH);
+	if (gMottle) MemHandleUnlock(gMottleH);
+	if (gMottleH) DmReleaseResource(gMottleH);
+	gMottle = NULL;
+	gMottleH = NULL;
 	if (gArmH) DmReleaseResource(gArmH);
 	if (gTerraH) DmReleaseResource(gTerraH);
 	if (gPalLE) MemPtrFree(gPalLE);

@@ -1,6 +1,13 @@
 #include "dana.h"
 #include "trig.h"
 
+#ifdef __palmos__
+#include <PalmOS.h>
+#else
+#include <stdlib.h>
+#include <string.h>
+#endif
+
 #define RAIL_IN (DANA_RAIL_W - 4)
 #define BOX_H 13
 #define MAP_Y 30
@@ -168,6 +175,43 @@ static void SEC_DANA mark(DanaPanels *d, Surface *s, const BallPt *p)
 	gfx_fill(s, x, y, 1, 1, UIC_WHITE);
 }
 
+static int SEC_DANA left_map(DanaPanels *d, Surface *pane, const Play *p, const vec2 *target)
+{
+	Surface cache = *pane;
+	uint16_t len = (uint16_t)((pane->w << pane->lg) >> 3), y;
+	uint8_t reused = d->map_cache && d->hole == p->rv.hole &&
+	                 d->hole_number == p->rv.hole->number && d->tee == p->rv.hole->tee;
+
+	if (d->keep_map && !d->map_cache) {
+#ifdef __palmos__
+		UInt32 free, largest;
+		MemHeapFreeBytes(0, &free, &largest);
+		if (largest >= MULU16(len, pane->h) + 32768UL)
+			d->map_cache = MemPtrNew(MULU16(len, pane->h));
+#else
+		d->map_cache = malloc(MULU16(len, pane->h));
+#endif
+	}
+	if (!d->map_cache) return render_target_map(pane, &p->rv, &d->map, target, NULL) == 0;
+	cache.bits = d->map_cache;
+	cache.rowBytes = len;
+	if (!reused && render_side_map_base(&cache, &p->rv, &d->map) < 0) {
+		dana_drop(d);
+		return 0;
+	}
+	for (y = 0; y < pane->h; y++) {
+		uint8_t *to = pane->bits + MULU16(y, pane->rowBytes);
+		const uint8_t *from = cache.bits + MULU16(y, len);
+#ifdef __palmos__
+		MemMove(to, from, len);
+#else
+		memcpy(to, from, len);
+#endif
+	}
+	render_side_map_markers(pane, &p->rv, &d->map, target);
+	return 1;
+}
+
 static uint8_t SEC_DANA left_draw(DanaPanels *d, Surface *s, const Play *p, uint16_t carry)
 {
 	const Hole *h = p->rv.hole;
@@ -186,7 +230,7 @@ static uint8_t SEC_DANA left_draw(DanaPanels *d, Surface *s, const Play *p, uint
 	if (point < d->shown) base = 1;
 	if (base) {
 		face(s);
-		d->map_ready = render_target_map(&pane, &p->rv, &d->map, &target, 0) == 0;
+		d->map_ready = left_map(d, &pane, p, &target);
 		d->marker_count = 0;
 		d->shown = -1;
 		d->hole = h;
@@ -358,8 +402,23 @@ static uint8_t SEC_DANA right_draw(DanaPanels *d, Surface *s, const Play *p, uin
 	return changed;
 }
 
+void dana_drop(DanaPanels *d)
+{
+	if (d->map_cache) {
+#ifdef __palmos__
+		MemPtrFree(d->map_cache);
+#else
+		free(d->map_cache);
+#endif
+		d->map_cache = NULL;
+	}
+	d->keep_map = 0;
+}
+
 void dana_reset(DanaPanels *d)
 {
+	dana_drop(d);
+	d->keep_map = 1;
 	d->map_ready = d->right_ready = d->marker_count = 0;
 	d->state = d->view = d->cpu = 0;
 	d->shown = -1;
@@ -368,7 +427,15 @@ void dana_reset(DanaPanels *d)
 uint8_t dana_draw(DanaPanels *d, Surface *left, Surface *right, const Play *p)
 {
 	uint16_t carry = ball_shape_carry(p->club, p->lie, p->shape);
-	uint8_t changed = left_draw(d, left, p, carry);
+	uint8_t changed;
+	if (d->pane_lg != left->lg || d->pane_stride != left->rowBytes) dana_reset(d);
+	if (d->left_dest != left->bits) d->map_ready = 0;
+	if (d->right_dest != right->bits) d->right_ready = 0;
+	d->pane_lg = left->lg;
+	d->pane_stride = left->rowBytes;
+	d->left_dest = left->bits;
+	d->right_dest = right->bits;
+	changed = left_draw(d, left, p, carry);
 	return changed | right_draw(d, right, p, play_dana_distance(p), carry);
 }
 

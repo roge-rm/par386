@@ -78,16 +78,11 @@ $(BUILD)/par386: $(OBJS) $(BUILD)/par386-sections.o $(BUILD)/par386-sections.ld
 $(BUILD)/par386.ro: src/par386.rcp src/palm/resource.h res/*.bmp res/wtap.bin | $(BUILD)
 	pilrc -q -ro -I src src/par386.rcp $@
 
-# Title and menu pictures. The scene render is slow and lives in
-# tools/mockup/r/ (not in git); it's made again when render.py changes.
-SCENE    = tools/mockup/r/scene_bg_960.png
-ART      = build/art
+# Title and menu pictures use frames from the course renderer.
+TITLE_SCENES = $(addprefix art/title/,wide.png tall.png square-grey.png dana-grey.png)
+ART = build/art
 
-$(SCENE): tools/mockup/render.py
-	mkdir -p $(@D)
-	python3 tools/mockup/render.py tools/mockup/r 960
-
-$(ART)/art.rcp: tools/mkart.py tools/mkpal.py tools/mockup/mock1b.py tools/mockup/mock1b2.py src/core/uicol.h tools/mkpreview.py tools/mkstyle.py tools/mkobj.py art/golfer/f13-40.png art/golfer/f13-80.png $(SCENE)
+$(ART)/art.rcp: tools/mkart.py tools/mkpal.py tools/mockup/mock1b.py tools/mockup/mock1b2.py src/core/uicol.h tools/mkpreview.py tools/mkstyle.py tools/mkobj.py $(TITLE_SCENES)
 	python3 tools/mkart.py $(ART)
 
 $(ART)/art.ro: $(ART)/art.rcp
@@ -143,8 +138,11 @@ endef
 $(eval $(call ARMBLOB,1000))
 $(eval $(call ARMBLOB,1001))
 
-build/arm/arm.ro: build/arm/armc-1000.bin build/arm/armc-1001.bin
-	printf 'DATA "armc" ID 1000 "build/arm/armc-1000.bin"\nDATA "armc" ID 1001 "build/arm/armc-1001.bin"\n' > build/arm/arm.rcp
+build/arm/mottle.bin: tools/mkpal.py | build/arm
+	PYTHONPATH=tools python3 -c 'from pathlib import Path; from mkpal import mottle_table; Path("$@").write_bytes(mottle_table())'
+
+build/arm/arm.ro: build/arm/armc-1000.bin build/arm/armc-1001.bin build/arm/mottle.bin
+	printf 'DATA "armc" ID 1000 "build/arm/armc-1000.bin"\nDATA "armc" ID 1001 "build/arm/armc-1001.bin"\nDATA "Motl" ID 1000 "build/arm/mottle.bin"\n' > build/arm/arm.rcp
 	pilrc -q -ro build/arm/arm.rcp $@
 
 build/$(PRC): src/par386.def $(BUILD)/par386 $(BUILD)/par386.ro $(ART)/art.ro $(ART)/obj.ro $(SND)/snd.ro build/arm/arm.ro
@@ -318,8 +316,8 @@ build/armtest: host/armtest.c src/arm/to16arm.c src/arm/terraarm.c $(HOSTSRC) sr
 # Runs the 16-bit conversion and the renderer's loops through the ARM
 # entries (built for the host, with their big endian jobs) and the plain
 # path, and checks they match.
-arm-test: build/armtest build/courses/Par386-Test.pdb $(ART)/obj.rcp
-	build/armtest build/courses/Par386-Test.pdb $(ART)
+arm-test: build/armtest build/courses/Par386-Test.pdb $(ART)/obj.rcp build/arm/mottle.bin
+	build/armtest build/courses/Par386-Test.pdb $(ART) build/arm/mottle.bin
 
 tables:
 	python3 tools/mktrig.py

@@ -11,6 +11,7 @@
  * checks the relocations). terraarm_entry has to come first. */
 #include "terra.h"
 #include "terraarm.h"
+#include "pal.h"
 
 static uint32_t be32(const uint8_t *p)
 {
@@ -108,30 +109,37 @@ static void row(uint8_t *b)
 	b[TR_YMAX + 1] = (uint8_t)t.ymax;
 }
 
-static void tris(const uint8_t *b)
+static void tri_setup(TerraTris *t, const uint8_t *b)
+{
+	t->bits = (uint8_t *)P32(b, TT_BITS);
+	t->bayer = (const uint8_t *)P32(b, TT_BAYER);
+	t->pat2 = (const uint8_t *)P32(b, TT_PAT2);
+	t->grey = (const uint8_t *)P32(b, TT_GREY);
+	t->rb = be16(b + TT_RB);
+	t->w = S16(b, TT_W);
+	t->vh = S16(b, TT_VH);
+	t->n = S16(b, TT_N);
+	t->lg = b[TT_LG];
+	t->shade_grass = b[TT_SHADE_GRASS];
+	t->noise = (const int8_t *)P32(b, TT_NOISE);
+	t->mow_phase = S16(b, TT_MOW_PHASE);
+	t->reflection = (const uint8_t *)P32(b, TT_REFLECTION);
+	t->green_u = S16(b, TT_GREEN_U);
+	t->green_v = S16(b, TT_GREEN_V);
+	t->turf = 0;
+	if (t->n < 0) t->n = 0;
+	if (t->n > TERRA_MESH_TRIS) t->n = TERRA_MESH_TRIS;
+}
+
+static void tris(const uint8_t *b, const int8_t *mottle)
 {
 	TerraTris t;
-	TerraTri tl[TERRA_TRIS_MAX];
-	TerraTurf turf[TERRA_TRIS_MAX];
-	const uint8_t *q;
+	TerraTri tl[TERRA_MESH_TRIS];
+	TerraTurf turf[TERRA_MESH_TRIS];
+	const uint8_t *q = (const uint8_t *)P32(b, TT_TRI);
 	int16_t i, k;
 
-	t.bits = (uint8_t *)P32(b, TT_BITS);
-	q = (const uint8_t *)P32(b, TT_TRI);
-	t.bayer = (const uint8_t *)P32(b, TT_BAYER);
-	t.pat2 = (const uint8_t *)P32(b, TT_PAT2);
-	t.grey = (const uint8_t *)P32(b, TT_GREY);
-	t.rb = be16(b + TT_RB);
-	t.w = S16(b, TT_W);
-	t.vh = S16(b, TT_VH);
-	t.n = S16(b, TT_N);
-	t.lg = b[TT_LG];
-	t.noise = (const int8_t *)P32(b, TT_NOISE);
-	t.mow_phase = S16(b, TT_MOW_PHASE);
-	t.reflection = (const uint8_t *)P32(b, TT_REFLECTION);
-	t.turf = 0;
-	if (t.n < 0) t.n = 0;
-	if (t.n > TERRA_TRIS_MAX) t.n = TERRA_TRIS_MAX;
+	tri_setup(&t, b);
 	/* the triangles, 8 big endian 16-bit fields each: x[3], y[3], base, lv */
 	for (i = 0; i < t.n; i++, q += 16) {
 		for (k = 0; k < 3; k++) {
@@ -145,16 +153,105 @@ static void tris(const uint8_t *b)
 	q = (const uint8_t *)P32(b, TT_TURF);
 	if (q && t.lg == 3) {
 		for (i = 0; i < t.n; i++, q += TT_TURF_SIZE) {
+			int16_t base = tl[i].base;
+			int grass = t.shade_grass && base >= PAL_ROUGH && base <= PAL_DEEP_ROUGH;
+			uint8_t material = (uint8_t)((base - PAL_TERRAIN) / PAL_RAMP_N);
+
+			if ((base < PAL_ROUGH || base > PAL_SAND) && base != PAL_TEE) continue;
 			for (k = 0; k < 3; k++) {
 				turf[i].u[k] = S16(q, 2 * k);
 				turf[i].v[k] = S16(q, 6 + 2 * k);
 				turf[i].light[k] = S16(q, 12 + 2 * k);
 				turf[i].depth[k] = S16(q, 18 + 2 * k);
+				if (grass)
+					turf[i].light[k] = mesh_grass_light(turf[i].u[k], turf[i].v[k],
+					                                    turf[i].light[k], turf[i].depth[k],
+					                                    t.green_u, t.green_v, material, tl[i].lv);
 			}
 		}
 		t.turf = turf;
+		t.shade_grass = 0;
 	}
-	terra_tris(&t);
+	terra_tris_mottle(&t, mottle);
+}
+
+static inline __attribute__((always_inline))
+void mesh_face(const TerraTris *t, const uint8_t *points, const uint8_t *q,
+              int32_t green_down, TerraTri *tri, TerraTurf *turf)
+{
+	uint8_t material = q[3], level = mesh_detail_level(material, q[4]);
+	uint16_t k;
+
+	tri->base = PAL_TERRAIN + material * PAL_RAMP_N;
+	tri->lv = level;
+	for (k = 0; k < 3; k++) {
+		const uint8_t *p = points + q[k] * MP_SIZE;
+		int16_t light;
+
+		tri->x[k] = S16(p, MP_X);
+		tri->y[k] = S16(p, MP_Y);
+		if (material > SURF_BUNKER && material != SURF_TEE) continue;
+		turf->u[k] = S16(p, MP_U);
+		turf->v[k] = S16(p, MP_V);
+		light = (int8_t)p[MP_LIGHT];
+		if (material <= SURF_DEEP_ROUGH) {
+			int16_t yards = (int16_t)((int32_t)be32(p + MP_DEPTH) >> 8);
+			turf->depth[k] = yards;
+			light = mesh_grass_light(turf->u[k], turf->v[k], light, yards,
+			                         t->green_u, t->green_v, material, level);
+		} else if (material == SURF_GREEN || material == SURF_FRINGE) {
+			light = mesh_green_light(green_down, (int32_t)be32(p + MP_DOWN), (int8_t)light);
+		} else if (material == SURF_BUNKER) {
+			light = (int8_t)p[MP_SAND];
+		} else {
+			light = (light >> 2) - mesh_depth_span((int32_t)be32(p + MP_DEPTH) >> 8, 18, 32);
+		}
+		turf->light[k] = light;
+	}
+}
+
+static void mesh_faces(const uint8_t *b, const int8_t *mottle)
+{
+	TerraTris t;
+	TerraTri tris[TERRA_MESH_TRIS];
+	TerraTurf turf[TERRA_MESH_TRIS];
+	const uint8_t *points = (const uint8_t *)P32(b, TMF_POINTS);
+	const uint8_t *faces = (const uint8_t *)P32(b, TMF_FACES);
+	const uint8_t *bins = (const uint8_t *)P32(b, TMF_BINS);
+	int32_t green_down = (int32_t)be32(b + TMF_GREEN_DOWN);
+	uint16_t i;
+
+	tri_setup(&t, (const uint8_t *)P32(b, TMF_DRAW));
+	t.tri = tris;
+	t.turf = turf;
+	t.shade_grass = 0;
+	if (bins) {
+		const uint8_t *next = (const uint8_t *)P32(b, TMF_NEXT);
+
+		t.n = 0;
+		for (i = MESH_TILE_BINS; i;) {
+			uint16_t link = be16(bins + 2 * --i);
+
+			while (link) {
+				uint16_t k = link - 1;
+
+				mesh_face(&t, points, faces + 5 * k, green_down, tris + t.n, turf + t.n);
+				if (++t.n == TERRA_MESH_TRIS) {
+					terra_tris_mottle(&t, mottle);
+					t.n = 0;
+				}
+				link = be16(next + 2 * k);
+			}
+		}
+	} else {
+		const uint8_t *order = (const uint8_t *)P32(b, TMF_ORDER);
+		uint16_t count = be16(b + TMF_COUNT);
+
+		t.n = count > TERRA_MESH_TRIS ? TERRA_MESH_TRIS : (int16_t)count;
+		for (i = 0; i < t.n; i++)
+			mesh_face(&t, points, faces + 5 * be16(order + 2 * i), green_down, tris + i, turf + i);
+	}
+	if (t.n) terra_tris_mottle(&t, mottle);
 }
 
 static void sky(uint8_t *b)
@@ -233,6 +330,88 @@ static void curve_shade(const uint8_t *b)
 	terra_curve_shade(&t);
 }
 
+/* Bilinear height in the same 8.8 byte steps as the 68k renderer. */
+static __inline__ fixed curve_height(const uint8_t *heights, uint16_t stride, uint16_t step,
+                                     uint16_t shift, fixed mx, fixed my, fixed x, fixed y)
+{
+	fixed gx = x >> shift, gy = y >> shift;
+	uint16_t ix, iy, next, fx, fy;
+	const uint8_t *top, *bottom;
+	int32_t a, b, height;
+
+	if (gx < 0) gx = 0;
+	if (gx > mx) gx = mx;
+	if (gy < 0) gy = 0;
+	if (gy > my) gy = my;
+	ix = (uint16_t)(gx >> 16);
+	iy = (uint16_t)(gy >> 16);
+	next = gx < mx ? ix + 1 : ix;
+	fx = (uint16_t)((gx >> 8) & 255);
+	fy = (uint16_t)((gy >> 8) & 255);
+	top = heights + MULU16(iy, stride);
+	bottom = gy < my ? top + stride : top;
+	a = ((int32_t)top[ix] << 8) + MULS16(top[next] - top[ix], fx);
+	b = ((int32_t)bottom[ix] << 8) + MULS16(bottom[next] - bottom[ix], fx);
+	height = a + (MULS16((b - a) >> 1, fy) >> 7);
+	/* The signed vertical interpolation can round one step below zero. */
+	if (height < 0) return height * (int32_t)step / 16;
+	return (fixed)(MULU16(height, step) >> 4);
+}
+
+static __inline__ fixed curve_step(fixed delta, uint16_t at)
+{
+	int64_t product = (int64_t)delta * at;
+	return (fixed)(product / 4);
+}
+
+static __inline__ fixed curve_mulq(fixed a, int16_t q)
+{
+	int64_t product = (int64_t)a * q;
+	return (fixed)(product / 16384);
+}
+
+static void curve_light(const uint8_t *b)
+{
+	int8_t *out = (int8_t *)P32(b, TCL_OUT);
+	const uint8_t *heights = (const uint8_t *)P32(b, TCL_HEIGHTS);
+	fixed camx = (fixed)be32(b + TCL_CAMX), camy = (fixed)be32(b + TCL_CAMY);
+	fixed base = (fixed)be32(b + TCL_BASE);
+	fixed z = (fixed)be32(b + TCL_Z) - base, zref = (fixed)be32(b + TCL_ZREF) - base;
+	fixed forward_x = (fixed)be32(b + TCL_DX), forward_y = (fixed)be32(b + TCL_DY);
+	fixed dz = (fixed)be32(b + TCL_DZ);
+	int16_t f = S16(b, TCL_F), cx = S16(b, TCL_CX);
+	int16_t rx = S16(b, TCL_RX), ry = S16(b, TCL_RY), x = 0;
+	uint16_t cols = be16(b + TCL_COLS), step = be16(b + TCL_STEP);
+	uint16_t hw = be16(b + TCL_HW), hh = be16(b + TCL_HH), shift = be16(b + TCL_SHIFT);
+	fixed mx = (fixed)(hw - 1) << 16, my = (fixed)(hh - 1) << 16;
+
+	for (; cols; cols--, out++, x += 1 << CURVE_LIGHT_SHIFT) {
+		fixed sx = terra_div((int32_t)(x - cx) * FIX_ONE, f);
+		fixed dx = forward_x + curve_mulq(sx, rx), dy = forward_y + curve_mulq(sx, ry);
+		fixed wx, wy, rise, level;
+		uint16_t lo = 4, hi = 360;
+		int16_t light;
+
+		while (hi - lo > 1) {
+			uint16_t mid = (uint16_t)((lo + hi) / 2);
+			wx = camx + curve_step(dx, mid);
+			wy = camy + curve_step(dy, mid);
+			if (z + curve_step(dz, mid) > curve_height(heights, hw, step, shift, mx, my, wx, wy))
+				lo = mid;
+			else hi = mid;
+		}
+		wx = camx + curve_step(dx, hi);
+		wy = camy + curve_step(dy, hi);
+		rise = (curve_height(heights, hw, step, shift, mx, my, wx + 2 * FIX_ONE, wy) -
+		        curve_height(heights, hw, step, shift, mx, my, wx - 2 * FIX_ONE, wy)) * 3 / 4;
+		rise += (curve_height(heights, hw, step, shift, mx, my, wx, wy + 2 * FIX_ONE) -
+		         curve_height(heights, hw, step, shift, mx, my, wx, wy - 2 * FIX_ONE)) / 2;
+		level = curve_height(heights, hw, step, shift, mx, my, wx, wy) - zref;
+		light = (int16_t)((level * 2 - rise * 12) >> FIX_SHIFT);
+		*out = (int8_t)(light < -20 ? -20 : light > 20 ? 20 : light);
+	}
+}
+
 static __inline__ void put16(uint8_t *b, uint16_t n)
 {
 	b[0] = (uint8_t)(n >> 8);
@@ -249,6 +428,43 @@ static __inline__ int16_t mesh_pixel(int32_t position, int32_t depth, int16_t f,
 {
 	int32_t p = centre + terra_div(position * f, depth);
 	return (int16_t)(p < -MESH_TILE_COORD ? -MESH_TILE_COORD : p > MESH_TILE_COORD ? MESH_TILE_COORD : p);
+}
+
+/* Points and links share the 68k byte order. Walk the faces backwards
+ * so each bin retains the course's original order for equal depths. */
+static uint8_t mesh_bins(const uint8_t *q, uint16_t n, const uint8_t *points,
+                      const uint8_t *outside, uint8_t *next, uint8_t *bins,
+                      int32_t low, int32_t high)
+{
+	uint32_t span = 3 * (uint32_t)(high - low);
+	int32_t base = 3 * low;
+	uint8_t shift = 0, has_bunker = 0;
+	uint16_t i;
+
+	while ((span >> shift) >= MESH_TILE_BINS) shift++;
+	for (i = 0; i < MESH_TILE_BINS; i++) put16(bins + i * 2, 0);
+	for (q += n * 5; n;) {
+		const uint8_t *a, *b, *c;
+		uint8_t oa, ob, oc;
+		uint16_t bin;
+		q -= 5;
+		n--;
+		oa = outside[q[0]];
+		ob = outside[q[1]];
+		oc = outside[q[2]];
+		if (oa & ob & oc) continue;
+		a = points + q[0] * MP_SIZE;
+		b = points + q[1] * MP_SIZE;
+		c = points + q[2] * MP_SIZE;
+		if (!((oa | ob | oc) & MESH_OUT_NEAR) &&
+		    be16(a + MP_Y) == be16(b + MP_Y) && be16(b + MP_Y) == be16(c + MP_Y)) continue;
+		bin = (uint16_t)(((uint32_t)((int32_t)be32(a + MP_DEPTH) +
+		      (int32_t)be32(b + MP_DEPTH) + (int32_t)be32(c + MP_DEPTH) - base)) >> shift);
+		if (q[3] == SURF_BUNKER) has_bunker = 1;
+		put16(next + n * 2, be16(bins + bin * 2));
+		put16(bins + bin * 2, n + 1);
+	}
+	return has_bunker;
 }
 
 static void mesh_project(uint8_t *b)
@@ -297,6 +513,8 @@ static void mesh_project(uint8_t *b)
 	put32(b + TMP_LOW, (uint32_t)low);
 	put32(b + TMP_HIGH, (uint32_t)high);
 	b[TMP_PROJECTED] = projected;
+	b[TMP_HAS_BUNKER] = mesh_bins(v, be16(b + TMP_TRIANGLES), (const uint8_t *)P32(b, TMP_POINTS),
+	          outside, (uint8_t *)P32(b, TMP_NEXT), (uint8_t *)P32(b, TMP_BINS), low, high);
 }
 
 static void edges(const uint8_t *b)
@@ -313,6 +531,59 @@ static void edges(const uint8_t *b)
 	terra_edges(&t);
 }
 
+static void object(uint8_t *b)
+{
+	uint8_t *bits = (uint8_t *)P32(b, TOBJ_BITS);
+	const uint8_t *src = (const uint8_t *)P32(b, TOBJ_SRC);
+	const uint8_t *clip = (const uint8_t *)P32(b, TOBJ_CLIP);
+	uint32_t us = be32(b + TOBJ_US), vs = be32(b + TOBJ_VS), pixels = 0;
+	uint16_t rb = be16(b + TOBJ_RB), sw = be16(b + TOBJ_SW), sh = be16(b + TOBJ_SH);
+	int16_t x0 = S16(b, TOBJ_X0), y0 = S16(b, TOBJ_Y0), vh = S16(b, TOBJ_VH);
+	int16_t ys = y0 < 0 ? 0 : y0, bottom = y0 + S16(b, TOBJ_DH);
+	int16_t x, end = S16(b, TOBJ_C1);
+
+	if (bottom > vh) bottom = vh;
+	if (src) {
+		uint32_t start_v = (uint32_t)(ys - y0) * vs;
+		for (x = S16(b, TOBJ_C0); x < end; x++, clip += 2) {
+			int16_t ye = S16(clip, 0), y;
+			uint16_t u = (uint16_t)(((uint32_t)(x - x0) * us) >> 16);
+			uint32_t v = start_v;
+			const uint8_t *col;
+			uint8_t *p;
+
+			if (ye > bottom) ye = bottom;
+			if (ys >= ye) continue;
+			if (u >= sw) u = sw - 1;
+			col = src + u;
+			p = bits + MULU16(ys, rb) + x;
+			for (y = ys; y < ye; y++, p += rb, v += vs) {
+				uint16_t sv = (uint16_t)(v >> 16);
+				uint8_t c;
+				if (sv >= sh) break;
+				c = col[MULU16(sv, sw)];
+				if (c) *p = c;
+			}
+			pixels += ye - ys;
+		}
+	} else {
+		int16_t scale = S16(b, TOBJ_SCALE), flag_end = y0 + (int16_t)sh;
+		if (flag_end > vh) flag_end = vh;
+		for (x = S16(b, TOBJ_C0); x < end; x++, clip += 2) {
+			int pole = x - x0 < (int16_t)sw;
+			int16_t edge = pole ? bottom : flag_end, ye = S16(clip, 0), y;
+			uint8_t *p;
+
+			if (ye > edge) ye = edge;
+			if (ys >= ye) continue;
+			p = bits + MULU16(ys, rb) + x;
+			for (y = ys; y < ye; y++, p += rb)
+				*p = pole ? PAL_GREY + 7 : PAL_FLAG + 2 - (y - y0 >= (int16_t)sh - scale);
+		}
+	}
+	put32(b + TOBJ_PIXELS, pixels);
+}
+
 unsigned long TO16ARM_ENTRY terraarm_entry(const void *emul, void *user, void *call68k)
 {
 	const uint8_t *u = (const uint8_t *)user;
@@ -322,11 +593,32 @@ unsigned long TO16ARM_ENTRY terraarm_entry(const void *emul, void *user, void *c
 	(void)emul;
 	(void)call68k;
 	if (op == TERRA_ROW) row(b);
-	else if (op == TERRA_TRIS) tris(b);
+	else if (op == TERRA_TRIS) tris(b, (const int8_t *)P32(u, TERRA_ARG_MOTTLE));
+	else if (op == TERRA_MESH_FACES) mesh_faces(b, (const int8_t *)P32(u, TERRA_ARG_MOTTLE));
 	else if (op == TERRA_SKY) sky(b);
 	else if (op == TERRA_MAP) map(b);
 	else if (op == TERRA_CURVE) curve_shade(b);
 	else if (op == TERRA_MESH_PROJECT) mesh_project(b);
 	else if (op == TERRA_EDGES) edges(b);
+	else if (op == TERRA_CURVE_LIGHT) curve_light(b);
+	else if (op == TERRA_OBJECT) object(b);
+	else if (op == TERRA_MESH_LIGHT) {
+		TerraMeshLight t = {(const uint8_t *)P32(b, TML_HEIGHTS), (int8_t *)P32(b, TML_OUT),
+		                    (int32_t)be32(b + TML_GAIN), be16(b + TML_WIDTH), be16(b + TML_HEIGHT),
+		                    be16(b + TML_FIRST), be16(b + TML_END)};
+		terra_mesh_light(&t);
+	} else if (op == TERRA_MESH_CHECK) {
+		TerraMeshCheck t;
+
+		t.data = (const uint8_t *)P32(b, TMV_DATA);
+		t.size = be32(b + TMV_SIZE);
+		t.width = be16(b + TMV_WIDTH);
+		t.length = be16(b + TMV_LENGTH);
+		terra_mesh_check(&t);
+		put16(b + TMV_TILES, t.tiles);
+		put16(b + TMV_VERTICES, t.vertices);
+		put16(b + TMV_TRIANGLES, t.triangles);
+		put16(b + TMV_MOW_PHASE, t.mow_phase);
+	}
 	return 0;
 }

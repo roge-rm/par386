@@ -1,10 +1,7 @@
 /* Packed full-shot terrain tiles. The draw shares the scene camera and sprite clip pool. */
-#define MESH_TILE_BINS 32
 #define MESH_OCC_BIAS 32L             /* one eighth of a yard in Q8 depth */
-#define MOW_PHASES 0xffffffUL
 #define CONTACT_W 152
 #define CONTACT_H 50
-#define CONTACT_STRIDE (CONTACT_W / 4)
 #define CONTACT_SHOES 80
 
 static const uint8_t contact_patterns[] = {
@@ -24,6 +21,7 @@ typedef struct {
 
 typedef struct MeshWork {
 	MeshPoint *points;
+	TerraTri *batch;              /* larger batch for detailed native draws */
 	MeshTileOrder *order;
 	uint16_t *next;
 	uint8_t *outside;
@@ -40,6 +38,8 @@ typedef struct MeshWork {
 	uint16_t order_count, cursor, triangle;
 	int16_t bin;
 	uint8_t started, loaded, light_row, reframed, shoes;
+	uint8_t native_tile;          /* all points are in front of the near plane */
+	uint8_t has_bunker;           /* a visible face needs sand relief */
 	uint8_t occludable[MAX_OBJ], oc_count;
 } MeshWork;
 
@@ -49,86 +49,6 @@ typedef struct MeshWork {
 static uint32_t SEC_CARD mesh_offset(const uint8_t *p)
 {
 	return ((uint32_t)TILE_U16(p + 12) << 16) | TILE_U16(p + 14);
-}
-
-/* Find the 24-yard cycle that agrees with the baked dark and light faces. */
-static uint32_t SEC_CARD mesh_mow_phases(uint32_t phases, const uint8_t *vertices,
-                                       const uint8_t *face)
-{
-	int32_t sum = TILE_S16(vertices + face[0] * 6 + 2) +
-	              (int32_t)TILE_S16(vertices + face[1] * 6 + 2) +
-	              TILE_S16(vertices + face[2] * 6 + 2);
-	/* A face centre is in one 12-yard band. The bias keeps the apron positive. */
-	uint16_t row = (uint16_t)((sum + 768L * 48) / 48);
-	uint16_t start = (uint16_t)((row + (face[4] < MOW_MID ? 1 : 13)) % 24);
-
-	return phases & ((0xfffUL << start) | (0xfffUL >> (24 - start)));
-}
-
-static int SEC_CARD mesh_parse(TerrainMesh *mesh, const Hole *hole, const uint8_t *data, uint32_t size)
-{
-	const uint8_t *d, *p, *vertices;
-	uint32_t end, phases = MOW_PHASES;
-	uint16_t count, i, k, nv, nt, mv = 0, mt = 0;
-	int16_t xmax = (int16_t)((hole->width + 128) * 16);
-	int16_t ymax = (int16_t)((hole->length + 128) * 16);
-
-	mesh->data = 0;
-	mesh->tiles = mesh->vertices = mesh->triangles = 0;
-	mesh->mow_phase = 0;
-	if (!data || size < 2 || size > 60000) return 0;
-	count = TILE_U16(data);
-	end = 2 + 16UL * count;
-	if (!count || count > 512 || size < end) return 0;
-	for (i = 0, d = data + 2; i < count; i++, d += 16) {
-		int16_t x0 = TILE_S16(d), y0 = TILE_S16(d + 2);
-		int16_t x1 = TILE_S16(d + 4), y1 = TILE_S16(d + 6);
-		uint32_t bytes;
-
-		nv = TILE_U16(d + 8);
-		nt = TILE_U16(d + 10);
-		bytes = 6UL * nv + 5UL * nt;
-		if (x0 < -128*16 || y0 < -128*16 || x1 > xmax || y1 > ymax ||
-		    x0 >= x1 || y0 >= y1 || nv < 3 || nv > 255 || !nt || nt > 512 ||
-		    mesh_offset(d) != end || bytes > size - end) return 0;
-		vertices = p = data + end;
-		end += bytes;
-		for (k = 0; k < nv; k++, p += 6) {
-			int16_t x = TILE_S16(p), y = TILE_S16(p + 2);
-			if (x < x0 || x > x1 || y < y0 || y > y1) return 0;
-		}
-		for (k = 0; k < nt; k++, p += 5) {
-			if (p[0] >= nv || p[1] >= nv || p[2] >= nv ||
-			    p[0] == p[1] || p[1] == p[2] || p[2] == p[0] ||
-			    p[3] >= SURF_COUNT || p[4] > (PAL_RAMP_N - 1) * 16) return 0;
-			if (p[3] == SURF_FAIRWAY && (phases & (phases - 1)))
-				phases = mesh_mow_phases(phases, vertices, p);
-		}
-		if (mv < nv) mv = nv;
-		if (mt < nt) mt = nt;
-	}
-	if (end != size) return 0;
-	mesh->data = data;
-	mesh->tiles = count;
-	mesh->vertices = mv;
-	mesh->triangles = mt;
-	while (phases && !(phases & 1)) {
-		mesh->mow_phase++;
-		phases >>= 1;
-	}
-	return 1;
-}
-
-static const TerrainMesh *SEC_CARD mesh_pick(const Surface *s, const RenderView *v)
-{
-	const TerrainMesh *mesh = &v->hole->terrain_mesh;
-
-	if (!mesh->data || v->green || s->half) return 0;
-	if (s->scale == 1 && s->w == 160 && s->h == 160 && (s->depth == 2 || s->depth == 8))
-		return mesh;
-	if (s->scale == 2 && s->w == 320 && (s->h == 320 || s->h == 448) && s->depth == 8)
-		return mesh;
-	return 0;
 }
 
 /* Area in Q12 for a Q4 edge and a ball position in Q8 yards. */
@@ -299,18 +219,24 @@ static void mesh_set_camera(Job *j, MeshWork *w, vec2 address)
 
 static uint32_t SEC_CARD mesh_work(const Surface *s, const RenderView *v, Job *j)
 {
-	const TerrainMesh *mesh = mesh_pick(s, v);
+	const TerrainMesh *mesh = &v->hole->terrain_mesh;
+	int16_t vh;
 	uint32_t base, light_bytes;
-	uint16_t contact_bytes;
+	uint16_t contact_bytes, batch_bytes;
 	MeshWork *w;
 
-	if (!mesh) return 0;
+	if (!mesh->data || v->green || fit(s, &vh) < 0) return 0;
 	base = (render_work_size(s) + 7) & ~7UL;
-	light_bytes = s->scale == 2 ? MULU16(v->hole->hm_w, v->hole->hm_h) : 0;
-	contact_bytes = s->depth == 2 ? CONTACT_STRIDE * CONTACT_H : 0;
+	light_bytes = s->scale == 2 && s->depth == 8 ? MULU16(v->hole->hm_w, v->hole->hm_h) : 0;
+	contact_bytes = s->depth < 8 ? (CONTACT_W / 4) * CONTACT_H * s->scale * s->scale : 0;
+	batch_bytes = light_bytes && terra_fn ? TERRA_MESH_TRIS * (sizeof(TerraTri) + sizeof(TerraTurf)) : 0;
 	if (j) {
+		uint16_t i;
+
 		w = (MeshWork *)((uint8_t *)j + base);
-		w->points = (MeshPoint *)(w + 1);
+		w->batch = batch_bytes ? (TerraTri *)(w + 1) : 0;
+		for (i = 0; i < batch_bytes; i++) ((uint8_t *)w->batch)[i] = 0;
+		w->points = (MeshPoint *)((uint8_t *)(w + 1) + batch_bytes);
 		w->order = (MeshTileOrder *)(w->points + mesh->vertices);
 		w->next = (uint16_t *)(w->order + mesh->tiles);
 		w->outside = (uint8_t *)(w->next + mesh->triangles);
@@ -334,7 +260,7 @@ static uint32_t SEC_CARD mesh_work(const Surface *s, const RenderView *v, Job *j
 	}
 	return base + sizeof(MeshWork) + (uint32_t)mesh->vertices * sizeof(MeshPoint) +
 	       (uint32_t)mesh->tiles * sizeof(MeshTileOrder) + mesh->triangles * 2UL + mesh->vertices +
-	       light_bytes + contact_bytes;
+	       light_bytes + contact_bytes + batch_bytes;
 }
 
 /* Replay just the triangles touching the address area so greyscale has
@@ -343,15 +269,16 @@ static void SEC_DANA mesh_contact_batch(const Job *j, const TerraTris *draw)
 {
 	TerraTri faces[TERRA_TRIS_MAX];
 	TerraTris mask = *draw;
-	int16_t left = j->r.cx - CONTACT_W / 2, top = j->r.vh - CONTACT_H;
+	int16_t width = CONTACT_W * j->r.scale, height = CONTACT_H * j->r.scale;
+	int16_t left = j->r.cx - width / 2, top = j->r.vh - height;
 	int16_t i, k;
 
 	mask.bits = j->mesh->contact;
 	mask.tri = faces;
 	mask.pat2 = contact_patterns;
-	mask.rb = CONTACT_STRIDE;
-	mask.w = CONTACT_W;
-	mask.vh = CONTACT_H;
+	mask.rb = width / 4;
+	mask.w = width;
+	mask.vh = height;
 	mask.lg = 1;
 	mask.turf = 0;
 	mask.noise = 0;
@@ -362,8 +289,8 @@ static void SEC_DANA mesh_contact_batch(const Job *j, const TerraTris *draw)
 		TerraTri *to = faces + mask.n;
 		if ((from->y[0] < top && from->y[1] < top && from->y[2] < top) ||
 		    (from->x[0] < left && from->x[1] < left && from->x[2] < left) ||
-		    (from->x[0] >= left + CONTACT_W && from->x[1] >= left + CONTACT_W &&
-		     from->x[2] >= left + CONTACT_W)) continue;
+		    (from->x[0] >= left + width && from->x[1] >= left + width &&
+		     from->x[2] >= left + width)) continue;
 		for (k = 0; k < 3; k++) {
 			to->x[k] = from->x[k] - left;
 			to->y[k] = from->y[k] - top;
@@ -374,31 +301,6 @@ static void SEC_DANA mesh_contact_batch(const Job *j, const TerraTris *draw)
 		mask.n++;
 	}
 	if (mask.n) terra_tris(&mask);
-}
-
-/* One slope sample per heightmap node, in quarter ramp units. */
-static void SEC_CARD mesh_light_row(const Hole *h, int8_t *light, uint8_t j)
-{
-	uint16_t w = h->hm_w, x;
-	const uint8_t *row = h->heights + MULU16(j, w);
-	const uint8_t *near = j ? row - w : row;
-	const uint8_t *far = j + 1 < h->hm_h ? row + w : row;
-	int32_t gain = (h->step * 3) >> h->hm_shift;
-
-	light += MULU16(j, w);
-	for (x = 0; x < w; x++) {
-		int16_t gx = row[x + 1 < w ? x + 1 : x] - row[x ? x - 1 : x];
-		int16_t gy = far[x] - near[x];
-		int32_t value = ((gx * 3 + gy * 2) * gain) >> (FIX_SHIFT - 2);
-		light[x] = (int8_t)(value < -96 ? -96 : value > 96 ? 96 : value);
-	}
-}
-
-static __inline__ int16_t SEC_CARD mesh_depth_span(const MeshPoint *p, int16_t start, int16_t span)
-{
-	int32_t yards = (p->depth >> 8) - start;
-
-	return yards <= 0 ? 0 : yards >= span ? span : (int16_t)yards;
 }
 
 static void SEC_CARD mesh_sand_light(const Hole *h, const MeshWork *w, MeshPoint *p)
@@ -418,40 +320,7 @@ static void SEC_CARD mesh_sand_light(const Hole *h, const MeshWork *w, MeshPoint
 	rim = cut <= 0 ? 32 : cut >= 64 ? 0 : (int16_t)(32 - (cut >> 1));
 	/* Lift distant sand and soften the rim as its projection gets smaller. */
 	p->sand = (int8_t)(light - (rim * 3 >> 2) +
-	                  (MULS16(rim + 16, mesh_depth_span(p, 40, 64)) >> 7));
-}
-
-static __inline__ int16_t SEC_CARD mesh_green_light(const MeshWork *w, const MeshPoint *p)
-{
-	int32_t shade = ((w->green_down - p->down) >> 3) + (p->light >> 2);
-	return (int16_t)(shade < -18 ? -18 : shade > 18 ? 18 : shade);
-}
-
-static int16_t SEC_CARD mesh_grass_light(const MeshWork *w, const MeshPoint *p, int16_t shade)
-{
-	int16_t dx = p->u - w->green_u, dy = p->v - w->green_v;
-	/* Bring out gentle slopes. Keep enough of the ramp for both mowing tones. */
-	int16_t relief = p->light < -14 ? -14 : p->light > 14 ? 14 : p->light;
-	int16_t slope = (int16_t)(relief * 3 +
-	                         ((MULS16(relief, mesh_depth_span(p, 32, 96)) + 64) >> 7));
-	int16_t near;
-
-	if (dx < 0) dx = -dx;
-	if (dy < 0) dy = -dy;
-	/* Bring the grass tones closer together within 24 yards of the green,
-	 * then fade back to the regular course shading over the next 32 yards. */
-	near = (int16_t)(56 * 16 - (dx > dy ? dx : dy));
-	if (near <= 0) return slope;
-	if (near >= 32 * 16) return (int16_t)(slope + shade);
-	return (int16_t)(slope + (MULS16(shade, near) >> 9));
-}
-
-static __inline__ int16_t SEC_CARD mesh_mow_light(const MeshWork *w, const MeshPoint *p, int16_t dark)
-{
-	/* Match the fade at shared vertices within each 12-yard band. */
-	int16_t fade = (int16_t)((mesh_depth_span(p, 90, 139) * 3) >> 5);
-
-	return (int16_t)(mesh_grass_light(w, p, -8) + (dark ? fade : -fade));
+	                  (MULS16(rim + 16, mesh_depth_span(p->depth >> 8, 40, 64)) >> 7));
 }
 
 /* Camera dot product in Q18, matching Q4 vertices times Q14 directions. */
@@ -462,7 +331,7 @@ static int32_t SEC_CARD mesh_origin(const R *r, int16_t qx, int16_t qy)
 	return MULS16(r->camx >> 12, qx) + MULS16(r->camy >> 12, qy) + (frac >> 12);
 }
 
-static void SEC_CARD mesh_order(Job *j)
+static void SEC_BALL mesh_order(Job *j)
 {
 	const R *r = &j->r;
 	MeshWork *w = j->mesh;
@@ -528,6 +397,7 @@ static int32_t SEC_CARD mesh_divide(int32_t numerator, int32_t depth)
 /* A pair of word multiplies for the 32-bit projection numerator. */
 static __inline__ int32_t SEC_CARD mesh_scale(int32_t n, uint16_t focal)
 {
+	if ((int16_t)n == n) return MULS16(n, focal);
 	return MULS16(n >> 16, focal) * 65536L + (int32_t)MULU16(n, focal);
 }
 #else
@@ -537,8 +407,30 @@ static __inline__ int32_t SEC_CARD mesh_scale(int32_t n, uint16_t focal)
 
 static void SEC_CARD mesh_screen(R *r, MeshPoint *p)
 {
-	int32_t x = r->cx + mesh_divide(mesh_scale(p->side, r->f), p->depth);
-	int32_t y = r->yh + mesh_divide(mesh_scale(p->down, r->f), p->depth);
+	int32_t x = mesh_scale(p->side, r->f), y = mesh_scale(p->down, r->f);
+	int32_t depth = p->depth;
+
+#ifdef __m68k__
+	/* On closer tiles both projections usually fit a signed word quotient. */
+	if (depth <= INT16_MAX) {
+		int32_t limit = depth << 15;
+		if (x >= -limit && x < limit && y >= -limit && y < limit) {
+			int16_t d = (int16_t)depth;
+			__asm__ ("divs.w %2,%0\n\tdivs.w %2,%1" : "+&d" (x), "+&d" (y) : "d" (d) : "cc");
+			x = (int16_t)x;
+			y = (int16_t)y;
+		} else {
+			x = mesh_divide(x, depth);
+			y = mesh_divide(y, depth);
+		}
+	} else
+#endif
+	{
+		x = mesh_divide(x, depth);
+		y = mesh_divide(y, depth);
+	}
+	x += r->cx;
+	y += r->yh;
 
 	p->x = (int16_t)(x < -MESH_TILE_COORD ? -MESH_TILE_COORD : x > MESH_TILE_COORD ? MESH_TILE_COORD : x);
 	p->y = (int16_t)(y < -MESH_TILE_COORD ? -MESH_TILE_COORD : y > MESH_TILE_COORD ? MESH_TILE_COORD : y);
@@ -598,15 +490,17 @@ static void SEC_CARD mesh_load(Job *j)
 		TerraMeshProject projection = {
 			p, w->points, w->outside, w->light, w->origin_side, w->origin_depth,
 			w->height >> 8, 0, 0, r->fx, r->fy, r->rx, r->ry, r->cx, r->yh,
-			r->f, r->w, r->vh, nv, r->h->hm_w, r->h->hm_h, r->h->hm_shift, 0
+			r->f, r->w, r->vh, nv, r->h->hm_w, r->h->hm_h, r->h->hm_shift, 0,
+			w->next, w->bins, nt, 0
 		};
 
 		terra_fn(TERRA_MESH_PROJECT, &projection);
-		lo = projection.low;
-		hi = projection.high;
 		r->st->divides += (uint16_t)projection.projected * 2;
-		p += nv * 6;
-	} else
+		mesh_occ_candidates(j, nv, projection.low);
+		w->native_tile = projection.low >= MESH_TILE_NEAR;
+		w->has_bunker = projection.has_bunker;
+		goto loaded;
+	}
 #endif
 	for (k = 0, a = w->points; k < nv; k++, a++, p += 6) {
 		x = TILE_S16(p); y = TILE_S16(p + 2);
@@ -630,6 +524,8 @@ static void SEC_CARD mesh_load(Job *j)
 		}
 	}
 	mesh_occ_candidates(j, nv, lo);
+	w->native_tile = lo >= MESH_TILE_NEAR;
+	w->has_bunker = 0;
 	span = 3 * (uint32_t)(hi - lo);
 	while ((span >> shift) >= MESH_TILE_BINS) shift++;
 	lo *= 3;
@@ -645,15 +541,16 @@ static void SEC_CARD mesh_load(Job *j)
 		a = w->points + q[0]; b = w->points + q[1]; c = w->points + q[2];
 		if (!((oa | ob | oc) & MESH_OUT_NEAR) &&
 		    a->y == b->y && b->y == c->y) continue;
-		if (w->light && q[3] == SURF_BUNKER) {
-			mesh_sand_light(r->h, w, a);
-			mesh_sand_light(r->h, w, b);
-			mesh_sand_light(r->h, w, c);
-		}
+#ifndef __palmos__
+		if (q[3] == SURF_BUNKER) w->has_bunker = 1;
+#endif
 		bin = (uint16_t)((uint32_t)(a->depth + b->depth + c->depth - lo) >> shift);
 		w->next[k] = w->bins[bin];
 		w->bins[bin] = (uint16_t)(k + 1);
 	}
+#ifdef __palmos__
+loaded:
+#endif
 	w->bin = MESH_TILE_BINS - 1;
 	w->triangle = w->bins[w->bin];
 	w->loaded = 1;
@@ -772,36 +669,30 @@ static void SEC_CARD mesh_draw(Job *j, TerraTris *d, const MeshPoint *a, const M
 		t->u[0] = a->u; t->v[0] = a->v; t->light[0] = a->light;
 		t->u[1] = b->u; t->v[1] = b->v; t->light[1] = b->light;
 		t->u[2] = c->u; t->v[2] = c->v; t->light[2] = c->light;
-		if (material == SURF_FAIRWAY) {
-			int16_t dark = light < MOW_MID;
+		if (material <= SURF_DEEP_ROUGH) {
+			int16_t i;
+
 			t->depth[0] = (int16_t)(a->depth >> 8);
 			t->depth[1] = (int16_t)(b->depth >> 8);
 			t->depth[2] = (int16_t)(c->depth >> 8);
-			t->light[0] = mesh_mow_light(j->mesh, a, dark);
-			t->light[1] = mesh_mow_light(j->mesh, b, dark);
-			t->light[2] = mesh_mow_light(j->mesh, c, dark);
-			light = dark ? MOW_MID - MOW_CONTRAST : MOW_MID + MOW_CONTRAST;
-		} else if (material <= SURF_DEEP_ROUGH) {
-			int16_t shade = material == SURF_ROUGH ? 8 : material == SURF_FIRST_CUT ? -14 : 14;
-			t->light[0] = mesh_grass_light(j->mesh, a, shade);
-			t->light[1] = mesh_grass_light(j->mesh, b, shade);
-			t->light[2] = mesh_grass_light(j->mesh, c, shade);
-			light = material == SURF_ROUGH ? 70 : material == SURF_FIRST_CUT ? 62 : 94;
+			if (!d->shade_grass)
+				for (i = 0; i < 3; i++)
+					t->light[i] = mesh_grass_light(t->u[i], t->v[i], t->light[i], t->depth[i],
+					                              d->green_u, d->green_v, material, light);
 		} else if (material == SURF_GREEN || material == SURF_FRINGE) {
-			t->light[0] = mesh_green_light(j->mesh, a);
-			t->light[1] = mesh_green_light(j->mesh, b);
-			t->light[2] = mesh_green_light(j->mesh, c);
-			light = material == SURF_GREEN ? 64 : 53;
+			int32_t down = j->mesh->green_down;
+			t->light[0] = mesh_green_light(down, a->down, a->light);
+			t->light[1] = mesh_green_light(down, b->down, b->light);
+			t->light[2] = mesh_green_light(down, c->down, c->light);
 		} else if (material == SURF_BUNKER) {
 			t->light[0] = a->sand; t->light[1] = b->sand; t->light[2] = c->sand;
-			light = 80;
 		} else {
 			/* The tee pads recede once they are beyond the address view. */
-			t->light[0] = (a->light >> 2) - mesh_depth_span(a, 18, 32);
-			t->light[1] = (b->light >> 2) - mesh_depth_span(b, 18, 32);
-			t->light[2] = (c->light >> 2) - mesh_depth_span(c, 18, 32);
-			light = 62;
+			t->light[0] = (a->light >> 2) - mesh_depth_span(a->depth >> 8, 18, 32);
+			t->light[1] = (b->light >> 2) - mesh_depth_span(b->depth >> 8, 18, 32);
+			t->light[2] = (c->light >> 2) - mesh_depth_span(c->depth >> 8, 18, 32);
 		}
+		light = mesh_detail_level(material, light);
 	}
 	/* Taper mowing contrast where the bands project to only a few pixels. */
 	if (material == SURF_FAIRWAY && !d->turf) {
@@ -811,7 +702,7 @@ static void SEC_CARD mesh_draw(Job *j, TerraTris *d, const MeshPoint *a, const M
 		if (taper > 0) light = (uint8_t)(light < MOW_MID ? light + taper : light - taper);
 	}
 	q->lv = light;
-	if (d->n == TERRA_TRIS_MAX) mesh_flush(j, d);
+	if (d->n == (d->shade_grass ? TERRA_MESH_TRIS : TERRA_TRIS_MAX)) mesh_flush(j, d);
 }
 
 static void SEC_CARD mesh_emit(Job *j, TerraTris *d, const MeshPoint *a, const MeshPoint *b,
@@ -898,10 +789,11 @@ static uint8_t mesh_contact_lie(const Job *j, int16_t x, int16_t y)
 
 	if (x < 0 || x >= r->w || y < 0 || y >= r->vh) return SURF_OOB;
 	if (j->mesh->contact) {
-		x -= r->cx - CONTACT_W / 2;
-		y -= r->vh - CONTACT_H;
-		if (x < 0 || x >= CONTACT_W || y < 0 || y >= CONTACT_H) return SURF_OOB;
-		ink = j->mesh->contact[MULU16(y, CONTACT_STRIDE) + (x >> 2)];
+		int16_t width = CONTACT_W * r->scale, height = CONTACT_H * r->scale;
+		x -= r->cx - width / 2;
+		y -= r->vh - height;
+		if (x < 0 || x >= width || y < 0 || y >= height) return SURF_OOB;
+		ink = j->mesh->contact[MULU16(y, width / 4) + (x >> 2)];
 		return contact_lies[(ink >> (6 - 2 * (x & 3))) & 3];
 	} else {
 		ink = r->bits[MULU16(y, r->rb) + x];
@@ -1009,6 +901,20 @@ static int mesh_reframe(Job *j)
 	return 1;
 }
 
+static int SEC_BALL mesh_lighting(MeshWork *w, const Hole *h, RenderClock clk, uint32_t until)
+{
+	while (w->light_row < h->hm_h) {
+		uint16_t end = clk ? (w->light_row + 4) & ~3 : h->hm_h;
+		TerraMeshLight t = {h->heights, w->light, (h->step * 3) >> h->hm_shift,
+		                    h->hm_w, h->hm_h, w->light_row, end < h->hm_h ? end : h->hm_h};
+		if (terra_fn) terra_fn(TERRA_MESH_LIGHT, &t);
+		else terra_mesh_light(&t);
+		w->light_row = (uint8_t)t.end;
+		if (!(w->light_row & 3) && late(clk, until)) return 0;
+	}
+	return 1;
+}
+
 /* A tile and its depth lists stay live across time slices. */
 static int SEC_CARD mesh_paint(Job *j, RenderClock clk, uint32_t until,
                                     const uint8_t *patterns, const uint8_t *bayer_tab,
@@ -1018,15 +924,23 @@ static int SEC_CARD mesh_paint(Job *j, RenderClock clk, uint32_t until,
 	MeshWork *w = j->mesh;
 	TerraTri batch[TERRA_TRIS_MAX];
 	TerraTurf turf[TERRA_TRIS_MAX] = {{{0}, {0}, {0}, {0}}};
-	TerraTris draw = { r->bits, batch, bayer_tab, patterns, grey_tab,
-	                   r->rb, r->w, r->vh, 0, r->lg, 0, w->light ? turf : 0, pal_noise,
-	                   r->h->terrain_mesh.mow_phase, r->lg == 3 && r->yh > 24 ? r->row : 0 };
+	uint16_t face_order[TERRA_MESH_TRIS];
+	TerraTurf *detail = w->batch ? (TerraTurf *)(w->batch + TERRA_MESH_TRIS) : turf;
+	TerraTris draw = { r->bits, w->batch ? w->batch : batch, bayer_tab, patterns, grey_tab,
+	                   r->rb, r->w, r->vh, 0, r->lg, terra_fn && w->batch, w->light ? detail : 0,
+	                   (r->lg == 1 || terra_fn || w->light) ? pal_noise : 0,
+	                   r->h->terrain_mesh.mow_phase,
+	                   r->lg == 3 && r->yh > 24 && (terra_fn || w->light) ? r->row : 0,
+	                   w->light ? w->green_u : 0, w->light ? w->green_v : 0 };
+	TerraMeshFaces native = { &draw, w->points, 0, face_order,
+	                         w->light ? w->green_down : 0, 0, 0, w->next };
 	const uint8_t *p;
 	uint16_t k, steps = 0;
 
 	if (!w->started) {
 		if (w->contact) {
-			for (k = 0; k < CONTACT_STRIDE * CONTACT_H; k++) w->contact[k] = 0xff;
+			uint16_t bytes = (CONTACT_W / 4) * CONTACT_H * r->scale * r->scale;
+			for (k = 0; k < bytes; k++) w->contact[k] = 0xff;
 		}
 		if (draw.reflection) mesh_reflection(r, grey_tab);
 		for (k = 0; k < r->nobj; k++) snap(r, &r->obj[k]);
@@ -1034,29 +948,64 @@ static int SEC_CARD mesh_paint(Job *j, RenderClock clk, uint32_t until,
 		mesh_horizon(j, &draw);
 		w->started = 1;
 	}
-	while (w->light && w->light_row < r->h->hm_h) {
-		mesh_light_row(r->h, w->light, w->light_row++);
-		if (!(w->light_row & 3) && late(clk, until)) goto pause;
-	}
+	if (w->light && !mesh_lighting(w, r->h, clk, until)) goto pause;
 	while (w->cursor < w->order_count) {
 		if (!w->loaded) mesh_load(j);
 		p = mesh_tile(j);
+		native.faces = p;
+		if (!clk && draw.shade_grass && w->bin == MESH_TILE_BINS - 1 &&
+		    w->triangle == w->bins[w->bin] && w->native_tile && !w->oc_count && !w->has_bunker) {
+			if (draw.n) mesh_flush(j, &draw);
+			native.bins = w->bins;
+			terra_fn(TERRA_MESH_FACES, &native);
+			native.bins = 0;
+			w->bin = -1;
+		}
 		while (w->bin >= 0) {
 			while (w->triangle) {
 				const uint8_t *q;
-				const MeshPoint *a, *b, *c;
+				MeshPoint *a, *b, *c;
+				int clipped, indexed;
 
 				k = (uint16_t)(w->triangle - 1);
 				w->triangle = w->next[k];
 				q = p + 5 * k;
+				clipped = !w->native_tile &&
+				          ((w->outside[q[0]] | w->outside[q[1]] | w->outside[q[2]]) & MESH_OUT_NEAR);
+				indexed = draw.shade_grass && !clipped;
+				/* ARM reads the projected points for an ordinary face. */
+				if (indexed && !w->oc_count && q[3] != SURF_BUNKER) goto queue_face;
 				a = w->points + q[0]; b = w->points + q[1]; c = w->points + q[2];
-				if (a->depth < MESH_TILE_NEAR || b->depth < MESH_TILE_NEAR || c->depth < MESH_TILE_NEAR)
-					mesh_clip(j, &draw, q);
-				else mesh_draw(j, &draw, a, b, c, q[3], q[4]);
+				if (w->light && q[3] == SURF_BUNKER) {
+					mesh_sand_light(r->h, w, a);
+					mesh_sand_light(r->h, w, b);
+					mesh_sand_light(r->h, w, c);
+				}
+				if (indexed) {
+					if (w->oc_count) mesh_occ_triangle(j, a, b, c);
+queue_face:
+					if (draw.n) mesh_flush(j, &draw);
+					face_order[native.count++] = k;
+					if (native.count == TERRA_MESH_TRIS) {
+						terra_fn(TERRA_MESH_FACES, &native);
+						native.count = 0;
+					}
+				} else {
+					if (native.count) {
+						terra_fn(TERRA_MESH_FACES, &native);
+						native.count = 0;
+					}
+					if (clipped) mesh_clip(j, &draw, q);
+					else mesh_draw(j, &draw, a, b, c, q[3], q[4]);
+				}
 				if ((++steps & 15) == 0 && clk && (int32_t)(clk() - until) >= 0) goto pause;
 			}
 			w->bin--;
 			if (w->bin >= 0) w->triangle = w->bins[w->bin];
+		}
+		if (native.count) {
+			terra_fn(TERRA_MESH_FACES, &native);
+			native.count = 0;
 		}
 		w->loaded = 0;
 		w->cursor++;
@@ -1066,6 +1015,7 @@ static int SEC_CARD mesh_paint(Job *j, RenderClock clk, uint32_t until,
 	if (!mesh_address(j) && mesh_reframe(j)) return 0;
 	return 1;
 pause:
+	if (native.count) terra_fn(TERRA_MESH_FACES, &native);
 	if (draw.n) mesh_flush(j, &draw);
 	return 0;
 }

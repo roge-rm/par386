@@ -31,7 +31,9 @@ Use `terrain-mesh all putting bunkers water` to bake both mesh qualities for eve
 
 Mark the near-green visual polygons with `poly SURFACE putting` to use the course's putting contours in both detail levels. Use `terrain-mesh N VISUAL.txt hazards` to also replace the sidecar's remaining bunkers and water with the course shapes. The compiler places the replacements in gameplay order. It uses the visual polygons as written when the hole has no putting curves.
 
-The `MSH2` directory stores two u16 record indices per hole, detailed then compact. Nonzero indices start at N + 2, where N is the number of holes, and run in directory order. A zero detailed index means the hole has no mesh. A zero compact index uses the detailed mesh. Courses with only detailed meshes use the older `MSH1` directory, which stores one index per hole.
+The `MSH3` directory stores three u16 record indices per hole in this order: detailed mesh, compact mesh, and packed lie grid. Nonzero indices start at N + 2, where N is the number of holes, and run in directory order. A zero detailed index means the hole has no mesh. A zero compact index uses the detailed mesh. The older `MSH2` and `MSH1` directories store only the two mesh indices or the detailed mesh index. The game rasterises the grid when no usable baked grid is available.
+
+The lie grid has one cell per two yards in each direction, sampled at cell centres. Row zero begins at y = 0. Each row packs its even column into the high nibble and its odd column into the low nibble. The unused low nibble in an odd-width row stores the base surface.
 
 Each mesh record is at most 60,000 bytes. Its u16 tile count precedes the tile directory. Each tile entry has four s16 bounds `x0, y0, x1, y1`, u16 vertex and triangle counts and a u32 byte offset from the start of the record. Coordinates are in sixteenths of a yard. The tile payload has vertices followed by triangles.
 
@@ -152,7 +154,7 @@ Samples run across x first, starting at the lowest y. The full-shot renderer int
 
 ## Surface grid
 
-When a hole loads, its shapes are drawn into a grid of 2 yard cells, 4 bits each (two to a byte, even column in the high nibble), row 0 at y = 0. Shapes are filled even-odd at the cell centres, in record order, so later shapes win. The biggest hole makes a 128 × 320 cell grid, 20 KB, written a row at a time so the Palm can keep it in a storage record. Off the grid counts as out of bounds, except past a water cell on the edge, where the water carries on (the sea off a clifftop hole).
+The compiler fills shapes even-odd at the cell centres, in record order, so later shapes win. The biggest hole makes a 128 × 320 cell grid, 20 KB. The Palm keeps the packed grid in a storage record. For an older pack it fills that record a row at a time when the hole loads. Off the grid counts as out of bounds, except past a water cell on the edge, where the water carries on (the sea off a clifftop hole).
 
 ## Course source
 

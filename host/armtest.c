@@ -185,7 +185,7 @@ static void terrain_edges(Surface *s, uint8_t *plain, uint8_t *full, uint8_t *st
 
 /* The renderer's loops through terraarm_entry. */
 
-static int tjobs[4];
+static int tjobs[TERRA_OP_COUNT], grass_batches;
 
 /* p, or a copy of n bytes of it under 4 GB (the renderer's const tables
  * are in the program's image), made once. */
@@ -221,6 +221,11 @@ static void swap_be(int16_t *v, int n)
 }
 
 static uint8_t *tblk, *tlist, *tturf, *tuser;   /* in low memory */
+static const uint8_t *tmottle;
+static uint8_t *tface_job, *tface_points, *tface_order, *tface_next, *tface_bins;
+static int whole_tiles;
+static uint8_t *tobject_clips;
+static int tobject_sprites;
 
 static void call_entry(uint8_t op, const uint8_t *b)
 {
@@ -228,13 +233,35 @@ static void call_entry(uint8_t op, const uint8_t *b)
 	u[0] = 0;
 	u[1] = op;
 	put32(u + 2, b);
+	put32(u + TERRA_ARG_MOTTLE, tmottle);
 	terraarm_entry(NULL, u, NULL);
 	tjobs[op]++;
 }
 
 static uint32_t rd32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
+static uint16_t rd16(const uint8_t *p) { return (uint16_t)((uint16_t)p[0] << 8 | p[1]); }
 
 /* What arm.c does on the 68k: the job as it lies in 68k memory, behind its op. */
+static void pack_face_points(const TerraMeshFaces *faces, uint16_t index)
+{
+	const uint8_t *q = faces->faces + 5 * index;
+	uint16_t k;
+
+	for (k = 0; k < 3; k++) {
+		const MeshPoint *pt = faces->points + q[k];
+		uint8_t *dst = tface_points + MP_SIZE * q[k];
+
+		put32(dst + MP_DEPTH, (const void *)(uintptr_t)(uint32_t)pt->depth);
+		put32(dst + MP_DOWN, (const void *)(uintptr_t)(uint32_t)pt->down);
+		put16(dst + MP_X, (uint16_t)pt->x);
+		put16(dst + MP_Y, (uint16_t)pt->y);
+		put16(dst + MP_U, (uint16_t)pt->u);
+		put16(dst + MP_V, (uint16_t)pt->v);
+		dst[MP_LIGHT] = (uint8_t)pt->light;
+		dst[MP_SAND] = (uint8_t)pt->sand;
+	}
+}
+
 static void via_terra(uint8_t op, void *job)
 {
 	uint8_t *b = tblk;
@@ -307,24 +334,56 @@ static void via_terra(uint8_t op, void *job)
 		call_entry(op, b);
 		swap_be(t->ybuf, t->w);
 		t->ymax = (int16_t)((b[TR_YMAX] << 8) | b[TR_YMAX + 1]);
-	} else if (op == TERRA_TRIS) {
-		const TerraTris *t = job;
-		CHECK(t->n > 0 && t->n <= TERRA_TRIS_MAX);
-		for (i = 0; i < t->n; i++) {
-			uint8_t *q = tlist + 16 * i;
-			for (k = 0; k < 3; k++) {
-				put16(q + 2 * k, (uint16_t)t->tri[i].x[k]);
-				put16(q + 6 + 2 * k, (uint16_t)t->tri[i].y[k]);
+	} else if (op == TERRA_TRIS || op == TERRA_MESH_FACES) {
+		const TerraMeshFaces *faces = op == TERRA_MESH_FACES ? job : NULL;
+		const TerraTris *t = faces ? faces->draw : job;
+		if (faces) {
+			put32(tface_job + TMF_BINS, faces->bins ? tface_bins : NULL);
+			put32(tface_job + TMF_NEXT, faces->bins ? tface_next : NULL);
+			if (faces->bins) {
+				whole_tiles++;
+				for (i = 0; i < MESH_TILE_BINS; i++) {
+					uint16_t link = faces->bins[i];
+					put16(tface_bins + 2 * i, link);
+					while (link) {
+						uint16_t index = link - 1;
+						pack_face_points(faces, index);
+						link = faces->next[index];
+						put16(tface_next + 2 * index, link);
+					}
+				}
+			} else {
+				CHECK(faces->count > 0 && faces->count <= TERRA_MESH_TRIS);
+				for (i = 0; i < faces->count; i++) {
+					put16(tface_order + 2 * i, faces->order[i]);
+					pack_face_points(faces, faces->order[i]);
+				}
 			}
-			put16(q + 12, (uint16_t)t->tri[i].base);
-			put16(q + 14, (uint16_t)t->tri[i].lv);
-			if (t->turf) {
-				q = tturf + TT_TURF_SIZE * i;
+			put32(tface_job + TMF_DRAW, b);
+			put32(tface_job + TMF_POINTS, tface_points);
+			put32(tface_job + TMF_FACES, faces->faces);
+			put32(tface_job + TMF_ORDER, tface_order);
+			put32(tface_job + TMF_GREEN_DOWN, (const void *)(uintptr_t)(uint32_t)faces->green_down);
+			put16(tface_job + TMF_COUNT, faces->count);
+		} else {
+			CHECK(t->n > 0 && t->n <= (t->shade_grass ? TERRA_MESH_TRIS : TERRA_TRIS_MAX));
+			if (t->shade_grass) grass_batches++;
+			for (i = 0; i < t->n; i++) {
+				uint8_t *q = tlist + 16 * i;
 				for (k = 0; k < 3; k++) {
-					put16(q + 2 * k, (uint16_t)t->turf[i].u[k]);
-					put16(q + 6 + 2 * k, (uint16_t)t->turf[i].v[k]);
-					put16(q + 12 + 2 * k, (uint16_t)t->turf[i].light[k]);
-					put16(q + 18 + 2 * k, (uint16_t)t->turf[i].depth[k]);
+					put16(q + 2 * k, (uint16_t)t->tri[i].x[k]);
+					put16(q + 6 + 2 * k, (uint16_t)t->tri[i].y[k]);
+				}
+				put16(q + 12, (uint16_t)t->tri[i].base);
+				put16(q + 14, (uint16_t)t->tri[i].lv);
+				if (t->turf) {
+					q = tturf + TT_TURF_SIZE * i;
+					for (k = 0; k < 3; k++) {
+						put16(q + 2 * k, (uint16_t)t->turf[i].u[k]);
+						put16(q + 6 + 2 * k, (uint16_t)t->turf[i].v[k]);
+						put16(q + 12 + 2 * k, (uint16_t)t->turf[i].light[k]);
+						put16(q + 18 + 2 * k, (uint16_t)t->turf[i].depth[k]);
+					}
 				}
 			}
 		}
@@ -338,11 +397,14 @@ static void via_terra(uint8_t op, void *job)
 		put16(b + TT_VH, (uint16_t)t->vh);
 		put16(b + TT_N, (uint16_t)t->n);
 		b[TT_LG] = t->lg;
+		b[TT_SHADE_GRASS] = t->shade_grass;
 		put32(b + TT_TURF, t->turf ? tturf : NULL);
 		put32(b + TT_NOISE, lowtab(t->noise, 256));
 		put16(b + TT_MOW_PHASE, (uint16_t)t->mow_phase);
 		put32(b + TT_REFLECTION, t->reflection);
-		call_entry(op, b);
+		put16(b + TT_GREEN_U, (uint16_t)t->green_u);
+		put16(b + TT_GREEN_V, (uint16_t)t->green_v);
+		call_entry(op, faces ? tface_job : b);
 	} else if (op == TERRA_SKY) {
 		TerraSky *t = job;
 		put32(b + TS_BITS, t->bits);
@@ -394,6 +456,38 @@ static void via_terra(uint8_t op, void *job)
 		put16(b + TM_GH, t->gh);
 		b[TM_LG] = t->lg;
 		call_entry(op, b);
+	} else if (op == TERRA_CURVE) {
+		const TerraCurveShade *t = job;
+		put32(b + TC_BITS, t->bits);
+		put32(b + TC_LIGHT, t->light);
+		put32(b + TC_BAYER, lowtab(t->bayer, 16));
+		put32(b + TC_SPANS, t->spans);
+		put16(b + TC_RB, t->rb);
+		put16(b + TC_COUNT, t->count);
+		put32(b + TC_NOISE, lowtab(t->noise, 256));
+		call_entry(op, b);
+	} else if (op == TERRA_CURVE_LIGHT) {
+		const TerraCurveLight *t = job;
+		put32(b + TCL_OUT, t->out);
+		put32(b + TCL_HEIGHTS, t->heights);
+		V32(TCL_CAMX, t->camx);
+		V32(TCL_CAMY, t->camy);
+		V32(TCL_Z, t->z);
+		V32(TCL_ZREF, t->zref);
+		V32(TCL_BASE, t->base);
+		V32(TCL_DX, t->dx);
+		V32(TCL_DY, t->dy);
+		V32(TCL_DZ, t->dz);
+		put16(b + TCL_F, t->f);
+		put16(b + TCL_CX, t->cx);
+		put16(b + TCL_RX, t->rx);
+		put16(b + TCL_RY, t->ry);
+		put16(b + TCL_COLS, t->cols);
+		put16(b + TCL_STEP, t->step);
+		put16(b + TCL_HW, t->hw);
+		put16(b + TCL_HH, t->hh);
+		put16(b + TCL_SHIFT, t->shift);
+		call_entry(op, b);
 	} else if (op == TERRA_EDGES) {
 		const TerraEdges *t = job;
 		put32(b, t->bits);
@@ -405,6 +499,49 @@ static void via_terra(uint8_t op, void *job)
 		put16(b + 16, t->y);
 		put16(b + 18, t->end);
 		call_entry(op, b);
+	} else if (op == TERRA_MESH_LIGHT) {
+		const TerraMeshLight *t = job;
+		put32(b + TML_HEIGHTS, t->heights);
+		put32(b + TML_OUT, t->out);
+		V32(TML_GAIN, t->gain);
+		put16(b + TML_WIDTH, t->width);
+		put16(b + TML_HEIGHT, t->height);
+		put16(b + TML_FIRST, t->first);
+		put16(b + TML_END, t->end);
+		call_entry(op, b);
+	} else if (op == TERRA_MESH_CHECK) {
+		TerraMeshCheck *t = job;
+		put32(b + TMV_DATA, t->data);
+		V32(TMV_SIZE, t->size);
+		put16(b + TMV_WIDTH, t->width);
+		put16(b + TMV_LENGTH, t->length);
+		call_entry(op, b);
+		t->tiles = rd16(b + TMV_TILES);
+		t->vertices = rd16(b + TMV_VERTICES);
+		t->triangles = rd16(b + TMV_TRIANGLES);
+		t->mow_phase = rd16(b + TMV_MOW_PHASE);
+	} else if (op == TERRA_OBJECT) {
+		TerraObject *t = job;
+		CHECK(t->c1 - t->c0 <= 480);
+		for (i = 0; i < t->c1 - t->c0; i++) put16(tobject_clips + 2 * i, (uint16_t)t->clip[i]);
+		put32(b + TOBJ_BITS, t->bits);
+		put32(b + TOBJ_SRC, t->src);
+		put32(b + TOBJ_CLIP, tobject_clips);
+		V32(TOBJ_US, t->us);
+		V32(TOBJ_VS, t->vs);
+		put16(b + TOBJ_RB, t->rb);
+		put16(b + TOBJ_VH, (uint16_t)t->vh);
+		put16(b + TOBJ_X0, (uint16_t)t->x0);
+		put16(b + TOBJ_Y0, (uint16_t)t->y0);
+		put16(b + TOBJ_C0, (uint16_t)t->c0);
+		put16(b + TOBJ_C1, (uint16_t)t->c1);
+		put16(b + TOBJ_DH, (uint16_t)t->dh);
+		put16(b + TOBJ_SW, t->sw);
+		put16(b + TOBJ_SH, t->sh);
+		put16(b + TOBJ_SCALE, t->scale);
+		call_entry(op, b);
+		t->pixels = rd32(b + TOBJ_PIXELS);
+		if (t->src) tobject_sprites++;
 	} else {
 		CHECK(0);
 	}
@@ -513,7 +650,10 @@ static void both_ways(const RenderView *v, const RenderArt *a, int w, int h, int
 		render_terra_use(via_terra);
 		CHECK(render_map(&s2, v, &m2) == 0);
 		render_terra_use(NULL);
-		CHECK(memcmp(s1.bits, s2.bits, n) == 0 && memcmp(&m1, &m2, sizeof m1) == 0);
+		CHECK(memcmp(s1.bits, s2.bits, n) == 0);
+		CHECK(m1.bx == m2.bx && m1.by == m2.by && m1.px == m2.px && m1.py == m2.py &&
+		      m1.yards == m2.yards && m1.left == m2.left && m1.top == m2.top &&
+		      m1.ypp == m2.ypp && m1.length == m2.length);
 		CHECK(render_map_box(&s1, v, &box, &m1) == 0);
 		render_terra_use(via_terra);
 		CHECK(render_map_box(&s2, v, &box, &m2) == 0);
@@ -525,16 +665,121 @@ static void both_ways(const RenderView *v, const RenderArt *a, int w, int h, int
 	}
 }
 
+static void curved_green_ways(const RenderView *v)
+{
+	Surface s1, s2;
+	RenderView green = *v;
+	uint32_t bytes;
+	void *work;
+	int steps = 0, done;
+
+	green.green = 1;
+	lowsurf(&s1, 320, 448, 2, 8);
+	lowsurf(&s2, 320, 448, 2, 8);
+	bytes = render_green_curves_size(&s1, &green);
+	CHECK(bytes > 0);
+	if (!bytes) return;
+	work = lowalloc(bytes);
+	CHECK(render_green_curves_begin(&s1, &green, work) == 0);
+	CHECK(render_green_step(work, NULL, 0) == 1);
+	render_terra_use(via_terra);
+	CHECK(render_green_curves_begin(&s2, &green, work) == 0);
+	do {
+		done = render_green_step(work, tick, tclock);
+	} while (!done && ++steps < 100000);
+	render_terra_use(NULL);
+	CHECK(done == 1);
+	CHECK(memcmp(s1.bits, s2.bits, (size_t)s1.rowBytes * s1.h) == 0);
+}
+
+static void mesh_check_ways(const Hole *h, const uint8_t *bytes, uint32_t size,
+                            const TerrainMesh *expected)
+{
+	TerrainMesh result;
+	int valid;
+
+	render_terra_use(via_terra);
+	valid = terrain_mesh_parse(&result, h, bytes, size);
+	render_terra_use(NULL);
+	CHECK(valid == (expected != NULL));
+	CHECK(result.data == (expected ? bytes : NULL));
+	CHECK(result.tiles == (expected ? expected->tiles : 0));
+	CHECK(result.vertices == (expected ? expected->vertices : 0));
+	CHECK(result.triangles == (expected ? expected->triangles : 0));
+	CHECK(result.mow_phase == (expected ? expected->mow_phase : 0));
+}
+
+static void mesh_ways(const RenderView *v, const RenderArt *art)
+{
+	Surface plain, native;
+	uint32_t bytes;
+	void *work;
+	int done, steps = 0;
+
+	lowsurf(&plain, 320, 448, 2, 8);
+	lowsurf(&native, 320, 448, 2, 8);
+	bytes = render_scene_visual_size(&plain, v);
+	CHECK(bytes > 0);
+	if (!bytes) return;
+	work = lowalloc(bytes);
+	CHECK(render_scene_visual(&plain, v, art, work, NULL) == 0);
+	render_terra_use(via_terra);
+	work = lowalloc(render_scene_visual_size(&native, v));
+	CHECK(render_scene_visual(&native, v, art, work, NULL) == 0);
+	CHECK(grass_batches > 0);
+	CHECK(tjobs[TERRA_MESH_FACES] > 0);
+	CHECK(whole_tiles > 0);
+	CHECK(tjobs[TERRA_MESH_LIGHT] > 0);
+	CHECK(memcmp(plain.bits, native.bits, (size_t)plain.rowBytes * plain.h) == 0);
+	CHECK(render_scene_visual_begin(&native, v, art, work, NULL) == 0);
+	do {
+		done = render_scene_step(work, tick, tclock);
+	} while (!done && ++steps < 100000);
+	render_terra_use(NULL);
+	CHECK(done == 1);
+	CHECK(memcmp(plain.bits, native.bits, (size_t)plain.rowBytes * plain.h) == 0);
+}
+
+static void edge_word_ways(void)
+{
+	enum { WIDTH = 67, STRIDE = 68, HEIGHT = 47 };
+	static const uint8_t colours[] = {
+		PAL_ROUGH, PAL_FRINGE, PAL_GREEN, PAL_SAND, PAL_WATER, PAL_TEE, 19, 124, 127, 128, 255
+	};
+	uint8_t *plain = lowalloc(STRIDE * HEIGHT + 1) + 1;
+	uint8_t *native = lowalloc(STRIDE * HEIGHT);
+	TerraEdges a = {plain, lowalloc(WIDTH * EDGE_MARK_ROWS), STRIDE, WIDTH, HEIGHT, 4, 0, 0};
+	TerraEdges b = {native, lowalloc(WIDTH * EDGE_MARK_ROWS), STRIDE, WIDTH, HEIGHT, 4, 0, 0};
+	uint16_t i, y;
+
+	for (i = 0; i < STRIDE * HEIGHT; i++) {
+		uint16_t row = i / STRIDE, x = i % STRIDE;
+		plain[i] = (uint8_t)(colours[(x / 9 + row / 6 + (row ^ x) / 19) % sizeof colours] +
+		                    ((row + x) & 7));
+	}
+	memcpy(native, plain, STRIDE * HEIGHT);
+	for (y = 0; y < HEIGHT; y += 7) {
+		a.y = b.y = y;
+		a.end = b.end = y + 7 < HEIGHT ? y + 7 : HEIGHT;
+		terra_edges(&a);
+		via_terra(TERRA_EDGES, &b);
+	}
+	CHECK(memcmp(plain, native, STRIDE * HEIGHT) == 0);
+	CHECK(memcmp(a.marks, b.marks, WIDTH * EDGE_MARK_ROWS) == 0);
+}
+
 static void terra_tests(const char *pdbpath, const char *artdir)
 {
 	uint8_t *pdb, *hrec, row[SURF_ROW_MAX];
 	uint32_t n, a, e, len;
 	Hole h;
+	Course course;
 	SurfaceGrid g;
 	RenderArt art[2];
 	RenderView v;
 	char path[512];
 	int i, k, count;
+	uint16_t mesh;
 	static const double pos[][4] = { { -1, -1, 0 }, { 64, 190, 1 }, { 124, 352, 1 }, { 120, 395, 1 } };
 	static const int32_t divs[][2] = {
 		{ 0, 1 }, { 7, 2 }, { -7, 2 }, { 7, -2 }, { -7, -2 }, { 262144000, 3 }, { -262144000, 7 },
@@ -560,9 +805,16 @@ static void terra_tests(const char *pdbpath, const char *artdir)
 	}
 
 	tblk = lowalloc(TR_SIZE + TT_SIZE + TS_SIZE + TM_SIZE);
-	tlist = lowalloc(TERRA_TRIS_MAX * 16);
-	tturf = lowalloc(TERRA_TRIS_MAX * TT_TURF_SIZE);
-	tuser = lowalloc(6);
+	tlist = lowalloc(TERRA_MESH_TRIS * 16);
+	tturf = lowalloc(TERRA_MESH_TRIS * TT_TURF_SIZE);
+	tuser = lowalloc(TERRA_ARG_SIZE);
+	edge_word_ways();
+	tface_job = lowalloc(TMF_SIZE);
+	tface_points = lowalloc(UINT8_MAX * MP_SIZE);
+	tface_order = lowalloc(TERRA_MESH_TRIS * 2);
+	tface_next = lowalloc(512 * 2);
+	tface_bins = lowalloc(MESH_TILE_BINS * 2);
+	tobject_clips = lowalloc(480 * sizeof(int16_t));
 	/* the test course's hole 1 and its surface grid, in low memory */
 	pdb = load_low(pdbpath, &n);
 	if (!pdb || n < 94) {
@@ -584,14 +836,24 @@ static void terra_tests(const char *pdbpath, const char *artdir)
 	g.cells = tgrid;
 	surface_raster(&h, row, grid_row, &g);
 
-	/* no sprites; the backdrop, so the sky rows have one */
+	/* Trees and pines exercise clipped scenery beyond the separate pin. */
 	for (k = 0; k < 2; k++) {
 		memset(&art[k], 0, sizeof art[k]);
 		snprintf(path, sizeof path, "%s/Bkd8-%d.bin", artdir, 1000 + k);
 		art[k].backdrop.p = load_low(path, &art[k].backdrop.len);
 		CHECK(art[k].backdrop.p && art[k].backdrop.len);
 	}
+	for (i = OBJ_TREE; i <= OBJ_PINE; i++) {
+		for (k = 0; k < RENDER_SIZES; k++) {
+			RenderData *d = &art[0].spr[i][0][k];
+			snprintf(path, sizeof path, "%s/Spr8-%d.bin", artdir, 1000 + i * 10 + k);
+			d->p = load_low(path, &d->len);
+			CHECK(d->p && d->len);
+			art[1].spr[i][0][k] = *d;
+		}
+	}
 
+	memset(&v, 0, sizeof v);
 	v.hole = &h;
 	v.grid = &g;
 	v.pin = 0;
@@ -611,7 +873,38 @@ static void terra_tests(const char *pdbpath, const char *artdir)
 		both_ways(&v, &art[1], 320, 448, 2, 8, 0);
 		both_ways(&v, &art[0], 320, 320, 2, 4, 1);
 		both_ways(&v, &art[1], 480, 320, 2, 8, 0);
+		if (i >= 2) curved_green_ways(&v);
 	}
+	k = course_parse(&course, pdb + rd32(pdb + 78), a - rd32(pdb + 78));
+	CHECK(k == HOLE_OK);
+	if (k == HOLE_OK && course.hole_count + 1 < count) {
+		int index = course.hole_count + 1;
+		uint32_t start = rd32(pdb + 78 + 8 * index);
+		uint32_t end = index + 1 < count ? rd32(pdb + 78 + 8 * (index + 1)) : n;
+		mesh = course_terrain_record(pdb + start, end - start, course.hole_count, count, 1, 0);
+		if (mesh) {
+			uint8_t *bad;
+			uint32_t face;
+
+			start = rd32(pdb + 78 + 8 * mesh);
+			end = mesh + 1 < count ? rd32(pdb + 78 + 8 * (mesh + 1)) : n;
+			k = terrain_mesh_parse(&h.terrain_mesh, &h, pdb + start, end - start);
+			CHECK(k);
+			if (!k) return;
+			mesh_check_ways(&h, pdb + start, end - start, &h.terrain_mesh);
+			mesh_check_ways(&h, pdb + start, end - start - 1, NULL);
+			face = rd32(pdb + start + 14) + 6U * rd16(pdb + start + 10);
+			bad = lowalloc(end - start);
+			memcpy(bad, pdb + start, end - start);
+			bad[face] = bad[face + 1];
+			mesh_check_ways(&h, bad, end - start, NULL);
+			v.ball = h.tees[0].pos;
+			v.aim = iatan2(h.aim.y - v.ball.y, h.aim.x - v.ball.x);
+			mesh_ways(&v, &art[1]);
+		}
+	}
+	CHECK(tjobs[TERRA_CURVE_LIGHT] > 0 && tjobs[TERRA_CURVE] > 0);
+	CHECK(tobject_sprites > 0 && tjobs[TERRA_OBJECT] > tobject_sprites);
 	CHECK(tjobs[TERRA_ROW] > 0 && tjobs[TERRA_TRIS] > 0 && tjobs[TERRA_SKY] > 0 && tjobs[TERRA_MAP] > 0);
 	printf("armtest: %d terrain steps, %d triangle batches, %d sky slices, %d map slices through the entry\n",
 	       tjobs[TERRA_ROW], tjobs[TERRA_TRIS], tjobs[TERRA_SKY], tjobs[TERRA_MAP]);
@@ -624,8 +917,8 @@ int main(int argc, char **argv)
 	size_t r, k, i;
 	int le;
 
-	if (argc != 3) {
-		printf("usage: armtest COURSE.pdb ARTDIR\n");
+	if (argc != 3 && argc != 4) {
+		printf("usage: armtest COURSE.pdb ARTDIR [MOTTLE.bin]\n");
 		return 2;
 	}
 	low = mmap(NULL, LOW_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT, -1, 0);
@@ -634,6 +927,14 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	lowp = low;
+	if (argc == 4) {
+		uint32_t bytes;
+		tmottle = load_low(argv[3], &bytes);
+		if (!tmottle || bytes != TERRA_MOTTLE_SIZE) {
+			printf("FAIL can't read %s\n", argv[3]);
+			return 1;
+		}
+	}
 	palle = lowalloc(512);
 	dith = lowalloc(16);
 	{

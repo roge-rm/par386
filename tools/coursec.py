@@ -957,6 +957,43 @@ def putting_surfaces(sources):
     return CURVE_SURFACES
 
 
+def lie_grid(hole, curves):
+    """Pack the same two-yard cell centres as surface_raster in hole.c."""
+    width = (hole["width"] + 1) // 2
+    height = (hole["length"] + 1) // 2
+    padded = (width + 1) & ~1
+    cells = bytearray([hole["surface"]]) * (padded * height)
+    indexed = {i: pts for i, _, pts in read_putting_curves(curves, hole, indexed=True)} if curves else {}
+    for i, (surface, points) in enumerate(hole["shapes"]):
+        curved = i in indexed
+        points = indexed.get(i, points)
+        spacing = 32 if curved else 8
+        low = min(y for _, y in points)
+        high = max(y for _, y in points)
+        start = max(0, (low + spacing // 2 - 1) // spacing)
+        end = min(height, (high + spacing // 2 - 1) // spacing)
+        for row in range(start, end):
+            y = row * spacing + spacing // 2
+            crossings = []
+            for (ax, ay), (bx, by) in zip(points[-1:] + points[:-1], points):
+                if (ay <= y) == (by <= y):
+                    continue
+                product, dy = (y - ay) * (bx - ax), by - ay
+                if curved:
+                    dx = -(-product // dy)
+                else:
+                    dx = abs(product) // abs(dy)
+                    if (product < 0) != (dy < 0):
+                        dx = -dx
+                crossings.append((ax + dx + spacing // 2 - 1) // spacing)
+            crossings.sort()
+            for left, right in zip(crossings[::2], crossings[1::2]):
+                right = min(right, width)
+                offset = row * padded
+                cells[offset + left:offset + right] = bytes([surface]) * (right - left)
+    return bytes((hi << 4) | lo for hi, lo in zip(cells[::2], cells[1::2]))
+
+
 def build(folder, out, green_mesh=False, green_geometry=False, visual_hole=None, baked_sand=False):
     course = read_course(folder)
     if visual_hole and not 1 <= visual_hole[0] <= course["holes"]:
@@ -988,21 +1025,20 @@ def build(folder, out, green_mesh=False, green_geometry=False, visual_hole=None,
         if len(r) > MAX_RECORD:
             raise CourseError("record %d is %d bytes, over 16 KB" % (i, len(r)))
     if terrain_sources:
-        indices = [0] * (2 * len(holes))
-        meshes = []
-        for n, sources in sorted(terrain_sources.items()):
-            for quality, data in enumerate(terrain_mesh_records(folder, n, holes[n - 1], sources,
-                                                               record_curves.get(n),
-                                                               sources is default)):
-                indices[2 * (n - 1) + quality] = len(records) + 1 + len(meshes)
-                meshes.append(data)
-        if any(indices[1::2]):
-            magic = terrainmesh.QUALITY_MANIFEST
-        else:
-            magic = terrainmesh.MANIFEST
-            indices = indices[::2]
-        records.append(magic + struct.pack(">%dH" % len(indices), *indices))
-        records.extend(meshes)
+        indices, extras = [], []
+        for n, hole in enumerate(holes, 1):
+            pair = [0, 0]
+            sources = terrain_sources.get(n)
+            if sources is not None:
+                for quality, data in enumerate(terrain_mesh_records(folder, n, hole, sources,
+                                                                   record_curves.get(n),
+                                                                   sources is default)):
+                    pair[quality] = len(records) + 1 + len(extras)
+                    extras.append(data)
+            indices.extend((*pair, len(records) + 1 + len(extras)))
+            extras.append(lie_grid(hole, record_curves.get(n)))
+        records.append(terrainmesh.GRID_MANIFEST + struct.pack(">%dH" % len(indices), *indices))
+        records.extend(extras)
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     write_pdb(out, "Par386 " + course["name"], records)
     print("%s: %d holes, %d bytes in records, sizes %s" % (out, len(holes), sum(len(r) for r in records),

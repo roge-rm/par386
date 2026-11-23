@@ -154,11 +154,11 @@ static void SEC_RENDER kz(R *r, uint32_t q, uint32_t d, int16_t *m, uint8_t *sh)
 }
 
 /* Ground height at (x, y) in byte steps, 8.8, bilinear and held level past the edge. */
-static int32_t SEC_RENDER hb_at(const Hole *h, fixed x, fixed y)
+static __inline__ int32_t hb_sample(const Hole *h, fixed x, fixed y)
 {
 	fixed gx = x >> h->hm_shift, gy = y >> h->hm_shift;
 	fixed mx = (fixed)(h->hm_w - 1) << 16, my = (fixed)(h->hm_h - 1) << 16;
-	uint16_t i, j, i1, j1, fx, fy, hw = h->hm_w;    /* 16 bits, or MULU16 isn't one mulu.w */
+	uint16_t i, j, i1, fx, fy, hw = h->hm_w;    /* 16 bits, or MULU16 isn't one mulu.w */
 	const uint8_t *r0, *r1;
 	int32_t t, b;
 
@@ -168,13 +168,17 @@ static int32_t SEC_RENDER hb_at(const Hole *h, fixed x, fixed y)
 	if (gy > my) gy = my;
 	i = (uint16_t)(gx >> 16); fx = (uint16_t)((gx >> 8) & 255);
 	j = (uint16_t)(gy >> 16); fy = (uint16_t)((gy >> 8) & 255);
-	i1 = i + 1 < h->hm_w ? i + 1 : i;
-	j1 = j + 1 < h->hm_h ? j + 1 : j;
+	i1 = gx < mx ? i + 1 : i;
 	r0 = h->heights + MULU16(j, hw);
-	r1 = h->heights + MULU16(j1, hw);
+	r1 = gy < my ? r0 + hw : r0;
 	t = ((int32_t)r0[i] << 8) + MULS16(r0[i1] - r0[i], fx);
 	b = ((int32_t)r1[i] << 8) + MULS16(r1[i1] - r1[i], fx);
 	return t + (MULS16((b - t) >> 1, fy) >> 7);
+}
+
+static int32_t SEC_RENDER hb_at(const Hole *h, fixed x, fixed y)
+{
+	return hb_sample(h, x, y);
 }
 
 /* Camera height minus a height, both 8.8 byte steps, as 1/64 steps clamped to 16 bits. */
@@ -1229,7 +1233,8 @@ static int SEC_RENDER sky(Job *j, const RenderData *bk, RenderClock clk, uint32_
 	ts->bits = r->bits;
 	ts->bk = bk->p;
 	ts->row = r->row;
-	ts->ybuf = r->ybuf;
+	/* The mesh draws its ground over the sky afterwards. */
+	ts->ybuf = j->mesh && r->lg == 2 && !terra_fn ? 0 : r->ybuf;
 	ts->bayer = bayer;
 	ts->pat2 = pal_pat2;
 	ts->grey = pal_grey;
@@ -1263,13 +1268,32 @@ static int SEC_RENDER sky(Job *j, const RenderData *bk, RenderClock clk, uint32_
 	return 1;
 }
 
+static void SEC_BALL draw_colour_obj(R *r, const RObj *o, uint32_t us, uint32_t vs)
+{
+	TerraObject t = {r->bits, o->px, r->pool + o->clip, us, vs, 0,
+	                 r->rb, r->vh, o->x0, o->y0, o->c0, o->c1,
+	                 o->dh, o->sw, o->sh, r->scale};
+	terra_fn(TERRA_OBJECT, &t);
+	r->st->sprite_px += t.pixels;
+}
+
 /* An object sprite or the pin, clipped by the y-buffer it was given. */
 static void SEC_RENDER draw_obj(R *r, const RObj *o)
 {
 	int16_t x, y;
+	uint32_t us = 0, vs = 0;
 
 	if (o->clip == NO_CLIP) return;
 	r->st->objects++;
+	if (o->px) {
+		us = ((uint32_t)o->sw << 16) / (uint16_t)o->dw;
+		vs = ((uint32_t)o->sh << 16) / (uint16_t)o->dh;
+		r->st->divides += 2;
+	}
+	if (terra_fn && r->lg == 3) {
+		draw_colour_obj(r, o, us, vs);
+		return;
+	}
 	if (!o->px) {
 		/* pin: pole sw wide in light grey, flag to its right in red */
 		for (x = o->c0; x < o->c1; x++) {
@@ -1286,8 +1310,6 @@ static void SEC_RENDER draw_obj(R *r, const RObj *o)
 		return;
 	}
 	{
-		uint32_t us = ((uint32_t)o->sw << 16) / (uint16_t)o->dw, vs = ((uint32_t)o->sh << 16) / (uint16_t)o->dh;
-		r->st->divides += 2;
 		for (x = o->c0; x < o->c1; x++) {
 			int16_t clip = r->pool[o->clip + x - o->c0], ys = o->y0 < 0 ? 0 : o->y0, ye = o->y0 + o->dh;
 			uint16_t u = (uint16_t)(((uint32_t)(x - o->x0) * us) >> 16);
@@ -1670,8 +1692,11 @@ uint32_t render_work_size(const Surface *s)
 {
 	int half = s->half && s->scale == 2;
 	uint32_t w = (uint32_t)(half ? s->w >> 1 : s->w);
+	uint32_t row_bytes = BKD_MAX * (half ? 1 : s->scale) + 16;
+
+	if (edge_blend_enabled(s->depth == 8) && w * EDGE_MARK_ROWS > row_bytes) row_bytes = w * EDGE_MARK_ROWS;
 	return ((sizeof(Job) + 3) & ~3UL) + w * 2 + w * 2 + WBOX_MAX * 8 + sizeof(RObj) * MAX_OBJ + w * POOL_COLS * 2 +
-	       BKD_MAX * (half ? 1 : s->scale) + 16;
+	       row_bytes;
 }
 
 /* Half size drawing (Surface.half): a surface over the top left quarter of
@@ -1695,40 +1720,38 @@ static const uint8_t dbl1[16] = {
 	0x00, 0x03, 0x0C, 0x0F, 0x30, 0x33, 0x3C, 0x3F, 0xC0, 0xC3, 0xCC, 0xCF, 0xF0, 0xF3, 0xFC, 0xFF
 };
 
-/* Doubles the top left quarter of s across and down to fill it. Row y goes
- * into row 2y + 1, then that is copied to row 2y; working from the bottom
- * up, both rows are past every row still to be read. */
+/* Expand from the bottom right so the first source row can double in place. */
 static void SEC_RENDER double_up(Surface *s)
 {
 	uint16_t n = (uint16_t)(((uint16_t)(s->w >> 1) << s->lg) >> 3), j;
 	int16_t y;
 
 	for (y = (int16_t)((s->h >> 1) - 1); y >= 0; y--) {
-		const uint8_t *p = s->bits + MULU16(y, s->rowBytes);
-		uint8_t *q = s->bits + MULU16(2 * y + 1, s->rowBytes), *o = q - s->rowBytes;
-		for (j = 0; j < n; j++) {
-			uint8_t b = p[j];
+		const uint8_t *p = s->bits + MULU16(y, s->rowBytes) + n;
+		uint8_t *q = s->bits + MULU16(2 * y + 1, s->rowBytes) + 2 * n;
+		uint8_t *o = q - s->rowBytes;
+		for (j = n; j; j--) {
+			uint8_t b = *--p, a, c;
 			switch (s->lg) {
 			case 3:
-				q[0] = q[1] = b;
+				a = c = b;
 				break;
 			case 2:
-				q[0] = (uint8_t)((b & 0xF0) | (b >> 4));
-				q[1] = (uint8_t)((b & 0x0F) | (b << 4));
+				a = (uint8_t)((b & 0xF0) | (b >> 4));
+				c = (uint8_t)((b & 0x0F) | (b << 4));
 				break;
 			case 1:
-				q[0] = (uint8_t)(((b >> 6) * 0x50) | (((b >> 4) & 3) * 5));
-				q[1] = (uint8_t)((((b >> 2) & 3) * 0x50) | ((b & 3) * 5));
+				a = (uint8_t)(((b >> 6) * 0x50) | (((b >> 4) & 3) * 5));
+				c = (uint8_t)((((b >> 2) & 3) * 0x50) | ((b & 3) * 5));
 				break;
 			default:
-				q[0] = dbl1[b >> 4];
-				q[1] = dbl1[b & 15];
+				a = dbl1[b >> 4];
+				c = dbl1[b & 15];
 				break;
 			}
-			q += 2;
+			*--q = c; *--o = c;
+			*--q = a; *--o = a;
 		}
-		q -= n << 1;
-		for (j = 0; j < (uint16_t)(n << 1); j++) o[j] = q[j];
 	}
 }
 
@@ -1964,13 +1987,24 @@ static uint32_t SEC_DANA contour_work(const Surface *s, const RenderView *v, Job
 
 static uint32_t SEC_DANA scene_visual_work(const Surface *s, const RenderView *v, Job *j)
 {
-	uint32_t size = mesh_work(s, v, j);
+	Surface half;
+	const Surface *draw = half_of(s, &half) ? &half : s;
+	uint32_t size = mesh_work(draw, v, j);
 	return size ? size : contour_work(s, v, j);
 }
 
 int terrain_mesh_parse(TerrainMesh *mesh, const Hole *hole, const uint8_t *data, uint32_t size)
 {
-	return mesh_parse(mesh, hole, data, size);
+	TerraMeshCheck t = {data, size, hole->width, hole->length, 0, 0, 0, 0};
+
+	if (terra_fn) terra_fn(TERRA_MESH_CHECK, &t);
+	else terra_mesh_check(&t);
+	mesh->data = t.tiles ? data : 0;
+	mesh->tiles = t.tiles;
+	mesh->vertices = t.vertices;
+	mesh->triangles = t.triangles;
+	mesh->mow_phase = (uint8_t)t.mow_phase;
+	return t.tiles != 0;
 }
 
 uint32_t render_scene_visual_size(const Surface *s, const RenderView *v)
@@ -2124,8 +2158,9 @@ static void SEC_RENDER dot(const R *r, int16_t x, int16_t y, int16_t n, uint8_t 
 		}
 }
 
+enum { MAP_NORMAL, MAP_WIDE, MAP_SIDE_BASE };
 static int SEC_RENDER map_rows(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out, int16_t y0, int16_t y1, const vec2 *target);
-static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out, int16_t y0, int16_t y1, const vec2 *target, uint8_t wide);
+static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out, int16_t y0, int16_t y1, const vec2 *target, uint8_t mode);
 static void SEC_RENDER gline(const R *r, int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint8_t c);
 
 int render_map(Surface *s, const RenderView *v, RenderMap *out)
@@ -2141,7 +2176,7 @@ int render_target_map(Surface *s, const RenderView *v, RenderMap *out, const vec
 int render_dana_map(Surface *s, const RenderView *v, RenderMap *out, const vec2 *target, const MapBox *box)
 {
 	if (!s->fullview) return -1;
-	return map_draw(s, v, box, out, 0, 0x7FFF, target, 1) < 0 ? -1 : 0;
+	return map_draw(s, v, box, out, 0, 0x7FFF, target, MAP_WIDE) < 0 ? -1 : 0;
 }
 
 int render_map_box(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out)
@@ -2231,7 +2266,75 @@ static void SEC_RENDER map_line(const R *r, uint8_t wide, int16_t x, int16_t y, 
 	else gline(r, x, y, x1, y1, colour);
 }
 
-static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out, int16_t y0, int16_t y1, const vec2 *target, uint8_t wide)
+static void SEC_RENDER map_markers(const R *r, const RenderView *v, RenderMap *out,
+                                    const vec2 *target, uint8_t wide, uint8_t boxed, int16_t sc)
+{
+	const Hole *h = v->hole;
+	int16_t x, y;
+	uint16_t i;
+
+#define MX(wx) ((int16_t)(out->left + (wx) / out->ypp))
+#define MY(wy) ((int16_t)(out->top + (out->length - (wy)) / out->ypp))
+	out->bx = MX(v->ball.x);
+	out->by = MY(v->ball.y);
+	out->px = MX(h->pins[v->pin & 3].x);
+	out->py = MY(h->pins[v->pin & 3].y);
+	out->yards = (uint16_t)((vec2_len(vec2_sub(h->pins[v->pin & 3], v->ball)) + FIX_HALF) >> 16);
+	if (target) {
+		int16_t x1 = MX(target->x), y1 = MY(target->y);
+		if (fix_abs(x1 - out->bx) < fix_abs(y1 - out->by)) {
+			map_line(r, wide, out->bx - 1, out->by, x1 - 1, y1, PAL_BLACK);
+			map_line(r, wide, out->bx + 1, out->by, x1 + 1, y1, PAL_BLACK);
+		} else {
+			map_line(r, wide, out->bx, out->by - 1, x1, y1 - 1, PAL_BLACK);
+			map_line(r, wide, out->bx, out->by + 1, x1, y1 + 1, PAL_BLACK);
+		}
+		map_line(r, wide, out->bx, out->by, x1, y1, PAL_WHITE);
+	} else if (!boxed) {
+		int16_t dx = out->px - out->bx;
+		int16_t dy = out->py - out->by;
+		int16_t ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
+		int16_t n = ax > ay ? ax : ay, k;
+		for (k = 2 * sc; k < n; k++) {
+			x = (int16_t)(out->bx + (int16_t)((int32_t)dx * k / n));
+			y = (int16_t)(out->by + (int16_t)((int32_t)dy * k / n));
+			map_dot(r, wide, x, y, 1, ((k / (2 * sc)) & 1) ? PAL_WHITE : PAL_BLACK);
+		}
+	}
+	/* the pin: a pole with a flag to its right */
+	x = wide ? r->w - 1 - out->py : out->px;
+	y = wide ? out->px : out->py;
+	for (i = 0; i <= (uint16_t)(5 * sc); i++) dot(r, x, y - (int16_t)i, 1, PAL_BLACK);
+	for (i = 1; i <= (uint16_t)(3 * sc); i++) {
+		int16_t j;
+		for (j = 0; j < 2 * sc; j++) dot(r, x + (int16_t)i, y - 5 * sc + j, 1, PAL_FLAG + 1);
+	}
+	/* the ball: white with a black ring */
+	if (!boxed || target) {
+		map_dot(r, wide, out->bx - sc, out->by - sc, 3 * sc, PAL_BLACK);
+		map_dot(r, wide, out->bx, out->by, sc, PAL_WHITE);
+	}
+#undef MX
+#undef MY
+}
+
+int render_side_map_base(Surface *s, const RenderView *v, RenderMap *out)
+{
+	return map_draw(s, v, 0, out, 0, 0x7FFF, 0, MAP_SIDE_BASE) < 0 ? -1 : 0;
+}
+
+void render_side_map_markers(Surface *s, const RenderView *v, RenderMap *out, const vec2 *target)
+{
+	R r;
+	r.bits = s->bits;
+	r.rb = s->rowBytes;
+	r.w = s->w;
+	r.vh = s->h;
+	r.lg = s->lg;
+	map_markers(&r, v, out, target, 0, 0, s->scale);
+}
+
+static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *box, RenderMap *out, int16_t y0, int16_t y1, const vec2 *target, uint8_t mode)
 {
 	R r;
 	const Hole *h = v->hole;
@@ -2241,6 +2344,7 @@ static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *bo
 	uint16_t i;
 	HoleObject o;
 	uint8_t col[SURF_COUNT], xcell[480];
+	uint8_t wide = mode == MAP_WIDE, banked = target || mode == MAP_SIDE_BASE;
 
 	if (s->fullview) {
 		if (s->scale != 1 || s->w < 16 || s->w > (int16_t)sizeof xcell || (s->w & 7) || s->h < 16) return -1;
@@ -2282,7 +2386,7 @@ static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *bo
 	for (i = 0; i < SURF_COUNT; i++)
 		col[i] = (uint8_t)(PAL_TERRAIN + i * PAL_RAMP_N + PAL_RAMP_N / 2);
 	col[SURF_OOB] = PAL_TERRAIN + SURF_OOB * PAL_RAMP_N + 1;
-	if (target && r.lg < 2) col[SURF_WATER] = PAL_WATER + 7;
+	if (banked && r.lg < 2) col[SURF_WATER] = PAL_WATER + 7;
 	if (wide) {
 		fixed along = ((fixed)h->length << 16) - (fixed)(mh - 1) * ypp - ypp / 2;
 		map_wide_terrain(&r, g, r.w - top - mh, left, mh, mw, along, ypp, col);
@@ -2328,7 +2432,7 @@ static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *bo
 
 #define MX(wx) ((int16_t)(left + (wx) / ypp))
 #define MY(wy) ((int16_t)(top + (((fixed)h->length << 16) - (wy)) / ypp))
-	if (target && h->shapes) {
+	if (banked && h->shapes) {
 		const uint8_t *p = h->shapes;
 		uint8_t bank = r.lg < 2 ? PAL_BLACK : PAL_WATER + 1;
 		/* Trace the banks at the map's scale, independent of the surface grid. */
@@ -2363,50 +2467,12 @@ static int SEC_RENDER map_draw(Surface *s, const RenderView *v, const MapBox *bo
 	map_dot(&r, wide, x - sc, y - sc, 3 * sc, PAL_BLACK);
 	map_dot(&r, wide, x, y, sc, PAL_WHITE);
 
-	/* The line to the target, or to the pin on a whole-hole overview. */
-	out->bx = MX(v->ball.x);
-	out->by = MY(v->ball.y);
-	out->px = MX(h->pins[v->pin & 3].x);
-	out->py = MY(h->pins[v->pin & 3].y);
-	out->yards = (uint16_t)((vec2_len(vec2_sub(h->pins[v->pin & 3], v->ball)) + FIX_HALF) >> 16);
 	out->left = left;
 	out->top = top;
 	out->ypp = ypp;
 	out->length = (fixed)h->length << 16;
-	if (target) {
-		int16_t x1 = MX(target->x), y1 = MY(target->y);
-		if (fix_abs(x1 - out->bx) < fix_abs(y1 - out->by)) {
-			map_line(&r, wide, out->bx - 1, out->by, x1 - 1, y1, PAL_BLACK);
-			map_line(&r, wide, out->bx + 1, out->by, x1 + 1, y1, PAL_BLACK);
-		} else {
-			map_line(&r, wide, out->bx, out->by - 1, x1, y1 - 1, PAL_BLACK);
-			map_line(&r, wide, out->bx, out->by + 1, x1, y1 + 1, PAL_BLACK);
-		}
-		map_line(&r, wide, out->bx, out->by, x1, y1, PAL_WHITE);
-	} else if (!box) {
-		int16_t dx = out->px - out->bx;
-		int16_t dy = out->py - out->by;
-		int16_t ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
-		int16_t n = ax > ay ? ax : ay, k;
-		for (k = 2 * sc; k < n; k++) {
-			x = (int16_t)(out->bx + (int16_t)((int32_t)dx * k / n));
-			y = (int16_t)(out->by + (int16_t)((int32_t)dy * k / n));
-			map_dot(&r, wide, x, y, 1, ((k / (2 * sc)) & 1) ? PAL_WHITE : PAL_BLACK);
-		}
-	}
-	/* the pin: a pole with a flag to its right */
-	x = wide ? r.w - 1 - out->py : out->px;
-	y = wide ? out->px : out->py;
-	for (i = 0; i <= (uint16_t)(5 * sc); i++) dot(&r, x, y - (int16_t)i, 1, PAL_BLACK);
-	for (i = 1; i <= (uint16_t)(3 * sc); i++) {
-		int16_t j;
-		for (j = 0; j < 2 * sc; j++) dot(&r, x + (int16_t)i, y - 5 * sc + j, 1, PAL_FLAG + 1);
-	}
-	/* the ball: white with a black ring */
-	if (!box || target) {
-		map_dot(&r, wide, out->bx - sc, out->by - sc, 3 * sc, PAL_BLACK);
-		map_dot(&r, wide, out->bx, out->by, sc, PAL_WHITE);
-	}
+	if (mode != MAP_SIDE_BASE) map_markers(&r, v, out, target, wide, box != 0, sc);
+
 #undef MX
 #undef MY
 
@@ -3176,10 +3242,12 @@ static int SEC_RENDER green_begin(Surface *s, const RenderView *v, void *work, u
 	j->tt.vh = r->vh;
 	j->tt.n = 0;
 	j->tt.lg = r->lg;
+	j->tt.shade_grass = 0;
 	j->tt.turf = 0;
 	j->tt.noise = 0;
 	j->tt.mow_phase = 0;
 	j->tt.reflection = 0;
+	j->tt.green_u = j->tt.green_v = 0;
 	j->far = j->rows[0];
 	j->near = j->rows[1];
 	return 0;

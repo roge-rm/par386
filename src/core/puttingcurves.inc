@@ -15,7 +15,7 @@ typedef struct {
 
 struct PuttingCurves {
 	const uint8_t *contour, *shape;
-	uint8_t *green_rows;
+	int16_t *green_rows;
 	uint8_t remaining, shape_index, material, phase;
 	int16_t y, end, light_row, edge_row;
 	int16_t green_left, green_right, green_top, green_bottom;
@@ -31,7 +31,7 @@ struct PuttingCurves {
 static fixed SEC_CARD curve_ground_z(const Hole *h, fixed x, fixed y)
 {
 	uint32_t step = (uint32_t)h->step;
-	int32_t hb = hb_at(h, x, y);
+	int32_t hb = hb_sample(h, x, y);
 	/* Course records store positive height steps in 1/4096 yard units. */
 	if ((uint32_t)hb <= UINT16_MAX && step <= 0xffff0UL && !(step & 15))
 		return h->base + (fixed)(MULU16(hb, step >> 4) >> 4);
@@ -151,40 +151,93 @@ static void SEC_CARD curve_polygon(GJob *j, const uint8_t *p, uint16_t n, uint8_
 	w->y = w->edges ? w->edge[0].lo : 0;
 }
 
-static int8_t SEC_CARD curve_light_sample(const GJob *j, int16_t x, int16_t y)
+/* A ray advances in quarter yards. Split the product into two word
+ * multiplies and round toward zero as with signed division. */
+static __inline__ fixed SEC_CARD curve_ray_step(fixed delta, uint16_t at)
+{
+	uint32_t fraction = MULU16(delta, at);
+	fixed whole = MULS16(delta >> 16, at) * (FIX_ONE / 4);
+
+	return whole + (fixed)(fraction >> 2) + (delta < 0 && (fraction & 3));
+}
+
+static void SEC_BALL curve_light_native(const RenderCam *c, const Hole *h, int8_t *out,
+                                       int16_t cols, fixed dx, fixed dy, fixed dz, fixed z)
+{
+	TerraCurveLight t;
+
+	t.out = out;
+	t.heights = h->heights;
+	t.camx = c->camx;
+	t.camy = c->camy;
+	t.z = z;
+	t.zref = c->zref;
+	t.base = h->base;
+	t.dx = dx;
+	t.dy = dy;
+	t.dz = dz;
+	t.f = c->f;
+	t.cx = c->cx;
+	t.rx = c->rx;
+	t.ry = c->ry;
+	t.cols = (uint16_t)cols;
+	t.step = (uint16_t)(h->step >> 4);
+	t.hw = h->hm_w;
+	t.hh = h->hm_h;
+	t.shift = h->hm_shift;
+	terra_fn(TERRA_CURVE_LIGHT, &t);
+}
+
+static void SEC_CARD curve_light_row(const GJob *j, int8_t *out, int16_t cols, int16_t y)
 {
 	const RenderCam *c = &j->c;
 	const Hole *h = j->v.hole;
-	fixed sx = (int32_t)(x - c->cx) * FIX_ONE / c->f;
 	fixed sy = (int32_t)(y - c->yh) * FIX_ONE / c->f;
 	fixed along = (fixed)c->pc * 4 - mulq(sy, c->ps);
-	fixed dx = mulq(along, c->fx) + mulq(sx, c->rx);
-	fixed dy = mulq(along, c->fy) + mulq(sx, c->ry);
+	fixed forward_x = mulq(along, c->fx), forward_y = mulq(along, c->fy);
 	fixed dz = (-(fixed)c->ps * 4 - mulq(sy, c->pc)) / c->zk;
 	fixed z = c->zref + (c->camz - c->zref) / c->zk;
-	fixed wx, wy, rise, level;
-	int16_t lo = 4, hi = 360, light;
+	int16_t x = 0;
 
-	/* Quarter-yard ray steps bracket the ground, out to 90 yards. */
-	while (hi - lo > 1) {
-		int16_t mid = (int16_t)((lo + hi) / 2);
-		wx = c->camx + dx * mid / 4;
-		wy = c->camy + dy * mid / 4;
-		if (z + dz * mid / 4 > curve_ground_z(h, wx, wy)) lo = mid;
-		else hi = mid;
+	if (terra_fn && (uint32_t)h->step <= 0xffff0UL && !(h->step & 15)) {
+		curve_light_native(c, h, out, cols, forward_x, forward_y, dz, z);
+		return;
 	}
-	wx = c->camx + dx * hi / 4;
-	wy = c->camy + dy * hi / 4;
-	rise = (curve_ground_z(h, wx + 2 * FIX_ONE, wy) - curve_ground_z(h, wx - 2 * FIX_ONE, wy)) * 3 / 4;
-	rise += (curve_ground_z(h, wx, wy + 2 * FIX_ONE) - curve_ground_z(h, wx, wy - 2 * FIX_ONE)) / 2;
-	level = curve_ground_z(h, wx, wy) - c->zref;
-	light = (int16_t)((level * 2 - rise * 12) >> FIX_SHIFT);
-	return (int8_t)(light < -20 ? -20 : light > 20 ? 20 : light);
+	for (; cols; cols--, out++, x += 1 << CURVE_LIGHT_SHIFT) {
+		fixed sx = (int32_t)(x - c->cx) * FIX_ONE / c->f;
+		fixed dx = forward_x + mulq(sx, c->rx), dy = forward_y + mulq(sx, c->ry);
+		fixed wx, wy, rise, level;
+		uint16_t lo = 4, hi = 360;
+		int16_t light;
+
+		/* Quarter-yard ray steps bracket the ground, out to 90 yards. */
+		while (hi - lo > 1) {
+			uint16_t mid = (uint16_t)((lo + hi) / 2);
+			wx = c->camx + curve_ray_step(dx, mid);
+			wy = c->camy + curve_ray_step(dy, mid);
+			if (z + curve_ray_step(dz, mid) > curve_ground_z(h, wx, wy)) lo = mid;
+			else hi = mid;
+		}
+		wx = c->camx + curve_ray_step(dx, hi);
+		wy = c->camy + curve_ray_step(dy, hi);
+		rise = (curve_ground_z(h, wx + 2 * FIX_ONE, wy) - curve_ground_z(h, wx - 2 * FIX_ONE, wy)) * 3 / 4;
+		rise += (curve_ground_z(h, wx, wy + 2 * FIX_ONE) - curve_ground_z(h, wx, wy - 2 * FIX_ONE)) / 2;
+		level = curve_ground_z(h, wx, wy) - c->zref;
+		light = (int16_t)((level * 2 - rise * 12) >> FIX_SHIFT);
+		*out = (int8_t)(light < -20 ? -20 : light > 20 ? 20 : light);
+	}
 }
 
 static __inline__ int16_t SEC_CARD curve_light_y(const int8_t *p, int16_t yf)
 {
-	return (int16_t)(p[0] * 16 + (p[CURVE_LIGHT_STRIDE] - p[0]) * yf);
+	return (int16_t)(p[0] * 16 + MULS16(p[CURVE_LIGHT_STRIDE] - p[0], yf));
+}
+
+static __inline__ int16_t SEC_BALL curve_grass_y(const int8_t *near, const int8_t *far,
+                                                uint16_t node, int16_t yf)
+{
+	int16_t a = near[node];
+	return (int16_t)(a * 16 + MULS16(far[node] - a, yf));
 }
 
 static __inline__ void SEC_CARD curve_packed_edge(uint8_t *p, uint8_t ink, int16_t x, int16_t end)
@@ -201,7 +254,46 @@ static void SEC_CARD curve_flush(PuttingCurves *w)
 	w->shade.count = 0;
 }
 
-static void SEC_CARD curve_span(GJob *j, int16_t x, int16_t end)
+static void SEC_BALL curve_grey_span(GJob *j, uint8_t *row, int16_t x, int16_t end)
+{
+	PuttingCurves *w = j->curves;
+	uint8_t sf = w->material, base = (uint8_t)(PAL_TERRAIN + sf * PAL_RAMP_N);
+	int16_t cell = (int16_t)(x >> CURVE_LIGHT_SHIFT), yf = (int16_t)(w->y & 15);
+	const int8_t *samples = w->light + MULU16(w->y >> CURVE_LIGHT_SHIFT, CURVE_LIGHT_STRIDE) + cell;
+	uint16_t band = (uint16_t)(w->y >> CURVE_LIGHT_SHIFT);
+	const int8_t *near = w->shade.noise + ((band & 15) << 4);
+	const int8_t *far = w->shade.noise + (((band + 1) & 15) << 4);
+	int16_t mid = sf == SURF_GREEN ? 96 : sf == SURF_FRINGE ? 48 : 64;
+	int16_t run = x, a = curve_light_y(samples, yf);
+	int grass = sf < SURF_GREEN || sf == SURF_TEE;
+	uint8_t ink;
+
+	if (sf == SURF_GREEN) a /= 2;
+	if (grass) a += curve_grass_y(near, far, cell & 15, yf);
+	if (x & 15) {
+		int16_t b = curve_light_y(samples + 1, yf);
+		if (sf == SURF_GREEN) b /= 2;
+		if (grass) b += curve_grass_y(near, far, (cell + 1) & 15, yf);
+		/* Only the first cell can start partway across. */
+		a = (int16_t)((a * 16 + MULS16(b - a, x & 15)) >> 4);
+	}
+	ink = (uint8_t)(base + ((int16_t)(mid * 16 + a) >> 8));
+	for (x = (int16_t)((cell + 1) << CURVE_LIGHT_SHIFT); x < end; x += 1 << CURVE_LIGHT_SHIFT) {
+		uint8_t shade;
+		a = curve_light_y(++samples, yf);
+		if (sf == SURF_GREEN) a /= 2;
+		if (grass) a += curve_grass_y(near, far, ++cell & 15, yf);
+		shade = (uint8_t)(base + ((int16_t)(mid * 16 + a) >> 8));
+		if (shade != ink) {
+			terra_grey_span(row, pal_pat2, pal_grey, bayer, j->r.lg, ink, run, x, w->y);
+			run = x;
+			ink = shade;
+		}
+	}
+	terra_grey_span(row, pal_pat2, pal_grey, bayer, j->r.lg, ink, run, end, w->y);
+}
+
+static void SEC_BALL curve_span(GJob *j, int16_t x, int16_t end)
 {
 	PuttingCurves *w = j->curves;
 	const R *r = &j->r;
@@ -221,7 +313,11 @@ static void SEC_CARD curve_span(GJob *j, int16_t x, int16_t end)
 		if (++w->shade.count == CURVE_SPAN_BATCH) curve_flush(w);
 		return;
 	}
-	if (sf == SURF_WATER && r->lg == 1) {
+	if (r->lg != 1) {
+		curve_grey_span(j, row, x, end);
+		return;
+	}
+	if (sf == SURF_WATER) {
 		terra_water_packed(row, w->shade.noise, x, end, w->y);
 		return;
 	}
@@ -232,14 +328,16 @@ static void SEC_CARD curve_span(GJob *j, int16_t x, int16_t end)
 		int16_t a = curve_light_y(samples, yf);
 		int green = sf == SURF_GREEN;
 		int grass = sf < SURF_GREEN || sf == SURF_TEE;
+		int16_t mid_light;
 		uint16_t band = (uint16_t)(w->y >> 4);
 		const int8_t *near = w->shade.noise + ((band & 15) << 4);
 		const int8_t *far = w->shade.noise + (((band + 1) & 15) << 4);
-		if (grass) a += near[cell & 15] * (16 - yf) + far[cell & 15] * yf;
+		if (grass) a += curve_grass_y(near, far, cell & 15, yf);
 		if (green) {
 			mid = 96;
 			a /= 2;
 		}
+		mid_light = (int16_t)(mid * 256);
 		while (x < end) {
 			int16_t stop = (int16_t)((cell + 1) << CURVE_LIGHT_SHIFT);
 			int16_t b = curve_light_y(++samples, yf), light, step;
@@ -248,10 +346,11 @@ static void SEC_CARD curve_span(GJob *j, int16_t x, int16_t end)
 			if (green) b /= 2;
 			if (grass) {
 				uint16_t node = (uint16_t)((cell + 1) & 15);
-				b += near[node] * (16 - yf) + far[node] * yf;
+				b += curve_grass_y(near, far, node, yf);
 			}
 			step = (int16_t)(b - a);
-			light = (int16_t)(mid * 256 + a * 16 + step * (x & 15));
+			light = (int16_t)(mid_light + a * 16);
+			if (x & 15) light = (int16_t)(light + MULS16(step, x & 15));
 			if (x & 3) {
 				int16_t last = (int16_t)((x + 4) & ~3);
 				if (last > stop) last = stop;
@@ -270,17 +369,17 @@ static void SEC_CARD curve_span(GJob *j, int16_t x, int16_t end)
 	}
 }
 
-static void SEC_CARD curve_track_green(uint8_t *row, int16_t lo, int16_t hi, int green)
+static void SEC_CARD curve_track_green(int16_t *row, int16_t lo, int16_t hi, int green)
 {
-	uint8_t runs[2 * (CURVE_GREEN_RUNS + 1)];
+	int16_t runs[2 * (CURVE_GREEN_RUNS + 1)];
 	uint8_t i, n = 0, added = 0;
 	if (row[0] > 2 * CURVE_GREEN_RUNS) return;
 	for (i = 1; i <= row[0]; i += 2) {
-		uint8_t a = row[i], b = row[i + 1];
+		int16_t a = row[i], b = row[i + 1];
 		if (green) {
 			if (hi < a && !added) {
-				runs[n++] = (uint8_t)lo;
-				runs[n++] = (uint8_t)hi;
+				runs[n++] = lo;
+				runs[n++] = hi;
 				added = 1;
 			}
 			if (lo <= b && hi >= a) {
@@ -291,10 +390,10 @@ static void SEC_CARD curve_track_green(uint8_t *row, int16_t lo, int16_t hi, int
 		} else if (lo < b && hi > a) {
 			if (a < lo) {
 				runs[n++] = a;
-				runs[n++] = (uint8_t)lo;
+				runs[n++] = lo;
 			}
 			if (b > hi) {
-				runs[n++] = (uint8_t)hi;
+				runs[n++] = hi;
 				runs[n++] = b;
 			}
 			continue;
@@ -303,8 +402,8 @@ static void SEC_CARD curve_track_green(uint8_t *row, int16_t lo, int16_t hi, int
 		runs[n++] = b;
 	}
 	if (green && !added) {
-		runs[n++] = (uint8_t)lo;
-		runs[n++] = (uint8_t)hi;
+		runs[n++] = lo;
+		runs[n++] = hi;
 	}
 	row[0] = n;
 	if (n <= 2 * CURVE_GREEN_RUNS)
@@ -347,7 +446,7 @@ static void SEC_CARD curve_fill_row(GJob *j)
 
 static void SEC_CARD curve_green_bounds(PuttingCurves *w, const R *r)
 {
-	const uint8_t *row = w->green_rows;
+	const int16_t *row = w->green_rows;
 	int16_t y;
 
 	w->green_left = r->w;
@@ -384,10 +483,8 @@ static int SEC_CARD curve_surfaces(GJob *j, RenderClock clk, uint32_t until)
 		int16_t rows = (int16_t)((j->r.vh - 1) >> CURVE_LIGHT_SHIFT) + 2;
 		int16_t cols = (int16_t)((j->r.w - 1) >> CURVE_LIGHT_SHIFT) + 2;
 		while (w->light_row < rows) {
-			int16_t i;
-			for (i = 0; i < cols; i++)
-				w->light[w->light_row * CURVE_LIGHT_STRIDE + i] =
-					curve_light_sample(j, (int16_t)(i * 16), (int16_t)(w->light_row * 16));
+			curve_light_row(j, w->light + w->light_row * CURVE_LIGHT_STRIDE,
+			                cols, (int16_t)(w->light_row << CURVE_LIGHT_SHIFT));
 			w->light_row++;
 			if (late(clk, until)) return 0;
 		}
@@ -398,9 +495,9 @@ static int SEC_CARD curve_surfaces(GJob *j, RenderClock clk, uint32_t until)
 			if (w->green_rows)
 				w->green_rows[MULU16(w->y, CURVE_GREEN_STRIDE)] = w->material == SURF_GREEN ? 2 : 0;
 			if (w->green_rows && w->material == SURF_GREEN) {
-				uint8_t *row = w->green_rows + MULU16(w->y, CURVE_GREEN_STRIDE);
+				int16_t *row = w->green_rows + MULU16(w->y, CURVE_GREEN_STRIDE);
 				row[1] = 0;
-				row[2] = (uint8_t)j->r.w;
+				row[2] = j->r.w;
 			}
 			curve_span(j, 0, j->r.w);
 			w->y++;
@@ -445,7 +542,7 @@ static void SEC_CARD curve_guide(const GJob *j, const GPt *a, const GPt *b)
 {
 	const R *r = &j->r;
 	const PuttingCurves *w = j->curves;
-	const uint8_t *runs = w->green_rows;
+	const int16_t *runs = w->green_rows;
 	int16_t x = a->x, y = a->y;
 	int16_t dx = b->x > x ? b->x - x : x - b->x, dy = b->y > y ? b->y - y : y - b->y;
 	int16_t sx = b->x > x ? 1 : -1, sy = b->y > y ? 1 : -1, e = dx - dy;
@@ -485,13 +582,16 @@ static void SEC_CARD curve_guide(const GJob *j, const GPt *a, const GPt *b)
 		int16_t e2;
 		if (x >= 0 && x < r->w && y >= 0 && y < r->vh) {
 			if (runs) {
-				const uint8_t *row = runs + MULU16(y, CURVE_GREEN_STRIDE);
+				const int16_t *row = runs + MULU16(y, CURVE_GREEN_STRIDE);
 				uint8_t i;
 				if (row[0] <= 2 * CURVE_GREEN_RUNS)
 					for (i = 1; i <= row[0]; i += 2)
 						if (x >= row[i] && x < row[i + 1]) {
-							uint8_t *p = r->bits + MULU16(y, r->rb) + (x >> 2);
-							guide_2bit(p, x, dx >= dy ? x : y);
+							int16_t along = dx >= dy ? x : y;
+							if (r->lg == 1) {
+								uint8_t *p = r->bits + MULU16(y, r->rb) + (x >> 2);
+								guide_2bit(p, x, along);
+							} else if (!(along & 1)) plot(r, x, y, j->guide, 0);
 							break;
 						}
 			} else {
@@ -507,14 +607,14 @@ static void SEC_CARD curve_guide(const GJob *j, const GPt *a, const GPt *b)
 
 uint32_t SEC_CARD render_green_curves_size(const Surface *s, const RenderView *v)
 {
+	Surface half;
 	int16_t h;
-	if (!v->green || !v->hole->putting_curves || s->w != 160 * s->scale ||
-	    (s->depth != 2 && s->depth != 8) || (s->depth == 2 && s->scale != 1) ||
-	    s->fullview || (s->half && s->scale == 2) ||
-	    fit(s, &h) < 0) return 0;
+	const Surface *draw = half_of(s, &half) ? &half : s;
+
+	if (!v->green || !v->hole->putting_curves || fit(draw, &h) < 0) return 0;
 	return sizeof(GJob) + sizeof(PuttingCurves) +
-	       (s->depth == 2 ? MULU16(h, CURVE_GREEN_STRIDE) :
-	        edge_blend_enabled(s->depth == 8) ? MULU16(s->w, EDGE_ROWS) : 0);
+	       (draw->depth < 8 ? (uint32_t)sizeof(int16_t) * MULU16(h, CURVE_GREEN_STRIDE) :
+	        edge_blend_enabled(draw->depth == 8) ? MULU16(draw->w, EDGE_MARK_ROWS) : 0);
 }
 
 int SEC_CARD render_green_curves_begin(Surface *s, const RenderView *v, void *work)
@@ -537,7 +637,7 @@ int SEC_CARD render_green_curves_begin(Surface *s, const RenderView *v, void *wo
 	w->shade.rb = j->r.rb;
 	w->shade.count = 0;
 	w->shade.noise = pal_noise;
-	w->green_rows = s->depth == 2 ? (uint8_t *)(w + 1) : 0;
+	w->green_rows = j->r.lg < 3 ? (int16_t *)(w + 1) : 0;
 	if (s->depth == 8) j->guide = PAL_GREEN + 6;
 	return 0;
 }

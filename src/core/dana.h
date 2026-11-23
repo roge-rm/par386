@@ -14,6 +14,9 @@ enum { DANA_LEFT = 1, DANA_RIGHT = 2, DANA_METER = 4 };
 
 typedef struct {
 	const Hole *hole;
+	uint8_t *map_cache, *left_dest, *right_dest;
+	uint16_t pane_stride;
+	uint8_t pane_lg, keep_map;
 	vec2 ball, target;
 	RenderMap map;
 	int16_t shown, marker_y;
@@ -32,6 +35,8 @@ typedef struct {
 	char msg1[21], msg2[21];
 } DanaPanels;
 
+void SEC_BALL dana_drop(DanaPanels *d);
+/* Start with a zero-initialised DanaPanels. */
 void SEC_DANA dana_reset(DanaPanels *d);
 /* Each pane is a 96 x 160 scale-1 surface. Returns the parts that changed. */
 uint8_t SEC_DANA dana_draw(DanaPanels *d, Surface *left, Surface *right, const Play *p);

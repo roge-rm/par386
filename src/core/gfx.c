@@ -4,6 +4,9 @@
 #include "pal565.h"
 #include "pal.h"
 #include "to16.h"
+#ifdef __palmos__
+#include <PalmOS.h>
+#endif
 
 static const uint8_t ui_grey[UIC_COUNT] = {
 #define X(name, r, g, b, grey) grey,
@@ -175,9 +178,22 @@ void gfx_copy(Surface *d, const Surface *src, int16_t x, int16_t y, int16_t w, i
 	if (x >= x1 || y >= y1 || src->rowBytes != d->rowBytes || src->h < y1) return;
 	b0 = (uint16_t)(((uint16_t)x << d->lg) >> 3);
 	b1 = (uint16_t)((((uint16_t)x1 << d->lg) + 7) >> 3);
+#ifdef __palmos__
+	if (!b0 && b1 == d->rowBytes) {
+		uint32_t start = MULU16(y, b1);
+		MemMove(d->bits + start, src->bits + start, MULU16(y1 - y, b1));
+		return;
+	}
+#endif
 	for (j = y; j < y1; j++) {
 		uint8_t *p = rowp(d, j);
 		const uint8_t *q = src->bits + MULU16(j, src->rowBytes);
+#ifdef __palmos__
+		if (b1 - b0 >= 64) {
+			MemMove(p + b0, q + b0, b1 - b0);
+			continue;
+		}
+#endif
 		for (i = b0; i < b1; i++) p[i] = q[i];
 	}
 }

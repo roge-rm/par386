@@ -142,7 +142,7 @@ int SEC_RENDER render_scene_begin(Surface *s, const RenderView *v, const RenderA
 int SEC_RENDER render_scene_step(void *work, RenderClock clock, uint32_t until);
 /* Validate a packed terrain record. On success mesh points into data.
  * The caller keeps that record in place for as long as the hole uses it. */
-int SEC_RENDER terrain_mesh_parse(TerrainMesh *mesh, const Hole *hole, const uint8_t *data, uint32_t size);
+int SEC_MENU terrain_mesh_parse(TerrainMesh *mesh, const Hole *hole, const uint8_t *data, uint32_t size);
 /* Work for an optional terrain mesh or visual contours, including the
  * usual scene work. Returns 0 when neither is available. */
 uint32_t SEC_RENDER render_scene_visual_size(const Surface *s, const RenderView *v);
@@ -166,6 +166,9 @@ typedef struct {
 	fixed x0, y0, x1, y1;
 } MapBox;
 /* The aiming map with a line to the target. With a box, frame that area. */
+/* Dana's whole-hole map background and its moving marks. */
+int SEC_RENDER render_side_map_base(Surface *s, const RenderView *v, RenderMap *out);
+void SEC_RENDER render_side_map_markers(Surface *s, const RenderView *v, RenderMap *out, const vec2 *target);
 int SEC_RENDER render_target_map(Surface *s, const RenderView *v, RenderMap *out, const vec2 *target, const MapBox *box);
 /* The Dana's aiming map, tee on the left. RenderMap keeps its normal
  * coordinates: on screen, (x, y) is (s->w - 1 - y, x). */

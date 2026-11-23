@@ -2,6 +2,102 @@
 #include "hole.h"
 #include "pal.h"
 
+#if defined(__arm__) || (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+typedef uint32_t PixelWord __attribute__((may_alias));
+#endif
+
+static inline uint16_t tile_u16(const uint8_t *p)
+{
+	return (uint16_t)((uint16_t)p[0] << 8 | p[1]);
+}
+
+/* Find the 24-yard cycle that agrees with the baked dark and light faces. */
+static inline uint32_t mesh_mow_phases(uint32_t phases, const uint8_t *vertices,
+                                       const uint8_t *face)
+{
+	int32_t sum = (int16_t)tile_u16(vertices + face[0] * 6 + 2) +
+	              (int32_t)(int16_t)tile_u16(vertices + face[1] * 6 + 2) +
+	              (int16_t)tile_u16(vertices + face[2] * 6 + 2);
+	/* A face centre is in one 12-yard band. The bias keeps the apron positive. */
+	uint16_t row = (uint16_t)((sum + 768L * 48) >> 4) / 3U;
+	uint16_t start = (uint16_t)((row + (face[4] < MOW_MID ? 1 : 13)) % 24);
+
+	return phases & ((0xfffUL << start) | (0xfffUL >> (24 - start)));
+}
+
+void terra_mesh_check(TerraMeshCheck *mesh)
+{
+	const uint8_t *data = mesh->data;
+	uint32_t size = mesh->size;
+	const uint8_t *d, *p, *vertices;
+	uint32_t end, phases = 0xffffffUL;
+	uint16_t count, i, k, nv, nt, mv = 0, mt = 0;
+	int16_t xmax = (int16_t)((mesh->width + 128) * 16);
+	int16_t ymax = (int16_t)((mesh->length + 128) * 16);
+
+	mesh->tiles = mesh->vertices = mesh->triangles = 0;
+	mesh->mow_phase = 0;
+	if (!data || size < 2 || size > 60000) return;
+	count = tile_u16(data);
+	end = 2 + 16UL * count;
+	if (!count || count > 512 || size < end) return;
+	for (i = 0, d = data + 2; i < count; i++, d += 16) {
+		int16_t x0 = (int16_t)tile_u16(d), y0 = (int16_t)tile_u16(d + 2);
+		int16_t x1 = (int16_t)tile_u16(d + 4), y1 = (int16_t)tile_u16(d + 6);
+		uint32_t bytes;
+
+		nv = tile_u16(d + 8);
+		nt = tile_u16(d + 10);
+		bytes = 6UL * nv + 5UL * nt;
+		if (x0 < -128*16 || y0 < -128*16 || x1 > xmax || y1 > ymax ||
+		    x0 >= x1 || y0 >= y1 || nv < 3 || nv > 255 || !nt || nt > 512 ||
+		    ((uint32_t)tile_u16(d + 12) << 16 | tile_u16(d + 14)) != end || bytes > size - end) return;
+		vertices = p = data + end;
+		end += bytes;
+		for (k = 0; k < nv; k++, p += 6) {
+			int16_t x = (int16_t)tile_u16(p), y = (int16_t)tile_u16(p + 2);
+			if (x < x0 || x > x1 || y < y0 || y > y1) return;
+		}
+		for (k = 0; k < nt; k++, p += 5) {
+			if (p[0] >= nv || p[1] >= nv || p[2] >= nv ||
+			    p[0] == p[1] || p[1] == p[2] || p[2] == p[0] ||
+			    p[3] >= SURF_COUNT || p[4] > (PAL_RAMP_N - 1) * 16) return;
+			if (p[3] == SURF_FAIRWAY && (phases & (phases - 1)))
+				phases = mesh_mow_phases(phases, vertices, p);
+		}
+		if (mv < nv) mv = nv;
+		if (mt < nt) mt = nt;
+	}
+	if (end != size) return;
+	mesh->tiles = count;
+	mesh->vertices = mv;
+	mesh->triangles = mt;
+	while (phases && !(phases & 1)) {
+		mesh->mow_phase++;
+		phases >>= 1;
+	}
+}
+
+void terra_mesh_light(const TerraMeshLight *t)
+{
+	uint16_t y, w = t->width;
+	const uint8_t *row = t->heights + MULU16(t->first, w);
+	int8_t *out = t->out + MULU16(t->first, w);
+
+	for (y = t->first; y < t->end; y++, row += w, out += w) {
+		const uint8_t *near = y ? row - w : row;
+		const uint8_t *far = y + 1 < t->height ? row + w : row;
+		uint16_t x;
+
+		for (x = 0; x < w; x++) {
+			int16_t gx = row[x + 1 < w ? x + 1 : x] - row[x ? x - 1 : x];
+			int16_t gy = far[x] - near[x];
+			int32_t value = ((gx * 3 + gy * 2) * t->gain) >> (FIX_SHIFT - 2);
+			out[x] = (int8_t)(value < -96 ? -96 : value > 96 ? 96 : value);
+		}
+	}
+}
+
 /* Work counts for the host tests; left out on the Palm, where they'd cost time in the inner loops. */
 #ifdef __palmos__
 #define COUNT(e)
@@ -83,7 +179,7 @@ void terra_water_packed(uint8_t *row, const int8_t *noise, int16_t x, int16_t en
 	WaterLight t = water_light(noise, (uint16_t)(2 * y));
 	while (x < end) {
 		int16_t stop = (int16_t)((x + 4) & ~3);
-		uint8_t ink, mask, *p = row + (x >> 2);
+		uint8_t ink, *p = row + (x >> 2);
 		int16_t reflection = water_reflection(&t, (uint16_t)((x & ~3) * 2));
 
 		if (stop > end) stop = end;
@@ -93,8 +189,11 @@ void terra_water_packed(uint8_t *row, const int8_t *noise, int16_t x, int16_t en
 			ink = 0x55;
 		else if (reflection < -5)
 			ink = y & 1 ? 0xab : 0xba;
-		mask = (uint8_t)((255U >> ((x & 3) * 2)) & (255U << (((4 - stop) & 3) * 2)));
-		*p = (uint8_t)((*p & ~mask) | (ink & mask));
+		if (stop - x == 4) *p = ink;
+		else {
+			uint8_t mask = (uint8_t)((255U >> ((x & 3) * 2)) & (255U << (((4 - stop) & 3) * 2)));
+			*p = (uint8_t)((*p & ~mask) | (ink & mask));
+		}
 		x = stop;
 	}
 }
@@ -126,16 +225,25 @@ static void SEC_CARD compact_grass_span(const TerraTris *t, uint8_t *row, uint8_
 	const int8_t *noise = t->noise;
 	const uint8_t *pattern = t->pat2 + (base << 2) + (y & 3);
 	uint16_t band = y >> 3, fy = y & 7;
+	const int8_t *near = noise + ((band & 15) << 4);
+	const int8_t *far = noise + (((band + 1) & 15) << 4);
+
 	while (x < end) {
 		uint16_t cell = x >> 3;
 		int16_t stop = (int16_t)((cell + 1) << 3);
-		int16_t patch = (int16_t)(grass_patch(noise, cell, band) * (8 - fy) +
-		                           grass_patch(noise, cell, band + 1) * fy);
+		int16_t a = near[cell & 15];
+		int16_t patch = (int16_t)(a * 8 + MULS16(far[cell & 15] - a, fy));
 		int16_t shade = (int16_t)((light + 8 + (patch >> 2)) >> 4);
+		uint8_t ink;
+
 		if (shade < 0) shade = 0;
 		if (shade >= PAL_RAMP_N) shade = PAL_RAMP_N - 1;
 		if (stop > end) stop = end;
-		packed_run(row, x, stop, pattern[shade * 4]);
+		ink = pattern[shade * 4];
+		if (stop - x == 8) {
+			uint8_t *p = row + (x >> 2);
+			p[0] = p[1] = ink;
+		} else packed_run(row, x, stop, ink);
 		x = stop;
 	}
 }
@@ -245,6 +353,65 @@ static void SEC_CORE tput(uint8_t lg, const uint8_t *pat2, const uint8_t *grey, 
 #endif
 
 #define PUT(t, p, x, y, c) tput((t)->lg, (t)->pat2, (t)->grey, (t)->bayer, p, x, y, c)
+
+static __inline__ uint16_t SEC_CORE grey4_tone(uint8_t light)
+{
+	uint16_t dark = 255 - light;
+	return (uint16_t)((dark << 4) - dark);
+}
+
+static __inline__ uint8_t SEC_CORE grey4_pair(uint16_t a, uint16_t b, const uint8_t *dith)
+{
+	a = (uint16_t)((a + (dith[0] << 4)) >> 8);
+	b = (uint16_t)((b + (dith[1] << 4)) >> 8);
+	return (uint8_t)((a << 4) | b);
+}
+
+/* Four repeating shades fill whole bytes between the two clipped edges. */
+void terra_grey_span(uint8_t *row, const uint8_t *pat2, const uint8_t *grey,
+                     const uint8_t *bayer, uint8_t lg, uint8_t ink,
+                     int16_t x, int16_t end, int16_t y)
+{
+	uint8_t pattern[2] = {0, 0};
+	uint8_t shift = (uint8_t)(3 - lg), pixels = (uint8_t)(1 << shift);
+	uint8_t left = (uint8_t)(255U >> ((x & (pixels - 1)) << lg));
+	uint8_t right = (uint8_t)(255U << (((pixels - end) & (pixels - 1)) << lg));
+	int16_t first = x >> shift, last = (end - 1) >> shift, i;
+
+	if (lg == 2) {
+		const uint8_t *dith = bayer + ((y & 3) << 2);
+		uint16_t tone = grey4_tone(grey[ink]);
+		pattern[0] = grey4_pair(tone, tone, dith);
+		pattern[1] = grey4_pair(tone, tone, dith + 2);
+	} else {
+		for (i = 0; i < 4; i++)
+			tput(lg, pat2, grey, bayer, pattern + (i >> shift), i, y, ink);
+	}
+	if (!lg) pattern[0] |= pattern[0] >> 4;
+	if (first == last) left &= right;
+	row[first] = (uint8_t)((row[first] & ~left) | (pattern[first & (lg != 0)] & left));
+	if (first == last) return;
+	i = first + 1;
+#ifdef __m68k__
+	if (last - i >= 8) {
+		uint32_t *out, repeat;
+		uint16_t words;
+		if ((uintptr_t)(row + i) & 1) {
+			row[i] = pattern[i & (lg != 0)];
+			i++;
+		}
+		repeat = ((uint16_t)pattern[i & (lg != 0)] << 8) | pattern[(i + 1) & (lg != 0)];
+		repeat |= repeat << 16;
+		out = (uint32_t *)(row + i);
+		words = (uint16_t)((last - i) >> 2);
+		i += words * 4;
+		while (words--) *out++ = repeat;
+	}
+#endif
+	for (; i < last; i++)
+		row[i] = pattern[i & (lg != 0)];
+	row[last] = (uint8_t)((row[last] & ~right) | (pattern[last & (lg != 0)] & right));
+}
 
 /* a * q / 16384 for a 2.14 q, as fix_mulq14. */
 static fixed SEC_CORE mulq(fixed a, int16_t q)
@@ -723,7 +890,12 @@ static int32_t SEC_CARD tri_slope(int16_t dx, uint16_t dy)
 	return dx < 0 ? -(int32_t)result : (int32_t)result;
 }
 #else
-#define tri_slope(dx, dy) DIV((int32_t)(dx) * 65536L, (int32_t)(dy))
+static inline int32_t tri_slope(int16_t dx, uint16_t dy)
+{
+	if (!dx || dy == 1) return (int32_t)dx * 65536L;
+	if (dy == 2) return (int32_t)dx * 32768L;
+	return DIV((int32_t)dx * 65536L, (int32_t)dy);
+}
 #endif
 
 typedef struct {
@@ -755,6 +927,10 @@ static int32_t SEC_CARD turf_step(int32_t n, int32_t d)
 		d /= 2;
 		if (!d) return 65537L;
 	}
+	if (!n || d == 1) return n * 256L;
+	if (d == -1) return -n * 256L;
+	if (d == 2) return n * 128L;
+	if (d == -2) return -n * 128L;
 	return DIV(n * 256L, d);
 }
 
@@ -763,17 +939,18 @@ static int SEC_CARD turf_plane(TurfPlane *p, const TurfBasis *b, const TerraTri 
 {
 	int32_t a = (int32_t)v[1] - v[0], c = (int32_t)v[2] - v[0];
 	int32_t dx = turf_step(a * b->dy2 - c * b->dy1, b->area);
-	int32_t dy = turf_step(c * b->dx1 - a * b->dx2, b->area);
-
-	if (dx < -65536L || dx > 65536L || dy < -65536L || dy > 65536L) {
-		p->dx = p->dy = 0;
-		p->origin = ((int32_t)v[0] + v[1] + v[2]) * 85L;
-		return 0;
+	if (dx >= -65536L && dx <= 65536L) {
+		int32_t dy = turf_step(c * b->dx1 - a * b->dx2, b->area);
+		if (dy >= -65536L && dy <= 65536L) {
+			p->dx = dx;
+			p->dy = dy;
+			p->origin = (int32_t)v[0] * 256L - dx * q->x[0] - dy * q->y[0];
+			return 1;
+		}
 	}
-	p->dx = dx;
-	p->dy = dy;
-	p->origin = (int32_t)v[0] * 256L - dx * q->x[0] - dy * q->y[0];
-	return 1;
+	p->dx = p->dy = 0;
+	p->origin = ((int32_t)v[0] + v[1] + v[2]) * 85L;
+	return 0;
 }
 
 static uint8_t SEC_CARD turf_fade(const TurfPaint *p, uint8_t sx, uint8_t sy)
@@ -796,6 +973,9 @@ static int SEC_CARD turf_setup(TurfPaint *p, const TerraTri *q, const TerraTurf 
 	int rough = q->base == PAL_ROUGH || q->base == PAL_DEEP_ROUGH;
 	int collar = q->base == PAL_FRINGE;
 	int short_grass = q->base == PAL_GREEN || collar;
+	int mow = q->base == PAL_FAIRWAY &&
+	          (t->depth[0] < MOW_FADE_END || t->depth[1] < MOW_FADE_END || t->depth[2] < MOW_FADE_END);
+	int32_t limit;
 	int u, v;
 
 	b.dx1 = (int16_t)(q->x[1] - q->x[0]);
@@ -807,19 +987,26 @@ static int SEC_CARD turf_setup(TurfPaint *p, const TerraTri *q, const TerraTurf 
 
 	turf_plane(&p->light, &b, q, t->light);
 	if (q->base == PAL_SAND) return 1;
-	u = turf_plane(&p->u, &b, q, t->u);
-	v = turf_plane(&p->v, &b, q, t->v);
 	/* Longer texels along the hole stay visible on the foreshortened
 	 * ground. The less closely cut grass uses a larger grain. */
 	p->coarse_x = (uint8_t)(short_grass ? 11 + collar : 12 + rough);
 	p->coarse_y = (uint8_t)(p->coarse_x + 1);
 	p->fine_x = (uint8_t)(9 + rough);
 	p->fine_y = (uint8_t)(10 + rough);
+	limit = 20L << (p->coarse_x - 4);
+	u = turf_plane(&p->u, &b, q, t->u);
+	if (!mow && (!noise || !u ||
+	    p->u.dx <= -limit || p->u.dx >= limit || p->u.dy <= -limit || p->u.dy >= limit)) {
+		/* The U gradient alone rules out texture at this scale. */
+		p->v.origin = p->v.dx = p->v.dy = 0;
+		p->coarse = p->fine = p->mow = 0;
+		return p->light.origin || p->light.dx || p->light.dy;
+	}
+	v = turf_plane(&p->v, &b, q, t->v);
 	p->coarse = u && v && noise ? turf_fade(p, p->coarse_x, p->coarse_y) : 0;
 	if (short_grass) p->coarse >>= collar ? 1 : 2;
 	p->fine = p->coarse && !short_grass ? turf_fade(p, p->fine_x, p->fine_y) : 0;
-	p->mow = v && q->base == PAL_FAIRWAY &&
-	         (t->depth[0] < MOW_FADE_END || t->depth[1] < MOW_FADE_END || t->depth[2] < MOW_FADE_END);
+	p->mow = v && mow;
 	if (p->mow) {
 		turf_plane(&p->depth, &b, q, t->depth);
 		p->mow_origin = (int32_t)mow_phase * 4096;
@@ -839,8 +1026,9 @@ static INL68 int16_t SEC_CARD turf_mottle(const int8_t *tex, int32_t u, int32_t 
 	return (int16_t)(((a * (8 - fy) + b * fy + 32) >> 6) + 1);
 }
 
-static void SEC_CARD turf_span(const TurfPaint *t, const int8_t *tex, const uint8_t *dither,
-                               uint8_t *row, int16_t x, int16_t end, int16_t y,
+static void SEC_CARD turf_span(const TurfPaint *__restrict__ t, const int8_t *tex, const int8_t *mottle,
+                               const uint8_t *dither,
+                               uint8_t *__restrict__ row, int16_t x, int16_t end, int16_t y,
                                int16_t vh, uint8_t base, int16_t lv)
 {
 	int32_t light = t->light.origin + t->light.dx * x + t->light.dy * y;
@@ -852,6 +1040,16 @@ static void SEC_CARD turf_span(const TurfPaint *t, const int8_t *tex, const uint
 	/* Fade the stretched grass mottle from halfway down the view. */
 	int16_t close = (int16_t)((y - (vh >> 1)) >> 2);
 	int16_t foreground = grain || close < 0 ? 0 : close > TURF_MIX_MAX / 2 ? TURF_MIX_MAX / 2 : close;
+
+	if (!t->coarse && !t->mow && (!(foreground || grain) || !tex)) {
+		for (; x <= end; x++, light += t->light.dx) {
+			int32_t level = (lv + (light >> 8) + dither[x & 3]) >> 4;
+			if (level < 0) level = 0;
+			if (level >= PAL_RAMP_N) level = PAL_RAMP_N - 1;
+			row[x] = (uint8_t)(base + level);
+		}
+		return;
+	}
 
 	for (; x <= end; x++) {
 		int32_t level = lv + (light >> 8) + dither[x & 3];
@@ -870,7 +1068,9 @@ static void SEC_CARD turf_span(const TurfPaint *t, const int8_t *tex, const uint
 			}
 		}
 		if (t->coarse) {
-			int16_t coarse = turf_mottle(tex, u, v, t->coarse_x, t->coarse_y);
+			int16_t coarse = mottle ?
+				mottle[(((v >> (t->coarse_y - 3)) & 127) << 7) | ((u >> (t->coarse_x - 3)) & 127)] :
+				turf_mottle(tex, u, v, t->coarse_x, t->coarse_y);
 			int16_t grass = (int16_t)((coarse * t->coarse * 7) >> 6);
 			if (t->fine) {
 				uint16_t ux = (uint16_t)((u >> t->fine_x) & 15);
@@ -896,8 +1096,8 @@ static void SEC_CARD turf_span(const TurfPaint *t, const int8_t *tex, const uint
 	}
 }
 
-static void SEC_CARD sand_span(const TurfPlane *p, const int8_t *tex, const uint8_t *dither,
-                               uint8_t *row, int16_t x, int16_t end, int16_t y, int16_t lv)
+static void SEC_CARD sand_span(const TurfPlane *__restrict__ p, const int8_t *tex, const uint8_t *dither,
+                               uint8_t *__restrict__ row, int16_t x, int16_t end, int16_t y, int16_t lv)
 {
 	int32_t light = p->origin + p->dx * x + p->dy * y + (int32_t)lv * 256;
 
@@ -916,10 +1116,34 @@ static void SEC_CARD sand_span(const TurfPlane *p, const int8_t *tex, const uint
 	}
 }
 
-void terra_tris(const TerraTris *tt)
+static inline uint8_t flat_ink(int16_t lv, uint8_t base, uint8_t dither)
+{
+	int16_t l = (int16_t)((lv + dither) >> 4);
+	if (l > PAL_RAMP_N - 1) l = PAL_RAMP_N - 1;
+	return (uint8_t)(base + l);
+}
+
+static void SEC_CARD flat_span(uint8_t *row, const uint8_t *dither, int16_t x, int16_t end,
+                               uint8_t base, int16_t lv)
+{
+#if defined(__arm__) || (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+	if (end - x >= 16 && !((uintptr_t)row & 3)) {
+		uint32_t ink = (uint32_t)flat_ink(lv, base, dither[0]) |
+		               (uint32_t)flat_ink(lv, base, dither[1]) << 8 |
+		               (uint32_t)flat_ink(lv, base, dither[2]) << 16 |
+		               (uint32_t)flat_ink(lv, base, dither[3]) << 24;
+		for (; x & 3; x++) row[x] = (uint8_t)(ink >> ((x & 3) * 8));
+		for (; x + 4 <= end; x += 4) *(PixelWord *)(row + x) = ink;
+	}
+#endif
+	for (; x < end; x++) row[x] = flat_ink(lv, base, dither[x & 3]);
+}
+
+void terra_tris_mottle(const TerraTris *tt, const int8_t *mottle)
 {
 	const uint8_t *bayer = tt->bayer;
 	int16_t i, vh = tt->vh, w = tt->w;
+	uint16_t stride = tt->rb;
 	uint8_t lg = tt->lg;
 
 	for (i = 0; i < tt->n; i++) {
@@ -928,6 +1152,10 @@ void terra_tris(const TerraTris *tt)
 		int16_t y, y0, ym, y1, x, xa, xb, ax, ay, bx, by, cx, cy, tx, ty, lv = q->lv;
 		uint8_t base = (uint8_t)q->base;
 		const uint8_t *compact = lg == 1 ? tt->pat2 + ((uint16_t)(base + ((lv + 8) >> 4)) << 2) : 0;
+		int water = base == PAL_WATER && tt->noise;
+		int grass = compact && tt->noise &&
+		            ((base >= PAL_ROUGH && base <= PAL_DEEP_ROUGH) || base == PAL_TEE);
+		uint32_t offset;
 		TurfPaint turf;
 		int shaded = 0;
 
@@ -961,8 +1189,9 @@ void terra_tris(const TerraTris *tt)
 			y = 0;
 		}
 		if (y1 > vh) y1 = vh;
-		for (; y < y1; y++) {
-			uint8_t *row;
+		offset = MULU16(y, stride);
+		for (; y < y1; y++, offset += stride) {
+			uint8_t *row = tt->bits + offset;
 
 			if (y == ym) {
 				/* the short side turns at b */
@@ -977,39 +1206,33 @@ void terra_tris(const TerraTris *tt)
 			xl += dl;
 			xr += dr;
 			if (xa > xb) continue;
-			row = tt->bits + MULU16(y, tt->rb);
-			if (base == PAL_WATER && tt->noise && lg == 1) {
-				terra_water_packed(row, tt->noise, xa, xb + 1, y);
-			} else if (base == PAL_WATER && tt->noise && lg == 3) {
-				water_colour_span(row, tt->noise, bayer + ((y & 3) << 2),
-				                  tt->reflection, w - 1, xa, xb + 1, y);
-			} else if (compact) {
-				if (tt->noise && y > 90 && ((base >= PAL_ROUGH && base <= PAL_DEEP_ROUGH) || base == PAL_TEE))
+			if (compact) {
+				if (water) terra_water_packed(row, tt->noise, xa, xb + 1, y);
+				else if (grass && y > 90)
 					compact_grass_span(tt, row, base, lv, xa, xb + 1, y);
 				else
 					packed_run(row, xa, xb + 1, compact[y & 3]);
 			} else if (lg == 3) {
 				const uint8_t *tb = bayer + ((y & 3) << 2);
-				if (shaded && base == PAL_SAND)
+				if (water)
+					water_colour_span(row, tt->noise, tb, tt->reflection, w - 1, xa, xb + 1, y);
+				else if (shaded && base == PAL_SAND)
 					sand_span(&turf.light, tt->noise, tb, row, xa, xb, y, lv);
-				else if (shaded) turf_span(&turf, tt->noise, tb, row, xa, xb, y, vh, base, lv);
-				else {
-					uint8_t *p = row + xa;
-					for (x = xa; x <= xb; x++) {
-						int16_t l = (int16_t)((lv + tb[x & 3]) >> 4);
-						if (l > PAL_RAMP_N - 1) l = PAL_RAMP_N - 1;
-						*p++ = (uint8_t)(base + l);
-					}
-				}
+				else if (shaded) turf_span(&turf, tt->noise, mottle, tb, row, xa, xb, y, vh, base, lv);
+				else flat_span(row, tb, xa, xb + 1, base, lv);
 			} else {
-				for (x = xa; x <= xb; x++) {
-					int16_t l = (int16_t)((lv + bayer[((y & 3) << 2) | (x & 3)]) >> 4);
-					if (l > PAL_RAMP_N - 1) l = PAL_RAMP_N - 1;
-					PUT(tt, row + ((uint16_t)x >> (3 - lg)), x, y, (uint8_t)(base + l));
-				}
+				int16_t level = (int16_t)((lv + 8) >> 4);
+				if (level > PAL_RAMP_N - 1) level = PAL_RAMP_N - 1;
+				terra_grey_span(row, tt->pat2, tt->grey, bayer, lg,
+				                (uint8_t)(base + level), xa, xb + 1, y);
 			}
 		}
 	}
+}
+
+void terra_tris(const TerraTris *tt)
+{
+	terra_tris_mottle(tt, 0);
 }
 
 /* Puts the part of a PackBits run over k..e that's in lo..hi into out:
@@ -1018,8 +1241,18 @@ static void SEC_CORE put_run(uint8_t *out, const uint8_t *src, uint8_t rep, uint
                              uint16_t lo, uint16_t hi)
 {
 	uint16_t a = k > lo ? k : lo, b = e < hi ? e : hi;
-	if (rep) while (a < b) out[a++] = *src;
-	else for (; a < b; a++) out[a] = src[a - k];
+	uint8_t *dest, *end;
+
+	if (a >= b) return;
+	dest = out + a;
+	end = out + b;
+	if (rep) {
+		uint8_t ink = *src;
+		while (dest < end) *dest++ = ink;
+	} else {
+		src += a - k;
+		while (dest < end) *dest++ = *src++;
+	}
 }
 
 /* One PackBits row of n bytes from d at *pos, putting in out only the
@@ -1050,6 +1283,32 @@ static int SEC_CORE unpack_row(const uint8_t *d, uint32_t len, uint32_t *pos, ui
 	return 0;
 }
 
+static void SEC_DANA sky_grey_row(uint8_t *dest, const uint8_t *row, const uint8_t *grey,
+                                  const uint8_t *dith, uint8_t sky, int16_t width,
+                                  int16_t at, int16_t bw)
+{
+	uint16_t tone = grey4_tone(grey[sky]);
+	int16_t x;
+
+	if (!row) {
+		uint8_t even = grey4_pair(tone, tone, dith);
+		uint8_t odd = grey4_pair(tone, tone, dith + 2);
+		for (x = 0; x < width; x += 4) {
+			*dest++ = even;
+			*dest++ = odd;
+		}
+		return;
+	}
+	for (x = 0; x < width; x += 2) {
+		uint8_t a = row[at], b;
+		if (++at == bw) at = 0;
+		b = row[at];
+		if (++at == bw) at = 0;
+		*dest++ = grey4_pair(a ? grey4_tone(grey[a]) : tone,
+		                     b ? grey4_tone(grey[b]) : tone, dith + (x & 2));
+	}
+}
+
 void terra_sky(TerraSky *ts)
 {
 	const int16_t *ybuf = ts->ybuf;
@@ -1063,8 +1322,17 @@ void terra_sky(TerraSky *ts)
 		int16_t sv = y < yh ? (int16_t)DIV((int32_t)y * (16 * (PAL_SKY_N - 1)), (int32_t)yh) : 16 * (PAL_SKY_N - 1);
 		int16_t sx = off;
 		if (bw && y >= btop && y < btop + bh) {
-			if (unpack_row(ts->bk, ts->len, &pos, ts->row, (uint16_t)bw, (uint16_t)(bw > w ? off : 0), (uint16_t)(bw > w ? off + w : bw)) == 0) row = ts->row;
+			uint16_t lo = (uint16_t)(bw > w ? off : 0);
+			uint16_t hi = (uint16_t)(bw > w ? off + w : bw);
+			int ok = unpack_row(ts->bk, ts->len, &pos, ts->row, (uint16_t)bw, lo, hi);
+			if (ok == 0) row = ts->row;
 			else bw = 0;
+		}
+		if (lg == 2 && !ybuf) {
+			uint8_t c = y <= yh ? (uint8_t)(PAL_SKY + ((sv + 8) >> 4)) : (uint8_t)(PAL_HAZE + 4);
+			sky_grey_row(p, row, ts->grey, ts->bayer + ((y & 3) << 2), c, w, sx, bw);
+			COUNT(ts->px += w);
+			continue;
 		}
 		if (lg == 1) {
 			/* 2 bits: the sky is one colour a row, so its pattern byte goes in
@@ -1133,12 +1401,28 @@ static __inline__ uint8_t SEC_CORE map_pattern(const uint8_t *cells, const uint8
 	return patterns[surface];
 }
 
+static void SEC_CORE map_grey_patterns(const TerraMap *t, uint8_t pr[4][16], uint8_t blank[4], uint8_t y)
+{
+	const uint8_t *phase = t->bayer + y * 4;
+	uint16_t dark = grey4_tone(t->grey[PAL_BLACK]);
+	uint8_t k, i;
+
+	for (k = 0; k < 4; k++) blank[k] = (uint8_t)((dark + (phase[k] << 4)) >> 8);
+	for (i = 0; i < SURF_COUNT; i++) {
+		uint16_t shade = grey4_tone(t->grey[t->col[i]]);
+		for (k = 0; k < 4; k++) pr[k][i] = (uint8_t)((shade + (phase[k] << 4)) >> 8);
+	}
+	for (; i < 16; i++)
+		for (k = 0; k < 4; k++) pr[k][i] = pr[k][SURF_OOB];
+}
+
 void terra_map(const TerraMap *t)
 {
 	const uint8_t *xcell = t->xcell, *col = t->col;
 	uint16_t rb = t->rb;
 	int16_t x, y, w = t->w, top = t->top, mh = t->mh;
 	uint8_t lg = t->lg;
+	uint8_t grey[4][4][16], blank[4][4], phases = 0;
 
 	for (y = t->y0; y < t->y1; y++) {
 		uint8_t *p = t->bits + MULU16(y, rb);
@@ -1171,21 +1455,18 @@ void terra_map(const TerraMap *t)
 			continue;
 		}
 		if (lg == 2) {
-			/* Precompute the four dither phases and write two pixels per byte. */
-			uint8_t pr[4][16], blank[4], k, i;
-			const uint8_t *phase = t->bayer + ((y & 3) << 2);
-			uint16_t dark = MULU16(255 - t->grey[PAL_BLACK], 15);
-			for (k = 0; k < 4; k++) blank[k] = (uint8_t)((dark + (phase[k] << 4)) >> 8);
-			for (i = 0; i < SURF_COUNT; i++) {
-				uint16_t shade = MULU16(255 - t->grey[col[i]], 15);
-				for (k = 0; k < 4; k++) pr[k][i] = (uint8_t)((shade + (phase[k] << 4)) >> 8);
+			uint8_t phase = y & 3;
+			const uint8_t *off = blank[phase];
+			uint8_t (*pr)[16] = grey[phase];
+			uint8_t mask = (uint8_t)(1 << phase);
+			if (!(phases & mask)) {
+				map_grey_patterns(t, pr, blank[phase], phase);
+				phases |= mask;
 			}
-			for (; i < 16; i++)
-				for (k = 0; k < 4; k++) pr[k][i] = pr[k][SURF_OOB];
 			for (x = 0; x < w; x += 2, p++) {
 				uint8_t phase0 = (uint8_t)(x & 2), phase1 = (uint8_t)(phase0 + 1);
-				uint8_t a = map_pattern(cells, pr[phase0], xcell[x], blank[phase0]);
-				uint8_t b = map_pattern(cells, pr[phase1], xcell[x + 1], blank[phase1]);
+				uint8_t a = map_pattern(cells, pr[phase0], xcell[x], off[phase0]);
+				uint8_t b = map_pattern(cells, pr[phase1], xcell[x + 1], off[phase1]);
 				*p = (uint8_t)((a << 4) | b);
 			}
 			continue;
@@ -1207,6 +1488,14 @@ void terra_map(const TerraMap *t)
 #define EDGE_SAND 2
 #define EDGE_COLLAR 3
 #define EDGE_MAX 8
+
+#if defined(__arm__) || (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+/* The terrain ramps start four below an eight-colour boundary. */
+static inline uint32_t edge_groups(uint32_t word)
+{
+	return ((((word & 0x7f7f7f7fUL) + 0x04040404UL) ^ (word & 0x80808080UL)) & 0xf8f8f8f8UL);
+}
+#endif
 
 static inline uint8_t edge_material(uint8_t c)
 {
@@ -1240,26 +1529,36 @@ static void SEC_UI edge_mark(const TerraEdges *t, int16_t x, int16_t y,
 	for (k = reach; k && x >= 0 && x < t->w && y >= 0 && y < t->vh; k--, x += dx, y += dy) {
 		uint8_t *mark;
 		if (edge_material(t->bits[MULU16(y, t->rb) + x]) != sf) break;
-		if (y < t->y || y >= t->end) continue;
-		mark = t->marks + MULU16(y - t->y, t->w) + x;
+		if (y < t->y) continue;
+		mark = t->marks + MULU16(y & (EDGE_MARK_ROWS - 1), t->w) + x;
 		if (k > (*mark >> 2)) *mark = (uint8_t)((k << 2) | kind);
 	}
 }
 
 void terra_edges(const TerraEdges *t)
 {
-	int16_t x, y, start = (int16_t)t->y - EDGE_MAX + 1;
+	int16_t x, y, start = t->y ? (int16_t)t->y + EDGE_MAX : 1;
 	int16_t stop = (int16_t)t->end + EDGE_MAX;
-	uint16_t n = (uint16_t)MULU16(t->end - t->y, t->w);
 	uint8_t *mark;
 
-	for (mark = t->marks; n; n--) *mark++ = 0;
-	if (start < 1) start = 1;
+	if (!t->y) {
+		uint16_t n = (uint16_t)MULU16(EDGE_MARK_ROWS, t->w);
+		for (mark = t->marks; n; n--) *mark++ = 0;
+	}
 	if (stop > t->vh) stop = t->vh;
+	/* Keep forward marks in the ring so overlapping bands scan each
+	 * vertical pair once. Shading leaves the terrain ramp unchanged. */
 	for (y = start; y < stop; y++) {
 		const uint8_t *row = t->bits + MULU16(y, t->rb), *above = row - t->rb;
 		for (x = 0; x < t->w; x++) {
 			uint8_t a = row[x], b = above[x], kind;
+#if defined(__arm__) || (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+			if (x + 4 <= t->w && !(((uintptr_t)row | (uintptr_t)above | x) & 3) &&
+			    edge_groups(*(const PixelWord *)(row + x)) == edge_groups(*(const PixelWord *)(above + x))) {
+				x += 3;
+				continue;
+			}
+#endif
 			if (((a - PAL_TERRAIN) ^ (b - PAL_TERRAIN)) & 0xf8) {
 				uint8_t sa = edge_material(a), sb = edge_material(b);
 				kind = edge_kind(sa, sb);
@@ -1270,10 +1569,21 @@ void terra_edges(const TerraEdges *t)
 			}
 		}
 	}
-	for (mark = t->marks, y = t->y; y < t->end; y++) {
+	for (y = t->y; y < t->end; y++) {
 		uint8_t *row = t->bits + MULU16(y, t->rb);
+		mark = t->marks + MULU16(y & (EDGE_MARK_ROWS - 1), t->w);
 		for (x = 1; x < t->w; x++) {
 			uint8_t a = row[x], b = row[x - 1];
+#if defined(__arm__) || (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+			if (x + 4 <= t->w && !(((uintptr_t)row | x) & 3)) {
+				uint32_t group = edge_groups(*(const PixelWord *)(row + x));
+				uint32_t previous = (group << 8) | ((b + 4U) & 0xf8);
+				if (group == previous) {
+					x += 3;
+					continue;
+				}
+			}
+#endif
 			if (((a - PAL_TERRAIN) ^ (b - PAL_TERRAIN)) & 0xf8) {
 				uint8_t sa = edge_material(a), sb = edge_material(b);
 				uint8_t kind = edge_kind(sa, sb);
@@ -1284,14 +1594,22 @@ void terra_edges(const TerraEdges *t)
 			}
 		}
 		for (x = 0; x < t->w; x++, mark++) {
-			uint8_t kind = *mark & 3, c = row[x], sf;
+			uint8_t packed = *mark, kind = packed & 3, c = row[x], sf;
 			int16_t shade, amount, grain;
 			uint16_t at;
+#if defined(__arm__) || (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+			if (x + 4 <= t->w && !((uintptr_t)mark & 3) && !*(const PixelWord *)mark) {
+				x += 3;
+				mark += 3;
+				continue;
+			}
+#endif
 			if (!kind) continue;
+			*mark = 0;
 			sf = edge_material(c);
 			at = (uint16_t)(x * 29U + y * 53U);
 			grain = (int16_t)((at ^ (at >> 4) ^ (at >> 9)) & 15);
-			amount = (int16_t)((*mark >> 2) * 4);
+			amount = (int16_t)((packed >> 2) * 4);
 			if (kind == EDGE_WATER) {
 				if (sf == SURF_WATER) amount >>= 1;
 				else amount = -amount;

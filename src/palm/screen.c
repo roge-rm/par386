@@ -838,6 +838,20 @@ Surface *ScreenSpareHas(void)
 	return gSpS.bits ? &gSpS : NULL;
 }
 
+Boolean ScreenKeepSpare(void)
+{
+	if (!gSpS.bits) return false;
+	ScreenDropKept();
+	gBg = gSp;
+	gBg8 = gSp8;
+	gBgS = gSpS;
+	gHaveBg = true;
+	gSp = NULL;
+	gSp8 = NULL;
+	gSpS.bits = NULL;
+	return true;
+}
+
 void ScreenSpareDrop(void)
 {
 	if (gSp) WinDeleteWindow(gSp, false);

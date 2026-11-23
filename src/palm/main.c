@@ -35,7 +35,9 @@ static UInt32 gShowTicks;
 #endif
 static Front gFront;
 static DanaPanels gDana;
+#ifdef DEBUG
 static UInt32 gHeapStart;      /* free dynamic heap at launch */
+#endif
 
 /* Playing a hole. The hole record stays locked in the course database and
  * the surface grid sits in a record of a scratch database, both out of the
@@ -63,19 +65,27 @@ static Records gRecords;
 static Boolean gPlaying;
 static Play gPlay;
 static Round gRound;
-static Hole gHole;
-static SurfaceGrid gGrid;
+typedef struct {
+	Hole hole;
+	SurfaceGrid grid;
+	MemHandle hole_h, grid_h, mesh_h;
+} HoleSlot;
+static HoleSlot gLive;
+static HoleSlot *gCardHole;
+static UInt16 gCardRecord;
 static DmOpenRef gCourseDb, gScratchDb;
 static Course gCourseHdr;      /* the open course's header: scenery and each hole's turn */
 /* The installed courses' database names, sorted, found at start-up. */
 static char gCourseNames[FRONT_COURSES][dmDBNameLength];
 static UInt8 gCourseCount;
-static MemHandle gHoleH, gGridH, gTerrainH;
 static RenderGolfer gGolf;     /* the golfer's frames, kept locked while playing, and the pixels under him */
 static MemHandle gGolfH[RENDER_POSES];
+static UInt8 gGolfScale, gGolfPlayer;
 static UInt32 gUnderLen;
 static UInt8 gProfileSlot;    /* first human in the round, or RULES_PLAYERS */
+#ifdef DEBUG
 static UInt32 gMinFree;        /* least free heap while the scene was drawn */
+#endif
 static Boolean gAnim;          /* play wants frames */
 static Boolean gFadeBack;      /* a shot is on the map: the next scene fades in over it */
 static int gMapF;              /* flags from the frames during the fade to the map */
@@ -329,17 +339,19 @@ static UInt32 Ticks(void)
 	return TimGetTicks();
 }
 
+#ifdef DEBUG
 static UInt32 FreeHeap(void)
 {
 	UInt32 fr = 0, mx = 0;
 	MemHeapFreeBytes(0, &fr, &mx);
 	return fr;
 }
+#endif
 
 /* surface_raster's row writer: rows go straight into the locked grid record. */
 static void GridRow(void *ctx, uint16_t row, const uint8_t *bytes, uint16_t len)
 {
-	DmWrite(ctx, (UInt32)row * gGrid.stride, bytes, len);
+	DmWrite(ctx, (UInt32)row * gLive.grid.stride, bytes, len);
 }
 
 /* Courses on an SD card. A card course is imported whole into RAM
@@ -588,6 +600,7 @@ static void GolferFramesFree(RenderGolfer *g, MemHandle *frames)
 static void GolferFree(void)
 {
 	GolferFramesFree(&gGolf, gGolfH);
+	gGolfScale = 0;
 	if (gGolf.under) MemPtrFree(gGolf.under);
 	gGolf.under = NULL;
 	gGolf.w = 0;
@@ -646,6 +659,19 @@ static void GolferLock(RenderGolfer *g, MemHandle *frames, UInt16 sc, UInt8 play
 	}
 }
 
+static void LiveGolfer(UInt16 sc, UInt8 player)
+{
+	UInt16 k;
+
+	if (gGolfScale == sc && gGolfPlayer == player) return;
+	GolferLock(&gGolf, gGolfH, sc, player);
+	gGolfScale = 0;
+	for (k = 0; k < RENDER_POSES; k++)
+		if (!gGolfH[k]) return;
+	gGolfScale = (UInt8)sc;
+	gGolfPlayer = player;
+}
+
 /* Without room for the pixels under the pose, it stays at address. */
 static void GolferUnder(void)
 {
@@ -660,11 +686,14 @@ static void GolferUnder(void)
 
 static void NextDrop(void);
 
-static void SEC_DANA TerrainDrop(void)
+static void SEC_DANA HoleDrop(HoleSlot *slot)
 {
-	if (gTerrainH) MemHandleUnlock(gTerrainH);
-	gTerrainH = NULL;
-	gHole.terrain_mesh.data = NULL;
+	if (slot->mesh_h) MemHandleUnlock(slot->mesh_h);
+	if (slot->grid_h) MemHandleUnlock(slot->grid_h);
+	if (slot->hole_h) MemHandleUnlock(slot->hole_h);
+	slot->mesh_h = slot->grid_h = slot->hole_h = NULL;
+	slot->hole.terrain_mesh.data = NULL;
+	slot->grid.cells = NULL;
 }
 
 static void PlayEnd(void)
@@ -672,11 +701,9 @@ static void PlayEnd(void)
 	LocalID id;
 
 	NextDrop();
+	dana_drop(&gDana);
 	ScreenSpareDrop();
-	TerrainDrop();
-	if (gGridH) MemHandleUnlock(gGridH);
-	if (gHoleH) MemHandleUnlock(gHoleH);
-	gGridH = gHoleH = NULL;
+	HoleDrop(&gLive);
 	if (gScratchDb) DmCloseDatabase(gScratchDb);
 	if (gCourseDb) DmCloseDatabase(gCourseDb);
 	gScratchDb = gCourseDb = 0;
@@ -732,7 +759,7 @@ static void SEC_MENU DeleteSave(void)
 
 /* Saves the round, as it will be after any shot in the air lands, or
  * deletes the save once the round is over. */
-static void SEC_MENU SaveRound(void)
+static void SEC_MENU SaveRoundWith(UInt8 *scratch)
 {
 	LocalID id;
 	DmOpenRef db;
@@ -752,7 +779,8 @@ static void SEC_MENU SaveRound(void)
 		DeleteSave();
 		return;
 	}
-	if ((buf = MemPtrNew(RULES_SAVE_MAX)) == NULL) return;
+	buf = scratch ? scratch : MemPtrNew(RULES_SAVE_MAX);
+	if (!buf) return;
 	len = rules_pack(&gRound, buf);
 	if ((id = DmFindDatabase(0, kSaveName)) == 0) {
 		if (DmCreateDatabase(0, kSaveName, kCreator, kSaveType, false) == errNone) {
@@ -777,7 +805,19 @@ static void SEC_MENU SaveRound(void)
 	}
 	/* a save that couldn't be written is removed, not left to resume an older state */
 	if (!ok) DeleteSave();
-	MemPtrFree(buf);
+	if (!scratch) MemPtrFree(buf);
+}
+
+static void SEC_MENU SaveRound(void)
+{
+	SaveRoundWith(NULL);
+}
+
+static void SEC_MENU SaveFirstTee(void)
+{
+	UInt8 scratch[RULES_SAVE_MAX];
+
+	SaveRoundWith(scratch);
 }
 
 /* Reads the course header from record 0 of an open course database. */
@@ -798,14 +838,14 @@ enum { LS_OK, LS_NONE, LS_CHANGED, LS_MISSING, LS_NOMEM };
  * version or broken, LS_CHANGED if its course's holes or pars changed (both
  * mean the save is no use), LS_MISSING if the course isn't in RAM or on a
  * card in, LS_NOMEM if it couldn't be imported for lack of memory. With
- * full a card course is imported and checked and stays imported; without,
- * it's only looked for on a card. */
+ * full the checked course stays open for PlayStart. Otherwise a course
+ * that is still on a card is only looked for. */
 static UInt8 SEC_MENU LoadSave(Round *r, Boolean full)
 {
 	LocalID id = DmFindDatabase(0, kSaveName);
 	DmOpenRef db;
 	MemHandle h;
-	Course c;
+	Course check, *c = full ? &gCourseHdr : &check;
 	Boolean ok = false;
 	UInt8 e;
 
@@ -822,13 +862,47 @@ static UInt8 SEC_MENU LoadSave(Round *r, Boolean full)
 		DropImported();
 		return LS_MISSING;
 	}
-	ok = CourseHeader(db, &c) && rules_course_matches(r, &c);
-	DmCloseDatabase(db);
+	ok = CourseHeader(db, c) && rules_course_matches(r, c);
+	if (ok && full) gCourseDb = db;
+	else DmCloseDatabase(db);
 	if (!ok) DropImported();
 	return ok ? LS_OK : LS_CHANGED;
 }
 
-static void SEC_DANA TerrainLoad(UInt16 hole)
+static void SEC_MENU GridLoad(HoleSlot *slot, UInt16 index)
+{
+	MemHandle h;
+	const UInt8 *data, *p;
+	UInt16 size = slot->grid.stride * slot->grid.h, left = size;
+
+	if (!index || !(h = DmQueryRecord(gCourseDb, index)) || MemHandleSize(h) != size) return;
+	if (!(data = MemHandleLock(h))) return;
+	p = data;
+	if (SURF_COUNT >= 8 && SURF_COUNT <= 16 && !((UInt32)p & 1)) {
+		const UInt32 bias = (16 - SURF_COUNT) * 0x11111111UL;
+		while (left >= 4) {
+			UInt32 word;
+
+			__asm__ ("move.l (%1)+,%0" : "=d" (word), "+a" (p) : : "cc", "memory");
+			/* The bias sets bit 3 at the limit without carrying into the next nibble. */
+			if (((word & 0x77777777UL) + bias) & word & 0x88888888UL) goto invalid;
+			left -= 4;
+		}
+	}
+	while (left) {
+		UInt8 pair = *p++;
+		if ((pair >> 4) >= SURF_COUNT || (pair & 15) >= SURF_COUNT) goto invalid;
+		left--;
+	}
+	slot->grid_h = h;
+	slot->grid.cells = data;
+	return;
+
+invalid:
+	MemHandleUnlock(h);
+}
+
+static void SEC_DANA TerrainLoad(HoleSlot *slot, UInt16 hole)
 {
 	UInt16 records = DmNumRecords(gCourseDb), dir = gCourseHdr.hole_count + 1, index;
 	UInt32 cpu;
@@ -841,57 +915,77 @@ static void SEC_DANA TerrainLoad(UInt16 hole)
 	          !sysFtrNumProcessorIsARM(cpu);
 	data = MemHandleLock(manifest);
 	if (!data) return;
-	index = course_terrain_record(data, MemHandleSize(manifest), gCourseHdr.hole_count,
-	                              records, hole, compact);
+	index = course_terrain_record(data, MemHandleSize(manifest), gCourseHdr.hole_count, records, hole,
+	                              compact ? COURSE_TERRAIN_COMPACT : COURSE_TERRAIN_DETAIL);
+	GridLoad(slot, course_terrain_record(data, MemHandleSize(manifest), gCourseHdr.hole_count,
+	                               records, hole, COURSE_TERRAIN_GRID));
 	MemHandleUnlock(manifest);
 	if (!index || !(mesh = DmQueryRecord(gCourseDb, index))) return;
 	data = MemHandleLock(mesh);
 	if (!data) return;
-	if (terrain_mesh_parse(&gHole.terrain_mesh, &gHole, data, MemHandleSize(mesh))) gTerrainH = mesh;
+	if (terrain_mesh_parse(&slot->hole.terrain_mesh, &slot->hole, data, MemHandleSize(mesh))) slot->mesh_h = mesh;
 	else MemHandleUnlock(mesh);
 }
 
-/* Hole n (from 1) of the open course: parses it, keeping its record
- * locked, and draws its surface grid into record 0 of the scratch database
- * in place of the last hole's. */
-static Boolean SEC_MENU LoadHole(UInt16 n)
+enum { PF_MEM, PF_SAVE, PF_MISSING, PF_NOCOURSE, PF_UPDATE };
+static UInt8 gFail;
+
+/* Older packs need one scratch record in the storage heap. */
+static Boolean SEC_MENU GridRaster(void)
 {
+	LocalID id;
 	MemHandle h;
+	UInt8 *data;
 	UInt16 at = 0;
 	UInt8 row[SURF_ROW_MAX];
 
-	if (gGridH) {
-		MemHandleUnlock(gGridH);
-		DmRemoveRecord(gScratchDb, 0);
-		gGridH = NULL;
+	if (!gScratchDb) {
+		if ((id = DmFindDatabase(0, kScratchName)) != 0) DmDeleteDatabase(0, id);
+		if (DmCreateDatabase(0, kScratchName, kCreator, 'Tmp ', false) != errNone ||
+		    !(id = DmFindDatabase(0, kScratchName)) ||
+		    !(gScratchDb = DmOpenDatabase(0, id, dmModeReadWrite))) return false;
 	}
-	if (gHoleH) MemHandleUnlock(gHoleH);
-	TerrainDrop();
-	gHoleH = NULL;
-	if ((h = DmQueryRecord(gCourseDb, n)) == NULL) return false;
-	gHoleH = h;
-	if (hole_parse(&gHole, MemHandleLock(h), MemHandleSize(h)) != HOLE_OK) return false;
-	TerrainLoad(n);
-	if (n >= 1 && n <= COURSE_MAX_HOLES) gHole.turn = (UInt16)gCourseHdr.turn[n - 1] << 8;
-	gHole.wind = gCourseHdr.wind;
-	gHole.green = gCourseHdr.green;
-	hole_use_tee(&gHole, gRound.tee);
-	surface_size(&gHole, &gGrid);
-	if ((h = DmNewRecord(gScratchDb, &at, (UInt32)gGrid.stride * gGrid.h)) == NULL) return false;
-	surface_raster(&gHole, row, GridRow, MemHandleLock(h));
-	MemHandleUnlock(h);
-	DmReleaseRecord(gScratchDb, at, true);
-	gGridH = h;
-	gGrid.cells = MemHandleLock(h);
+	if (!(h = DmNewRecord(gScratchDb, &at, (UInt32)gLive.grid.stride * gLive.grid.h))) return false;
+	data = MemHandleLock(h);
+	if (data) {
+		surface_raster(&gLive.hole, row, GridRow, data);
+		MemHandleUnlock(h);
+	}
+	DmReleaseRecord(gScratchDb, at, data != NULL);
+	if (!data || !(gLive.grid.cells = MemHandleLock(h))) return false;
+	gLive.grid_h = h;
 	return true;
 }
 
-/* Opens the course and the scratch database and starts the round's hole:
- * the saved round if resume, else a new one on the test course for the
- * players picked in the clubhouse, saved straight away. */
-/* Why PlayStart failed. */
-enum { PF_MEM, PF_SAVE, PF_MISSING, PF_NOCOURSE };
-static UInt8 gFail;
+/* Lock the course records without touching the current hole or its scratch grid. */
+static int SEC_DANA HoleRead(HoleSlot *slot, UInt16 n)
+{
+	MemHandle h;
+	const UInt8 *data;
+
+	if (!(h = DmQueryRecord(gCourseDb, n)) || !(data = MemHandleLock(h))) return 0;
+	slot->hole_h = h;
+	if (hole_parse(&slot->hole, data, MemHandleSize(h)) != HOLE_OK) return 0;
+	surface_size(&slot->hole, &slot->grid);
+	TerrainLoad(slot, n);
+	if (!slot->hole.terrain_mesh.data || !slot->hole.putting_curves) return -1;
+	if (n >= 1 && n <= COURSE_MAX_HOLES) slot->hole.turn = (UInt16)gCourseHdr.turn[n - 1] << 8;
+	slot->hole.wind = gCourseHdr.wind;
+	slot->hole.green = gCourseHdr.green;
+	hole_use_tee(&slot->hole, gRound.tee);
+	return 1;
+}
+
+static Boolean SEC_MENU LoadHole(UInt16 n)
+{
+	int ok;
+
+	HoleDrop(&gLive);
+	if (gScratchDb && DmNumRecords(gScratchDb) && DmRemoveRecord(gScratchDb, 0) != errNone) return false;
+	ok = HoleRead(&gLive, n);
+	if (ok < 0) gFail = PF_UPDATE;
+	return ok > 0 && (gLive.grid_h || GridRaster());
+}
 
 /* Version 2 adds the four outfit colours after the original name field. */
 enum { PLAYER_PREF_V1_BYTES = 3 + PLAYER_NAME_MAX + 1, PLAYER_PREF_BYTES = PLAYER_PREF_V1_BYTES + 4 };
@@ -938,10 +1032,11 @@ static void SEC_DANA PlayerSave(void)
 	PrefSetAppPreferences(kCreator, kPlayerPref, 2, data, sizeof(data), true);
 }
 
+/* Opens the course and scratch databases, then starts or resumes the round. */
 static Boolean SEC_MENU PlayStart(Boolean resume)
 {
 	LocalID id;
-	Course c;
+	const Course *c = &gCourseHdr;
 	UInt32 seed;
 
 	gFail = PF_MEM;
@@ -962,40 +1057,31 @@ static Boolean SEC_MENU PlayStart(Boolean resume)
 		if ((id = DmFindDatabase(0, gCourseNames[gFront.course])) == 0 ||
 		    (gCourseDb = DmOpenDatabase(0, id, dmModeReadOnly)) == 0)
 			return false;
-		if (!CourseHeader(gCourseDb, &c)) return false;
-		DmCloseDatabase(gCourseDb);
-		gCourseDb = 0;
+		if (!CourseHeader(gCourseDb, &gCourseHdr)) return false;
 #ifdef PLAY_SEED
 		/* a fixed wind, for Frond replays that play the holes through */
 		seed = PLAY_SEED;
 #else
 		seed = TimGetSeconds();
 #endif
-		rules_init(&gRound, gCourseNames[gFront.course], gFront.players, c.hole_count, c.par, seed);
+		rules_init(&gRound, gCourseNames[gFront.course], gFront.players, c->hole_count, c->par, seed);
 		gRound.holeout = gFront.holeout;
 		/* the range is played on the first par 5, the green on the first hole */
 		{
 			UInt8 h = 0, k;
 			if (gFront.mode == MODE_RANGE)
-				for (k = 0; k < c.hole_count; k++)
-					if (c.par[k] >= 5) { h = k; break; }
+				for (k = 0; k < c->hole_count; k++)
+					if (c->par[k] >= 5) { h = k; break; }
 			rules_mode(&gRound, gFront.mode, gFront.cpu, h);
 		}
 		rules_span(&gRound, gFront.hole_count[gFront.course] == 18 ? gFront.span : SPAN_FULL);
-		if (gRound.mode == MODE_TOURN) rules_tour_course(&gRound, &c);
+		if (gRound.mode == MODE_TOURN) rules_tour_course(&gRound, c);
 		/* practice from the first tee set */
 		/* a card course's tee sets are known now: the players line and the record show the set played */
-		front_course_tees(&gFront, gFront.course, &c);
-		if (gFront.tee >= c.tee_count) gFront.tee = (UInt8)(c.tee_count - 1);
+		front_course_tees(&gFront, gFront.course, c);
+		if (gFront.tee >= c->tee_count) gFront.tee = (UInt8)(c->tee_count - 1);
 		if (!MODE_PRACTICE(gFront.mode)) gRound.tee = gFront.tee;
 	}
-	if ((id = DmFindDatabase(0, gRound.course)) == 0 || (gCourseDb = DmOpenDatabase(0, id, dmModeReadOnly)) == 0)
-		return false;
-	if (!CourseHeader(gCourseDb, &gCourseHdr)) return false;
-	if ((id = DmFindDatabase(0, kScratchName)) != 0) DmDeleteDatabase(0, id);
-	if (DmCreateDatabase(0, kScratchName, kCreator, 'Tmp ', false) != errNone) return false;
-	if ((id = DmFindDatabase(0, kScratchName)) == 0) return false;
-	if ((gScratchDb = DmOpenDatabase(0, id, dmModeReadWrite)) == 0) return false;
 	if (!LoadHole(rules_hole_number(&gRound, gRound.hole))) return false;
 	if (!MODE_PRACTICE(gRound.mode)) gFront.span = gRound.span;
 	gProfileSlot = rules_profile(&gRound, &gFront.player);
@@ -1003,9 +1089,9 @@ static Boolean SEC_MENU PlayStart(Boolean resume)
 	ScreenGame(true);
 	dana_reset(&gDana);
 	gPlay.mapview = gS.fullview ? 0 : gFront.shotmap;
-	play_start(&gPlay, &gHole, &gGrid, &gRound);
+	play_start(&gPlay, &gLive.hole, &gLive.grid, &gRound);
 	gPlaying = true;
-	if (!resume) SaveRound();
+	if (!resume && (gPlay.view != PLAY_SCENE || gPlay.cpu)) SaveRound();
 	return true;
 }
 
@@ -1040,12 +1126,23 @@ static void Fade(void)
 #endif
 }
 
-static void KeepScene(void)
+static void KeepScene(Boolean spare)
 {
 	/* after a shot on the map, the kept copy holds the map (see PlayAct): the
 	 * first frame of the new scene, golfer and all, fades in over it (PlayFrame) */
-	if (gFadeBack && gBgPic == PIC_MAP && ScreenFadeFrom(ScreenKept(), ViewRows())) gFadeHold = true;
+	if (gFadeBack && gBgPic == PIC_MAP) {
+		gFadeHold = ScreenFadeFrom(ScreenKept(), ViewRows());
+		if (!gFadeHold && spare) {
+			ScreenSpareDrop();
+			spare = false;
+			gFadeHold = ScreenFadeFrom(ScreenKept(), ViewRows());
+		}
+	}
 	gFadeBack = false;
+	if (spare && ScreenKeepSpare()) {
+		gBgPic = PIC_SCENE;
+		return;
+	}
 	ScreenSpareDrop();
 	gBgPic = ScreenKeep() ? PIC_SCENE : 0;
 }
@@ -1193,7 +1290,7 @@ static void MapStep(URect *c)
 static void PlayFrame(void)
 {
 	int f;
-	Boolean panels = false;
+	Boolean panels = false, faded = false;
 #ifdef DEBUG
 	UInt8 st = gPlay.state;
 	UInt32 t0 = TimGetTicks();
@@ -1238,7 +1335,10 @@ static void PlayFrame(void)
 		/* the first frame after a shot on the map fades in */
 		gFadeHold = false;
 		if (f & (PL_BACK | PL_CARD | PL_MAP | PL_NEXT | PL_SCENE | PL_RENDER)) ScreenFadeDrop();
-		else Fade();
+		else {
+			Fade();
+			faded = true;
+		}
 	}
 	if (f & (PL_BACK | PL_CARD | PL_MAP | PL_NEXT | PL_SCENE)) {
 		/* the end of a hole, a computer golfer's turn on the map, or the range's next ball */
@@ -1253,8 +1353,14 @@ static void PlayFrame(void)
 	}
 	if (gS.fullview) panels = DanaDraw();
 	if ((f & PL_DIRTY) || panels) {
-		if (gPlay.dirty.w > 0) ScreenShow(&gPlay.dirty);
-		if (gPlay.gdirty.w > 0) ScreenShow(&gPlay.gdirty);
+		if (faded) {
+			Int16 y = ViewRows();
+			URect strip = {0, y, gS.w, gS.h - y};
+			ScreenShow(&strip);
+		} else {
+			if (gPlay.dirty.w > 0) ScreenShow(&gPlay.dirty);
+			if (gPlay.gdirty.w > 0) ScreenShow(&gPlay.gdirty);
+		}
 		/* the meter's clock starts once its first frames are on the screen, and the late power press's grace once full shows */
 		if (gPlay.mfirst || gPlay.autoturn == 1) {
 			play_shown(&gPlay, NowMs());
@@ -1389,16 +1495,26 @@ static void ArtFree(MemHandle *hs, UInt16 *n)
 	*n = 0;
 }
 
+static void NextReleaseWork(void)
+{
+	ArtFree(gNextHs, &gNextN);
+	if (gNextWork) MemPtrFree(gNextWork);
+	gNextWork = NULL;
+}
+
 /* Lets go of the scene drawn ahead. */
 static void NextDrop(void)
 {
 	if (gNext == 1 || gNext == 2) ScreenSpareDrop();
-	ArtFree(gNextHs, &gNextN);
+	NextReleaseWork();
 	GolferFramesFree(&gNextGolf, gNextGolfH);
-	if (gNextWork) MemPtrFree(gNextWork);
 	if (gNextGolf.under) MemPtrFree(gNextGolf.under);
-	gNextWork = NULL;
 	gNextGolf.under = NULL;
+	if (gCardHole) {
+		HoleDrop(gCardHole);
+		MemPtrFree(gCardHole);
+		gCardHole = NULL;
+	}
 	gNext = 0;
 }
 
@@ -1410,55 +1526,70 @@ static void NextFail(void)
 	gNext = 3;
 }
 
-static void *SEC_DANA SceneWork(const Surface *s, const RenderView *v, Boolean *visual)
+static void *SEC_DANA SceneWork(const Surface *s, const RenderView *v, Boolean live)
 {
 	UInt32 size = v->green ? render_green_curves_size(s, v) : render_scene_visual_size(s, v);
 	void *work = size ? MemPtrNew(size) : NULL;
 
-	*visual = work != NULL;
-	return work ? work : MemPtrNew(render_work_size(s));
-}
-
-static int SEC_DANA SceneBegin(Surface *s, const RenderView *v, const RenderArt *art,
-                              void *work, RenderStats *stats, Boolean visual)
-{
-	if (visual) return render_scene_visual_begin(s, v, art, work, stats);
-	return render_scene_begin(s, v, art, work, stats);
-}
-
-static int SEC_DANA SceneDraw(Surface *s, const RenderView *v, const RenderArt *art,
-                             void *work, RenderStats *stats, Boolean visual)
-{
-	if (visual) return render_scene_visual(s, v, art, work, stats);
-	return render_scene(s, v, art, work, stats);
-}
-
-static void SEC_UI GreenDraw(Surface *s, const RenderView *v)
-{
-	UInt32 size = render_green_curves_size(s, v);
-	void *work = size ? MemPtrNew(size) : NULL;
-
-	if (work) {
-		int ok = render_green_curves_begin(s, v, work);
-		if (ok >= 0) render_green_step(work, NULL, 0);
-		MemPtrFree(work);
-		if (ok >= 0) return;
+	if (!work && live && size) {
+		dana_drop(&gDana);
+		ScreenDropKept();
+		ScreenFadeDrop();
+		gBgPic = 0;
+		gFadeHold = gFadeBack = false;
+		work = MemPtrNew(size);
 	}
-	work = v->hole->green_geometry ? MemPtrNew(render_green_compiled_size()) : NULL;
-	if (work) {
-		render_green_compiled(s, v, work);
-		MemPtrFree(work);
-	} else render_green(s, v);
+	return work;
+}
+
+static Boolean SEC_UI GreenDraw(Surface *s, const RenderView *v)
+{
+	void *work = SceneWork(s, v, true);
+	int ok;
+
+	if (!work) return false;
+	ok = render_green_curves_begin(s, v, work);
+	if (ok >= 0) render_green_step(work, NULL, 0);
+	MemPtrFree(work);
+	return ok >= 0;
+}
+
+static Boolean CardWaiting(void)
+{
+	return gPlaying && gS.bits && gPlay.view == PLAY_CARD && gPlay.card == CARD_HOLE &&
+	       !MODE_PRACTICE(gRound.mode) && !gRound.over && !gRound.pl[gRound.order[0]].cpu;
+}
+
+/* The first human tees off on hole-card advance. Use only locked course
+ * records here so the scorecard's hole and scratch grid stay available. */
+static Boolean SEC_CARD CardView(void)
+{
+	Hole *h;
+	UInt8 player = gRound.order[0];
+
+	if (gRound.pl[player].taken || gRound.pl[player].holed) return false;
+	gCardHole = MemPtrNew(sizeof(*gCardHole));
+	if (!gCardHole) return false;
+	MemSet(gCardHole, sizeof(*gCardHole), 0);
+	gCardRecord = rules_hole_number(&gRound, gRound.hole);
+	if (HoleRead(gCardHole, gCardRecord) != 1 || !gCardHole->grid_h) return false;
+	h = &gCardHole->hole;
+	gNextView.hole = h;
+	gNextView.grid = &gCardHole->grid;
+	gNextView.player = player;
+	gNextView.ball = h->tees[h->tee].pos;
+	gNextView.aim = vec2_angle(vec2_sub(h->aim, gNextView.ball));
+	gNextView.pin = gNextView.green = 0;
+	return true;
 }
 
 /* Starts the next scene on the spare surface, if it's known and there's
  * memory for it. */
-static void NextStart(void)
+static void NextStart(Boolean card)
 {
 	Surface *m;
 	UInt16 sc = gS.half ? 1 : gS.scale;
 	int ok;
-	Boolean visual;
 
 	/* a shot's map that wasn't used (NextRoom only lets this happen once the map is done with the spare) */
 	ScreenSpareDrop();
@@ -1466,14 +1597,19 @@ static void NextStart(void)
 #ifdef NO_AHEAD
 	return;    /* for timing against */
 #endif
-	if (!gS.bits || !play_next_view(&gPlay, &gNextView)) return;
+	if (card) {
+		if (!CardView()) {
+			NextFail();
+			return;
+		}
+	} else if (!gS.bits || !play_next_view(&gPlay, &gNextView)) return;
 	m = ScreenSpare();
 	if (!m) {
 		NextFail();
 		return;
 	}
 	if (!gNextView.green) gNextGolf.under = MemPtrNew(render_under_size(&gS));
-	gNextWork = gNextView.green || gNextGolf.under ? SceneWork(&gS, &gNextView, &visual) : NULL;
+	gNextWork = gNextView.green || gNextGolf.under ? SceneWork(m, &gNextView, false) : NULL;
 	gNextTicks = 0;
 #ifdef DEBUG
 	gNextFlyN = 0;
@@ -1485,8 +1621,7 @@ static void NextStart(void)
 	gNext = 1;
 	if (gNextView.green) {
 		/* the green view: no art or golfer */
-		ok = visual ? render_green_curves_begin(m, &gNextView, gNextWork) : -1;
-		if (ok < 0 && render_green_begin(m, &gNextView, gNextWork) < 0) NextFail();
+		if (render_green_curves_begin(m, &gNextView, gNextWork) < 0) NextFail();
 		return;
 	}
 	gNextGolf.w = 0;
@@ -1495,9 +1630,9 @@ static void NextStart(void)
 	gNextArt.golfer = &gNextGolf;
 #ifdef DEBUG
 	render_clock(Ticks);
-	ok = SceneBegin(m, &gNextView, &gNextArt, gNextWork, &gStats, visual);
+	ok = render_scene_visual_begin(m, &gNextView, &gNextArt, gNextWork, &gStats);
 #else
-	ok = SceneBegin(m, &gNextView, &gNextArt, gNextWork, NULL, visual);
+	ok = render_scene_visual_begin(m, &gNextView, &gNextArt, gNextWork, NULL);
 #endif
 	if (ok < 0) NextFail();
 }
@@ -1517,7 +1652,10 @@ static UInt8 NextRoom(void)
 static void NextSlice(UInt16 ms)
 {
 	UInt32 t0 = TimGetTicks(), until = t0 + (UInt32)ms * SysTicksPerSecond() / 1000;
-	if ((gNextView.green ? render_green_step(gNextWork, Ticks, until) : render_scene_step(gNextWork, Ticks, until)) == 1) gNext = 2;
+	if ((gNextView.green ? render_green_step(gNextWork, Ticks, until) : render_scene_step(gNextWork, Ticks, until)) == 1) {
+		gNext = 2;
+		NextReleaseWork();
+	}
 	gNextTicks += TimGetTicks() - t0;
 #ifdef DEBUG
 	gLastPrep = TimGetTicks() - t0;
@@ -1530,7 +1668,8 @@ static void NextSlice(UInt16 ms)
  * slices for a key, a tap or anything else that comes in. */
 static void NextPrep(void)
 {
-	UInt8 room = NextRoom();
+	Boolean card = CardWaiting();
+	UInt8 room = card ? 1 : NextRoom();
 
 #ifdef DEBUG
 	if (gPlay.state == PS_RESULT && !gStopTicks) {
@@ -1543,7 +1682,7 @@ static void NextPrep(void)
 		if (gNext && gPlay.state != PS_FLY) NextDrop();
 		return;
 	}
-	if (!gNext) NextStart();
+	if (!gNext) NextStart(card);
 	if (gNext != 1) return;
 	if (!ScreenSpareHas()) {
 		/* the spare went (a resize) */
@@ -1552,13 +1691,25 @@ static void NextPrep(void)
 		return;
 	}
 	if (room == 1) {
-		NextSlice(gPlay.view == PLAY_MAP ? NEXT_MAP_MS : PREP_MS);
+		NextSlice(card ? 20 : gPlay.view == PLAY_MAP ? NEXT_MAP_MS : PREP_MS);
 		return;
 	}
 	do {
 		Sound();
 		NextSlice(PREP_MS);
 	} while (gNext == 1 && !EvtSysEventAvail(true) && !EvtEventAvail());
+}
+
+static Boolean SEC_CARD CardTake(UInt16 n)
+{
+	if (!gCardHole || gCardRecord != n || (gNext != 1 && gNext != 2) || !ScreenSpareHas()) return false;
+	HoleDrop(&gLive);
+	gLive = *gCardHole;
+	/* A partially drawn job still points into this slot until NextUse. */
+	gCardHole->hole_h = gCardHole->grid_h = gCardHole->mesh_h = NULL;
+	gNextView.hole = &gLive.hole;
+	gNextView.grid = &gLive.grid;
+	return true;
 }
 
 /* Puts the scene drawn ahead in gS, finishing it first if it isn't done,
@@ -1575,8 +1726,11 @@ static Boolean NextUse(void)
 		if (gNext) NextDrop();
 		return false;
 	}
-	if (gNext == 1 && a->green) render_green_step(gNextWork, NULL, 0);
-	else if (gNext == 1) render_scene_step(gNextWork, NULL, 0);
+	if (gNext == 1) {
+		if (a->green) render_green_step(gNextWork, NULL, 0);
+		else render_scene_step(gNextWork, NULL, 0);
+		NextReleaseWork();
+	}
 	if (gS.fullview) gfx_copy(&gS, m, 0, 0, gS.w, gS.h);
 	else MemMove(gS.bits, m->bits, (Int32)gS.rowBytes * gS.h);
 	gS.smooth_y1 = m->smooth_y1;
@@ -1584,6 +1738,7 @@ static Boolean NextUse(void)
 		/* the golfer and the pixels under him as drawn there */
 		u = gGolf.under;
 		GolferFramesFree(&gGolf, gGolfH);
+		gGolfScale = 0;
 		gGolf = gNextGolf;
 		gNextGolf.under = u;
 		MemMove(gGolfH, gNextGolfH, sizeof(gGolfH));
@@ -1599,9 +1754,21 @@ static Boolean NextUse(void)
 	gDrawTicks = gNextTicks;
 	gNextLeft = TimGetTicks() - t0;
 	gNextAhead = gNextTicks - gNextLeft;
+	gT[1] = TimGetTicks();
 #endif
+	KeepScene(true);
 	NextDrop();
 	return true;
+}
+
+static void SEC_DANA SceneFailed(void)
+{
+	gAnim = false;
+	SaveRound();
+	PlayEnd();
+	front_clubhouse(&gFront, LoadSave(&gRound, false) == LS_OK);
+	front_message(&gFront, "Can't draw course", "Free some memory\nand try again.");
+	Redraw();
 }
 
 /* Draws the scene with the art resources locked and the work memory
@@ -1613,10 +1780,10 @@ static void SceneRender(void)
 	MemHandle hs[ART_MAX];
 	UInt16 n = 0, sc;
 	void *work;
-	UInt32 fr;
-	Boolean ahead, visual;
+	Boolean ahead;
+	int ok = -1;
 #ifdef DEBUG
-	UInt32 t0;
+	UInt32 t0, fr;
 #endif
 
 	if (!gS.bits) {
@@ -1629,10 +1796,6 @@ static void SceneRender(void)
 	gT[0] = TimGetTicks();
 #endif
 	if (NextUse()) {
-#ifdef DEBUG
-		gT[1] = TimGetTicks();
-#endif
-		KeepScene();
 #ifdef DEBUG
 		gT[2] = TimGetTicks();
 #endif
@@ -1659,12 +1822,15 @@ static void SceneRender(void)
 #ifdef DEBUG
 		t0 = TimGetTicks();
 #endif
-		GreenDraw(&gS, &gPlay.rv);
+		if (!GreenDraw(&gS, &gPlay.rv)) {
+			SceneFailed();
+			return;
+		}
 #ifdef DEBUG
 		gDrawTicks = TimGetTicks() - t0;
 		MemSet(&gStats, sizeof(gStats), 0);
 #endif
-		KeepScene();
+		KeepScene(false);
 		EvtFlushPenQueue();
 		EvtFlushKeyQueue();
 		gate_flush(&gGate);
@@ -1680,29 +1846,33 @@ static void SceneRender(void)
 	/* the golfer and backdrop for the scale the scene is drawn at */
 	sc = gS.half ? 1 : gS.scale;
 	ArtLock(&art, hs, &n, sc, gPlay.rv.hole);
-	GolferLock(&gGolf, gGolfH, sc, gPlay.rv.player);
+	LiveGolfer(sc, gPlay.rv.player);
 	GolferUnder();
 	art.golfer = &gGolf;
 	gPlay.golf = &gGolf;
 	gGolf.w = 0;    /* no golfer box until render_scene sets one */
-	work = SceneWork(&gS, &gPlay.rv, &visual);
+	work = SceneWork(&gS, &gPlay.rv, true);
+#ifdef DEBUG
 	fr = FreeHeap();
 	if (fr < gMinFree || !gMinFree) gMinFree = fr;
+#endif
 	if (work) {
 #ifdef DEBUG
 		render_clock(Ticks);
 		t0 = TimGetTicks();
-		SceneDraw(&gS, &gPlay.rv, &art, work, &gStats, visual);
+		ok = render_scene_visual(&gS, &gPlay.rv, &art, work, &gStats);
 		gDrawTicks = TimGetTicks() - t0;
 #else
-		SceneDraw(&gS, &gPlay.rv, &art, work, NULL, visual);
+		ok = render_scene_visual(&gS, &gPlay.rv, &art, work, NULL);
 #endif
 		MemPtrFree(work);
-	} else {
-		gfx_fill(&gS, 0, 0, gS.w, gS.h, UIC_BLACK);
 	}
 	ArtFree(hs, &n);
-	KeepScene();
+	if (ok < 0) {
+		SceneFailed();
+		return;
+	}
+	KeepScene(false);
 	/* taps and keys made while it drew are dropped */
 	EvtFlushPenQueue();
 	EvtFlushKeyQueue();
@@ -1737,7 +1907,8 @@ static void PlayAct(int f)
 	/* sounds start before any long draw */
 	Sound();
 	/* anything but the next scene: no scene drawn ahead is wanted, and the next result looks again */
-	if (gNext && (f & (PL_BACK | PL_NEXT | PL_CARD | PL_MAP | PL_SCENE))) NextDrop();
+	if (gNext && (f & (PL_BACK | PL_NEXT | PL_CARD | PL_MAP | PL_SCENE)) &&
+	    !(gCardHole && ((f & PL_NEXT) || ((f & PL_CARD) && CardWaiting())))) NextDrop();
 	if (!gS.bits) return;
 	if (f & (PL_BACK | PL_NEXT | PL_CARD)) gFadeBack = false;
 	if (f & PL_BACK) {
@@ -1748,17 +1919,24 @@ static void PlayAct(int f)
 		front_clubhouse(&gFront, !gRound.over);
 		Redraw();
 	} else if (f & PL_NEXT) {
+		UInt16 n = rules_hole_number(&gRound, gRound.hole);
+		Boolean ready = CardTake(n);
+
 		gAnim = false;
-		if (!LoadHole(rules_hole_number(&gRound, gRound.hole))) {
+		gFail = PF_MEM;
+		if (!ready && gNext) NextDrop();
+		if (!ready && !LoadHole(n)) {
 			PlayEnd();
-			front_clubhouse(&gFront, 0);
-			front_message(&gFront, "No hole", "The course can't\nbe read.");
+			front_clubhouse(&gFront, gFail == PF_UPDATE && LoadSave(&gRound, false) == LS_OK);
+			if (gFail == PF_UPDATE)
+				front_message(&gFront, "Update course", "Install the latest\ncourse PDB.");
+			else front_message(&gFront, "No hole", "The course can't\nbe read.");
 			Redraw();
 			return;
 		}
 		if (gRound.tour_stage == TOUR_SECOND && !gRound.hole) SaveRound();
 		dana_reset(&gDana);
-		play_start(&gPlay, &gHole, &gGrid, &gRound);
+		play_start(&gPlay, &gLive.hole, &gLive.grid, &gRound);
 		PlayBegin();
 	} else if (f & PL_CARD) {
 		/* over the kept scene; saved when it opens at the end of a hole */
@@ -1899,8 +2077,14 @@ static void Act(int r)
 	if (r & FR_GIMMES) PrefSetAppPreferences(kCreator, kGimmePref, 1, &gFront.holeout, 1, true);
 	if (r & FR_PLAYER) PlayerSave();
 	if (r & (FR_PLAY | FR_CONTINUE)) {
-		if (PlayStart((r & FR_CONTINUE) != 0)) {
+		Boolean resume = (r & FR_CONTINUE) != 0;
+
+		if (PlayStart(resume)) {
+			Boolean save = !resume && gPlay.view == PLAY_SCENE && !gPlay.cpu;
+
 			PlayBegin();
+			/* Draw the first tee before writing its save. */
+			if (save) SaveFirstTee();
 			return;
 		}
 		PlayEnd();
@@ -1914,6 +2098,9 @@ static void Act(int r)
 			StrCat(gMsg, gRound.course + StrLen(kCoursePre));
 			front_clubhouse(&gFront, 1);
 			front_message(&gFront, "Course missing", gMsg);
+		} else if (gFail == PF_UPDATE) {
+			front_clubhouse(&gFront, LoadSave(&gRound, false) == LS_OK);
+			front_message(&gFront, "Update course", "Install the latest\ncourse PDB.");
 		} else if (gFail == PF_NOCOURSE) {
 			front_clubhouse(&gFront, LoadSave(&gRound, false) == LS_OK);
 			front_message(&gFront, "No course", "Install a course\nPDB and try again.");
@@ -2085,9 +2272,12 @@ static void EventLoop(void)
 	do {
 		/* a tick between frames while the meter or the ball moves, or until the next step of a sound */
 		Sound();
-		EvtGetEvent(&e, gAnim ? 1 : AudioWait());
+		EvtGetEvent(&e, gAnim || (gNext < 2 && CardWaiting()) ? 1 : AudioWait());
 		if (gAnim) PlayFrame();
-		if (e.eType == nilEvent && gPlaying) continue;
+		if (e.eType == nilEvent && gPlaying) {
+			if (gNext < 2 && CardWaiting()) NextPrep();
+			continue;
+		}
 		/* with no screen buffers only the system gets keys */
 		if (e.eType == keyDownEvent && !gS.bits) {
 			SysHandleEvent(&e);
@@ -2199,7 +2389,9 @@ UInt32 PilotMain(UInt16 cmd, void *cmdPBP, UInt16 launchFlags)
 		FrmAlert(RomIncompatibleAlert);
 		return sysErrRomIncompatible;
 	}
+#ifdef DEBUG
 	gHeapStart = FreeHeap();
+#endif
 	if (ScreenOpen() != errNone) {
 		ScreenClose();
 		FrmAlert(ScreenAlert);

@@ -292,11 +292,22 @@ static void header_versions(const uint8_t *rec, uint32_t len)
 static int terrain_record(const Pdb *db, const Course *c, Hole *h, int k)
 {
 	int dir = c->hole_count + 1;
-	uint16_t detailed, compact;
+	uint16_t detailed, compact, baked;
 
 	if (db->count <= dir) return 0;
 	detailed = course_terrain_record(db->rec[dir], db->len[dir], c->hole_count, db->count, k, 0);
 	compact = course_terrain_record(db->rec[dir], db->len[dir], c->hole_count, db->count, k, 1);
+	baked = course_terrain_record(db->rec[dir], db->len[dir], c->hole_count, db->count, k, COURSE_TERRAIN_GRID);
+	if (baked) {
+		SurfaceGrid g;
+		uint8_t row[SURF_ROW_MAX];
+		surface_size(h, &g);
+		rows_seen = rows_bad = 0;
+		surface_raster(h, row, put_row, &g);
+		CHECK(!rows_bad && rows_seen == g.h);
+		CHECK(db->len[baked] == (uint32_t)g.stride * g.h &&
+		      memcmp(db->rec[baked], grid, db->len[baked]) == 0);
+	}
 	if (!detailed) return 0;
 	CHECK(terrain_mesh_parse(&h->terrain_mesh, h, db->rec[detailed], db->len[detailed]));
 	if (compact == detailed) return 1;
@@ -340,7 +351,10 @@ static int any_course(const char *pa, const char *pb)
 			CHECK(surface_at(&g, h.tees[i].pos.x, h.tees[i].pos.y) == SURF_TEE);
 		CHECK(surface_at(&g, h.aim.x, h.aim.y) != SURF_OOB);
 	}
-	CHECK(a.count == c.hole_count + 1 + (meshes ? 1 + meshes : 0));
+	if (a.count > c.hole_count + 1 && a.len[c.hole_count + 1] >= 4 &&
+	    memcmp(a.rec[c.hole_count + 1], "MSH3", 4) == 0)
+		CHECK(a.count == 2 * c.hole_count + 2 + meshes);
+	else CHECK(a.count == c.hole_count + 1 + (meshes ? 1 + meshes : 0));
 	printf("%s: %d holes, %u bytes in hole records, %d terrain meshes\n", a.name, c.hole_count, total, meshes);
 	for (i = 0; i < a.count; i++) free(a.rec[i]);
 	for (i = 0; i < b.count; i++) free(b.rec[i]);
@@ -352,6 +366,15 @@ static void terrain_directory(void)
 {
 	const uint8_t legacy[] = {'M','S','H','1', 0,4, 0,5};
 	uint8_t pair[] = {'M','S','H','2', 0,4, 0,5, 0,6, 0,0};
+	uint8_t packed[] = {'M','S','H','3', 0,4, 0,5, 0,6, 0,7, 0,0, 0,8};
+
+	CHECK(course_terrain_record(packed, sizeof packed, 2, 9, 1, COURSE_TERRAIN_COMPACT) == 5);
+	CHECK(course_terrain_record(packed, sizeof packed, 2, 9, 2, COURSE_TERRAIN_COMPACT) == 7);
+	CHECK(course_terrain_record(packed, sizeof packed, 2, 9, 1, COURSE_TERRAIN_GRID) == 6);
+	CHECK(course_terrain_record(packed, sizeof packed, 2, 9, 2, COURSE_TERRAIN_GRID) == 8);
+	CHECK(!course_terrain_record(pair, sizeof pair, 2, 7, 1, COURSE_TERRAIN_GRID));
+	packed[9] = 0;
+	CHECK(!course_terrain_record(packed, sizeof packed, 2, 9, 2, COURSE_TERRAIN_COMPACT));
 
 	CHECK(course_terrain_record(legacy, sizeof legacy, 2, 6, 2, 1) == 5);
 	CHECK(course_terrain_record(pair, sizeof pair, 2, 7, 1, 0) == 4);
@@ -595,7 +618,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	CHECK(strcmp(a.name, "Par386 Test") == 0);
-	CHECK(a.count == 4 || a.count == 6 || a.count == 7);
+	CHECK(a.count == 14);
 	terrain_directory();
 
 	/* Round trip through the dump. */
@@ -613,7 +636,7 @@ int main(int argc, char **argv)
 
 	/* Hole fields. */
 	CHECK(hole_parse(&h, a.rec[1], a.len[1]) == HOLE_OK);
-	if (a.count > 4) CHECK(terrain_record(&a, &c, &h, 1) == a.count - 5);
+	CHECK(h.putting_curves && terrain_record(&a, &c, &h, 1) == 2);
 	CHECK(h.number == 1 && h.par == 4);
 	CHECK(h.width == 200 && h.length == 440);
 	CHECK(h.hm_w == 32 && h.hm_h == 64 && h.hm_shift == 3);
@@ -694,6 +717,7 @@ int main(int argc, char **argv)
 	/* Holes 2 and 3, made from hole 1 with "from": a par 3 over the pond from
 	 * its own tee, and a par 5 on past the old green, now fairway. */
 	CHECK(hole_parse(&h, a.rec[2], a.len[2]) == HOLE_OK);
+	CHECK(h.putting_curves && terrain_record(&a, &c, &h, 2) == 2);
 	CHECK(h.number == 2 && h.par == 3 && strcmp(h.name, "Pond Carry") == 0);
 	CHECK(h.tee_count == 3 && h.tees[0].pos.x == Y(150) && h.tees[0].pos.y == Y(207));
 	CHECK(h.tees[0].yards > 185 && h.tees[0].yards < 205);
@@ -705,6 +729,7 @@ int main(int argc, char **argv)
 	CHECK(rows_bad == 0);
 	CHECK(at(&g, 150, 207) == SURF_TEE && at(&g, 140, 405) == SURF_GREEN && at(&g, 135, 235) == SURF_WATER);
 	CHECK(hole_parse(&h, a.rec[3], a.len[3]) == HOLE_OK);
+	CHECK(h.putting_curves && terrain_record(&a, &c, &h, 3) == 2);
 	CHECK(h.number == 3 && h.par == 5 && h.length == 500 && h.tees[0].pos.y == Y(12));
 	CHECK(h.object_count == 19);
 	surface_size(&h, &g);
