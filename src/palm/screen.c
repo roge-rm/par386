@@ -11,6 +11,7 @@
  * a silk area that can be collapsed (the Silk library or Virtual Silk) do
  * the same; Garmin iQues use the same PINS calls as Palm. */
 #define ALLOW_ACCESS_TO_INTERNALS_OF_WINDOWS
+#define ALLOW_ACCESS_TO_INTERNALS_OF_BITMAPS
 #include <PalmOS.h>
 #include "screen.h"
 #include "dana.h"
@@ -145,13 +146,28 @@ static WinHandle NewWin(Int16 w, Int16 h)
 	return WinCreateOffscreenWindow(w, h, screenFormat, &err);
 }
 
+/* Palm OS 3.5 has bitmap headers but no dimension or depth traps. */
+static UInt16 BitmapRowBytes(BitmapType *b)
+{
+	Coord w, h;
+	UInt16 rb;
+
+	if (!gOS5) return b->rowBytes;
+	BmpGetDimensions(b, &w, &h, &rb);
+	return rb;
+}
+
+static UInt8 BitmapDepth(BitmapType *b)
+{
+	return gOS5 ? BmpGetBitDepth(b) : b->pixelSize;
+}
+
 /* A window's pixels and bytes a row. */
 static UInt8 *WinBits(WinHandle win, UInt16 *rb)
 {
 	if (gRom35) {
 		BitmapType *b = WinGetBitmap(win);
-		Coord w, h;
-		BmpGetDimensions(b, &w, &h, rb);
+		*rb = BitmapRowBytes(b);
 		return BmpGetBits(b);
 	} else {
 		WindowType *wp = (WindowType *)win;
@@ -251,17 +267,14 @@ static Err Make(void)
 	gOff = NewWin(w, h);
 	if (!gOff) return 1;
 	/* an OS 5 window can stay at the hardware's depth after a lower one is set */
-	if (gRom35 && !gSony && BmpGetBitDepth(WinGetBitmap(gOff)) != (g16 ? 16 : gDepth)) return 3;
+	if (gRom35 && !gSony && BitmapDepth(WinGetBitmap(gOff)) != (g16 ? 16 : gDepth)) return 3;
 	if (g16) {
 		gOffBits = WinBits(gOff, &gOffRb);
 		gLE = Swapped();
 		gS8 = BmpCreate(w, h, 8, NULL, &err);
 		if (!gS8) return 1;
 		gS.bits = BmpGetBits(gS8);
-		{
-			Coord bw, bh;
-			BmpGetDimensions(gS8, &bw, &bh, &rb);
-		}
+		rb = BitmapRowBytes(gS8);
 	} else {
 		gS.bits = WinBits(gOff, &rb);
 	}
@@ -680,8 +693,7 @@ Boolean ScreenKeep(void)
 		if (g16) {
 			gBg8 = BmpCreate(gS.w, gS.h, 8, NULL, &err);
 			if (gBg8) {
-				Coord bw, bh;
-				BmpGetDimensions(gBg8, &bw, &bh, &rb);
+				rb = BitmapRowBytes(gBg8);
 				gBgS.bits = BmpGetBits(gBg8);
 			}
 		} else {
@@ -818,8 +830,7 @@ Surface *ScreenSpare(void)
 	if (g16) {
 		gSp8 = BmpCreate(gS.w, gS.h, 8, NULL, &err);
 		if (gSp8) {
-			Coord bw, bh;
-			BmpGetDimensions(gSp8, &bw, &bh, &rb);
+			rb = BitmapRowBytes(gSp8);
 			gSpS.bits = BmpGetBits(gSp8);
 		}
 	} else {

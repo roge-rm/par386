@@ -710,6 +710,55 @@ static void surface2(Surface *s)
 	gfx_init(s);
 }
 
+static uint8_t packed_pixel(const Surface *s, int16_t x, int16_t y)
+{
+	int16_t bit = x * s->depth;
+	return (s->bits[y * s->rowBytes + bit / 8] >> (8 - s->depth - bit % 8)) & ((1 << s->depth) - 1);
+}
+
+static void return_marker_test(const Hole *h, const SurfaceGrid *g)
+{
+	static Play p;
+	uint8_t depth;
+
+	for (depth = 1; depth <= 4; depth *= 2) {
+		Surface s = {0};
+		int16_t x, old, y, i;
+
+		s.w = s.h = 160;
+		s.scale = 1;
+		s.depth = depth;
+		s.rowBytes = s.w * depth / 8;
+		s.bits = calloc(s.rowBytes, s.h);
+		gfx_init(&s);
+		play_init(&p, h, g, 7);
+		play_frame(&p, &s, NULL, 0);
+		CHECK(play_key(&p, KEY_SELECT, 1000) & PL_ANIM);
+		play_frame(&p, &s, NULL, 1000);
+		play_frame(&p, &s, NULL, 1800);
+		old = p.mshown;
+		y = p.dirty.y;
+		CHECK(packed_pixel(&s, old - 4, y) == s.pa[UIC_BLACK]);
+		CHECK(play_key(&p, KEY_SELECT, 1800) & PL_ANIM);
+		CHECK(p.state == PS_DOWN);
+		CHECK(play_frame(&p, &s, NULL, 1800) & PL_DIRTY);
+		CHECK(p.mshown == old && p.dirty.x <= old - 4);
+		CHECK(packed_pixel(&s, old - 4, y) == s.pa[UIC_WHITE]);
+
+		CHECK(play_frame(&p, &s, NULL, 1900) & PL_DIRTY);
+		x = p.mshown;
+		CHECK(x < old - 7);
+		CHECK(p.dirty.x <= x - 4 && p.dirty.x + p.dirty.w > old + 2);
+		CHECK(packed_pixel(&s, old - 4, y) == s.pa[UIC_BLACK]);
+		for (i = -4; i <= 2; i++) {
+			CHECK(packed_pixel(&s, x + i, y) == s.pa[UIC_WHITE]);
+			CHECK(packed_pixel(&s, x + i, y + 4) ==
+			      s.pa[i >= -2 && i <= 0 ? UIC_BLACK : UIC_WHITE]);
+		}
+		free(s.bits);
+	}
+}
+
 /* The longer landscape meter changes the marked column, not the click timing. */
 static void landscape_meter_test(const Hole *h, const SurfaceGrid *g)
 {
@@ -728,7 +777,8 @@ static void landscape_meter_test(const Hole *h, const SurfaceGrid *g)
 	gfx_init(&s);
 	play_init(&p, h, g, 7);
 	play_frame(&p, &s, NULL, 0);
-	CHECK(play_tap(&p, 20, 151, start) & PL_ANIM);
+	CHECK(play_tap(&p, 20, 151, start) == 0 && p.state == PS_AIM);
+	CHECK(play_tap(&p, 165, 151, start) & PL_ANIM);
 	CHECK(p.state == PS_UP);
 	play_frame(&p, &s, NULL, start + power);
 	width = s.lw - 2 * MTR_X;
@@ -1473,6 +1523,7 @@ int main(int argc, char **argv)
 	aim_marker_test(&h, &g, 0);
 	meter_tests(&h, &g);
 	landscape_meter_test(&h, &g);
+	return_marker_test(&h, &g);
 	press_tests(&h, &g);
 	green_tests(&h, &g);
 	shotmap_tests(&h, &g);

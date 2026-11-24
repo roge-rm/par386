@@ -55,6 +55,8 @@ Install `Par386.prc` and at least one course file (`Par386-*.pdb`) from the same
 
 The 0.11.0 build uses about 1.3 MB, and each bundled course uses about 1.3 to 1.9 MB. This build requires a terrain mesh and putting contours for each hole. The current course packs also include precomputed lie grids for faster loading. If you see **Update course**, install the current course PDB.
 
+On a Palm m125, put `Par386.prc` in `/PALM/Launcher/` on a FAT16 SD card and open it from the card category. The launcher needs enough free memory on the handheld to copy the app. If you see **Can't Copy** on a larger partition, install the [Palm File Manager Update](https://palmdb.net/app/palm-file-manager-update) in handheld memory and run SD Installer. A 32 MiB FAT16 partition also works in Frond on an unpatched m125.
+
 You can also copy course files to an SD card in `/PALM/Programs/Par386/`, `/PALM/Launcher/` or the root of the card. A card course is copied into Palm memory while you play it, so leave room for the whole course.
 
 The nine courses are Auld Kirk, Banksia Heath, Bracken Mere, Carrig Head, Cascade Springs, Crocodile Bend, Falesia Grove, Saffron Dunes and Sakura Bay. You can have up to 12 courses in the picker.

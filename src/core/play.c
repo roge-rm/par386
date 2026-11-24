@@ -14,6 +14,7 @@ enum { HEARD_LAND = 1, HEARD_LIP = 2 };
 #define FLY_MS    42    /* a path point in the air: 1.5 times real time */
 #define ROLL_MS   62    /* a point on the ground: twice real time */
 #define RESULT_MS 1500
+#define CUP_DROP_MS 100    /* each of the two frames as the ball drops */
 #define AIM_STEP  182   /* a degree */
 #define MAP_AIM_STEP 910  /* five degrees */
 #define AIM_EDGE  56    /* the marker this far off the centre draws the scene again */
@@ -34,10 +35,9 @@ enum { HEARD_LAND = 1, HEARD_LIP = 2 };
 #define ROSE_W    24                /* the wind rose, both rows high, at the right */
 #define ROSE_X    (s->lw - 2 - ROSE_W)
 #define LIE_X     2
-#define LIE_W     BOX_W(8)
-#define ACTION_X  2
-#define ACTION_W  BOX_W(5)
-#define AIM_LIE_X (ACTION_X + ACTION_W)
+#define AIM_WIND_W 24
+#define AIM_WIND_X (s->lw - 2 - AIM_WIND_W)
+#define ACTION_X  ((s->lw - ACTION_W) / 2)
 #define CLUB_PICK_X  8
 #define CLUB_PICK_Y  29
 #define CLUB_PICK_W  72
@@ -48,11 +48,11 @@ enum { HEARD_LAND = 1, HEARD_LIP = 2 };
 #define WIDE_CLUB_Y    36
 #define WIDE_CLUB_ROW  22
 #define WIDE_CLUB_H    17
-#define MAP_W     BOX_W(3)          /* the Map button, left of the rose */
-#define MAP_X     (ROSE_X - 1 - MAP_W)
-#define AIM_MAP_X (p->club == CLUB_PT ? s->lw - 2 - MAP_W : MAP_X)
-#define REPEAT_W  (BOX_W(6) + 6)
-#define REPEAT_X  (AIM_MAP_X - 1 - REPEAT_W)
+#define MAP_W     BOX_W(3)
+#define AIM_MAP_X (s->lw - 2 - MAP_W)
+#define REPEAT_W  (BOX_W(6) + 5)
+#define REPEAT_X  (p->club == CLUB_PT ? s->lw - 2 - REPEAT_W : 1)
+#define REPEAT_Y  (p->club == CLUB_PT ? ROW_A : ROW_B)
 #define CARD_W    BOX_W(4)          /* the Card button on the map's panel */
 #define CARD_X    (s->lw - 2 - CARD_W)
 #define MAP_CARD_X (ROSE_X - 1 - CARD_W)
@@ -78,6 +78,17 @@ static inline int SEC_UI landscape(const Surface *s)
 {
 	return !s->fullview && s->scale == 2 && s->lw >= 224 && s->lw > s->lh;
 }
+
+/* Leave room for lie and standing, or for carry distances on landscape. */
+static inline int16_t SEC_UI action_width(const Surface *s)
+{
+	int16_t w = s->lw * 11 / 25;
+	int16_t fit = s->lw - 2 * ((landscape(s) ? BOX_W(8) : 2 * BOX_W(3) + 1) + 3);
+	w -= w & 1;
+	return w < fit ? w : fit;
+}
+
+#define ACTION_W  action_width(s)
 
 static vec2 SEC_UI pin(const Play *p)
 {
@@ -928,14 +939,10 @@ int play_tap(Play *p, int16_t x, int16_t y, uint32_t now)
 			p->csel = p->club;
 			return PL_CARD;
 		}
-		if (practice_green(p)) {
-			if (y >= ROW_B && y < ROW_B + ROW_H) {
-				if (x >= REPEAT_X && x < REPEAT_X + REPEAT_W) return play_key(p, KEY_CARD, now);
-				if (x >= AIM_MAP_X && x < AIM_MAP_X + MAP_W) return play_key(p, KEY_MAP, now);
-			}
-		} else {
-			if (on_box(x, y, AIM_MAP_X, ROW_B, MAP_W)) return play_key(p, KEY_OTHER, now);
-		}
+		if (practice_green(p) && on_box(x, y, REPEAT_X, REPEAT_Y, REPEAT_W))
+			return play_key(p, KEY_CARD, now);
+		if (on_box(x, y, AIM_MAP_X, ROW_B, MAP_W))
+			return play_key(p, practice_green(p) ? KEY_MAP : KEY_OTHER, now);
 		if (p->club != CLUB_PT && on_box(x, y, SHAPE_X, ROW_A, SHAPE_W)) return play_key(p, KEY_SHAPE, now);
 		return 0;
 	}
@@ -1168,7 +1175,7 @@ static void SEC_MENU ball_at(Play *p, Surface *s, uint8_t save, fixed x, fixed y
 }
 
 /* The ball at path point shown, with its recent airborne trail. */
-static void SEC_MENU draw_ball(Play *p, Surface *s, uint8_t save)
+static void SEC_MENU draw_ball(Play *p, Surface *s, uint8_t save, uint32_t now)
 {
 	int16_t k = p->shown, j, sx, sy, u = s->scale;
 	uint8_t grey = s->depth >= 8;
@@ -1191,7 +1198,20 @@ static void SEC_MENU draw_ball(Play *p, Surface *s, uint8_t save)
 			landing_ring(s, sx, sy);
 		}
 	}
-	if (p->shot.result == SHOT_HOLED && k == p->shot.n - 1) return;
+	if (p->shot.result == SHOT_HOLED && k == p->shot.n - 1) {
+		vec2 cup;
+		if (p->state != PS_FLY || p->club != CLUB_PT) return;
+		cup = pin(p);
+		z = hole_height(p->rv.hole, cup.x, cup.y);
+		if (now - p->t0 < CUP_DROP_MS) {
+			ball_at(p, s, save, cup.x, cup.y, z);
+		} else if (render_point(&p->cam, cup.x, cup.y, z, &sx, &sy, &depth)) {
+			flight_patch(p, s, save, sx - u, sy - u, 3 * u, 2 * u);
+			over(s, sx, sy - u, u, u, UIC_WHITE);
+			over(s, sx - u, sy, 3 * u, u, UIC_WHITE);
+		}
+		return;
+	}
 	path_pt(p, k, &x, &y, &z);
 	ball_at(p, s, save, x, y, z);
 }
@@ -1253,15 +1273,15 @@ static const uint16_t arrows[2][9] = {
 };
 
 /* Whether arrow d (0 up, then on round to the left in eighths) has row r, column c. */
-static int SEC_UI arrow_bit(uint8_t d, int16_t r, int16_t c)
+static int SEC_RENDER arrow_bit(const uint16_t *rows, uint8_t d, int16_t r, int16_t c, int16_t edge)
 {
 	uint8_t k;
 	for (k = d >> 1; k; k--) {
 		int16_t t = r;
 		r = c;
-		c = 8 - t;
+		c = edge - t;
 	}
-	return (arrows[d & 1][r] >> (8 - c)) & 1;
+	return (rows[r] >> (edge - c)) & 1;
 }
 
 /* Up is along the shot in the scene and along the hole's y axis on the map. */
@@ -1288,10 +1308,32 @@ static void SEC_UI rose(const Play *p, Surface *s, uint8_t map)
 		uint8_t d = (uint8_t)((((uint16_t)(p->wind_dir - up) + 4096) >> 13) & 7);
 		for (j = 0; j < 9; j++)
 			for (i = 0; i < 9; i++)
-				if (arrow_bit(d, j, i)) ui_fill(s, x + 8 + i, y + 3 + j, 1, 1, UIC_TEXT_HI);
+				if (arrow_bit(arrows[d & 1], d, j, i, 8)) ui_fill(s, x + 8 + i, y + 3 + j, 1, 1, UIC_TEXT_HI);
 	}
 	n = play_num(t, p->wind_mph);
 	box_text(s, x, y + 12, ROSE_W, t, n, 0, UIC_PAPER);
+}
+
+static const uint16_t small_arrows[2][5] = {
+	{ 0x04, 0x0E, 0x15, 0x04, 0x04 },
+	{ 0x1C, 0x18, 0x14, 0x02, 0x01 },
+};
+
+/* One row of wind direction and speed leaves the right side free for Map. */
+static void SEC_RENDER address_wind(const Play *p, Surface *s)
+{
+	char t[4];
+	int16_t i, j, x = AIM_WIND_X;
+	uint8_t d = (uint8_t)((((uint16_t)(p->wind_dir - p->aim) + 4096) >> 13) & 7);
+
+	well(s, x, ROW_A, AIM_WIND_W, ROW_H);
+	if (p->wind_mph)
+		for (j = 0; j < 5; j++)
+			for (i = 0; i < 5; i++)
+				if (arrow_bit(small_arrows[d & 1], d, j, i, 4))
+					ui_fill(s, x + 1 + i, ROW_A + 3 + j, 1, 1, UIC_TEXT_HI);
+	i = play_num(t, p->wind_mph);
+	ui_text(s, x + AIM_WIND_W - 1 - i * UI_CHAR, ROW_A + 2, t, i, UIC_PAPER, -1);
 }
 
 /* The shot or the player, in room characters: "2nd" (or "Shot 2" if
@@ -1312,10 +1354,12 @@ static void SEC_UI who(const Play *p, char *t, int16_t room)
 		}
 		return;
 	}
-	if (room >= 7) add(t, &n, "Shot ");
-	n += play_num(t + n, p->stroke);
-	if (room < 7) {
+	if (room >= (p->stroke < 10 ? 6 : 7)) {
+		add(t, &n, "Shot ");
+		play_num(t + n, p->stroke);
+	} else {
 		uint8_t v = p->stroke;
+		n = play_num(t, v);
 		add(t, &n, v % 100 / 10 == 1 || v % 10 > 3 || v % 10 == 0 ? "th" : v % 10 == 1 ? "st" : v % 10 == 2 ? "nd" : "rd");
 	}
 }
@@ -1518,25 +1562,25 @@ static void SEC_MENU shot_result(Surface *s, const Play *p)
 	box_text(s, 2, ROW_B, s->lw - 4, p->msg2, -1, 0, UIC_PAPER);
 }
 
-static int SEC_MENU landscape_hazard(Surface *s, const Play *p, int16_t x)
+static int SEC_MENU landscape_hazard(Surface *s, const Play *p, int16_t w)
 {
 	HazardCarry h;
-	int16_t n = 0, w = AIM_MAP_X - 1 - x;
+	int16_t n = 0;
 	char t[20];
 
 	if (p->target_set) {
-		add(t, &n, "Target ");
+		add(t, &n, "Tgt ");
 		n += play_num(t + n, (uint32_t)((p->target_range + FIX_HALF) >> 16));
 	} else {
 		if (!hole_hazards(p->rv.hole, p->rv.grid, p->rv.ball, p->aim, &h, 1)) return 0;
-		add(t, &n, h.surface == SURF_WATER ? "Wtr " : h.surface == SURF_BUNKER ? "Bkr " : "O.B. ");
+		add(t, &n, h.surface == SURF_WATER ? "W" : h.surface == SURF_BUNKER ? "B" : "O");
 		n += play_num(t + n, h.entry);
 		t[n++] = h.clear ? '-' : '+';
 		if (h.clear) n += play_num(t + n, h.clear);
 	}
-	if (w >= BOX_W(n + 1)) t[n++] = 'y';
 	t[n] = 0;
-	readout(s, x, ROW_B, w, t, -1, UIC_PAPER);
+	if (w >= BOX_W(n + 1)) add(t, &n, "y");
+	readout(s, LIE_X, ROW_B, w, t, -1, UIC_PAPER);
 	return 1;
 }
 
@@ -1546,37 +1590,37 @@ static void SEC_MENU address_controls(Surface *s, const Play *p)
 		"Tee", "Fwy", "Cut", "Rgh", "D/R", "Snd", "Plg", "Frg", "Grn", "Pth"
 	};
 	char t[24];
-	uint8_t hazard = landscape(s) && p->club != CLUB_PT && (!p->round || p->round->players == 1);
-	int16_t w = s->lw >= 200 && !hazard ? LIE_W : BOX_W(3);
-	int16_t who_x = AIM_LIE_X + w, n, x;
-	const char *lie = w == LIE_W ? ball_lie_name(p->lie) : short_lie[p->lie];
+	int16_t left = ACTION_X - LIE_X - 1, x, n;
+	const char *lie = short_lie[p->lie];
 
 	button(s, ACTION_X, ROW_B, ACTION_W, p->club == CLUB_PT ? "Putt" : "Swing");
+	button(s, AIM_MAP_X, ROW_B, MAP_W, "Map");
 	if (practice_green(p)) {
+		int16_t y = REPEAT_Y;
 		x = REPEAT_X;
-		w = x - 1 - AIM_LIE_X;
-		if (w >= BOX_W(3)) readout(s, AIM_LIE_X, ROW_B, w, lie, -1, UIC_PAPER);
-		button(s, x, ROW_B, REPEAT_W, "");
-		box_text(s, x, ROW_B, BOX_W(6), "Repeat", 6, -1, UIC_INK);
-		x += BOX_W(6);
-		ui_fill(s, x, ROW_B + 3, 5, 5, UIC_INK);
-		ui_fill(s, x + 1, ROW_B + 4, 3, 3, UIC_WHITE);
+		button(s, x, y, REPEAT_W, "");
+		box_text(s, x, y, BOX_W(6), "Repeat", 6, -1, UIC_INK);
+		x += BOX_W(6) - 1;
+		ui_fill(s, x, y + 3, 5, 5, UIC_INK);
+		ui_fill(s, x + 1, y + 4, 3, 3, UIC_WHITE);
 		if (p->round->repeat) {
-			ui_fill(s, x + 1, ROW_B + 5, 1, 1, UIC_INK);
-			ui_fill(s, x + 2, ROW_B + 6, 1, 1, UIC_INK);
-			ui_fill(s, x + 3, ROW_B + 4, 1, 2, UIC_INK);
+			ui_fill(s, x + 1, y + 5, 1, 1, UIC_INK);
+			ui_fill(s, x + 2, y + 6, 1, 1, UIC_INK);
+			ui_fill(s, x + 3, y + 4, 1, 2, UIC_INK);
 		}
-		button(s, AIM_MAP_X, ROW_B, MAP_W, "Map");
+		if (p->club != CLUB_PT) return;
+	}
+	if (landscape(s) && p->club != CLUB_PT && (!p->round || p->round->players == 1) &&
+	    landscape_hazard(s, p, left)) {
+		x = AIM_MAP_X - BOX_W(3) - 1;
+		readout(s, x, ROW_B, BOX_W(3), lie, -1, UIC_PAPER);
 		return;
 	}
-	readout(s, AIM_LIE_X, ROW_B, w, lie, -1, UIC_PAPER);
-	n = AIM_MAP_X - 1 - who_x;
-	if (n > BOX_W(8)) n = BOX_W(8);
-	if (!hazard || !landscape_hazard(s, p, who_x)) {
-		standing(p, t, (n - 3) / UI_CHAR);
-		readout(s, who_x, ROW_B, n, t, 0, UIC_PAPER);
-	}
-	button(s, AIM_MAP_X, ROW_B, MAP_W, "Map");
+	readout(s, LIE_X, ROW_B, BOX_W(3), lie, -1, UIC_PAPER);
+	x = LIE_X + BOX_W(3) + 1;
+	n = left - BOX_W(3) - 1;
+	standing(p, t, (n - 3) / UI_CHAR);
+	readout(s, x, ROW_B, n, t, 0, UIC_PAPER);
 }
 
 static void SEC_MENU landscape_hole(Surface *s, const Play *p, int16_t end)
@@ -1606,10 +1650,13 @@ static void SEC_UI draw_strip(Play *p, Surface *s)
 	} else {
 		panel_club(s, p, address);
 		if (p->club == CLUB_PT) {
-			add(t, &n, "Cup ");
+			uint8_t repeat = address && practice_green(p);
+			int16_t end = repeat ? REPEAT_X - 1 : landscape(s) ? PIN_X + PIN_W : s->lw - 2;
+			if (!repeat) add(t, &n, "Cup ");
 			n += play_num(t + n, pin_feet(p));
-			add(t, &n, " ft");
-			readout(s, SHAPE_X, ROW_A, (landscape(s) ? PIN_X + PIN_W : s->lw - 2) - SHAPE_X, t, 1, UIC_TEXT_HI);
+			if (end - SHAPE_X >= BOX_W(n + 3)) add(t, &n, " ");
+			if (end - SHAPE_X >= BOX_W(n + 2)) add(t, &n, "ft");
+			readout(s, SHAPE_X, ROW_A, end - SHAPE_X, t, 1, UIC_TEXT_HI);
 		} else {
 			int16_t x = PIN_X;
 			if (address) button(s, SHAPE_X, ROW_A, SHAPE_W, ball_shape_name(p->shape));
@@ -1622,11 +1669,14 @@ static void SEC_UI draw_strip(Play *p, Surface *s)
 			add(t, &n, "y");
 			readout(s, x, ROW_A, PIN_X + PIN_W - x, t, 1, UIC_TEXT_HI);
 		}
-		if (landscape(s)) landscape_hole(s, p, swing || p->club == CLUB_PT ? s->lw - 2 : ROSE_X - 1);
-		if (!swing) {
+		if (landscape(s) && !(address && p->club == CLUB_PT && practice_green(p)))
+			landscape_hole(s, p, swing || p->club == CLUB_PT ? s->lw - 2 : AIM_WIND_X - 1);
+		if (address) {
+			if (p->club != CLUB_PT) address_wind(p, s);
+			address_controls(s, p);
+		} else if (!swing) {
 			if (p->club != CLUB_PT) rose(p, s, 0);
-			if (address) address_controls(s, p);
-			else shot_identity(s, p);
+			shot_identity(s, p);
 		}
 	}
 	dirty(p, 0, (int16_t)(STRIP_Y * s->scale), s->w, (int16_t)(RENDER_STATUS * s->scale));
@@ -1655,8 +1705,8 @@ static inline int16_t SEC_UI meter_offset(int16_t width, int16_t pos)
 
 /* The meter in a well on the panel's lower row, columns x0 to x1 only: the
  * track, the power so far in brass, quarter marks, the snap line and the
- * marker (black between white sides, so it shows on the track and the
- * power). The well's edge only on a full draw (x0 0); a frame's redraw
+ * marker (black outlined in white, wider on the way back on greys).
+ * The well's edge only on a full draw (x0 0); a frame's redraw
  * keeps to the rows inside and draws each pixel about once, to stay cheap
  * on the IIIx. */
 static void SEC_UI draw_meter(Play *p, Surface *s, int16_t x0, int16_t x1)
@@ -1699,8 +1749,9 @@ static void SEC_UI draw_meter(Play *p, Surface *s, int16_t x0, int16_t x1)
 		mfill(s, i0, i1, k, y + 1, 1, ROW_H - 2, UIC_WHITE);
 	}
 	if (p->mpos >= 0) {
-		mfill(s, i0, i1, m - 2, y + 1, 3, ROW_H - 2, UIC_WHITE);
-		mfill(s, i0, i1, m - 1, y + 2, 1, ROW_H - 4, UIC_BLACK);
+		int16_t border = s->depth < 8 && p->state == PS_DOWN ? 2 : 1;
+		mfill(s, i0, i1, m - 2 * border, y + 1, 4 * border - 1, ROW_H - 2, UIC_WHITE);
+		mfill(s, i0, i1, m - border, y + 1 + border, 2 * border - 1, ROW_H - 2 - 2 * border, UIC_BLACK);
 	}
 	p->mshown = m;
 	if (x0 <= 0) dirty(p, (int16_t)(x0 * s->scale), (int16_t)(y * s->scale), (int16_t)((x1 - x0) * s->scale), (int16_t)(ROW_H * s->scale));
@@ -2484,7 +2535,19 @@ int play_frame(Play *p, Surface *s, Surface *bg, uint32_t now)
 		}
 		if (i >= p->shot.n - 1) {
 			i = (int16_t)(p->shot.n - 1);
-			stopped(p);
+			if (p->club == CLUB_PT && p->shot.result == SHOT_HOLED) {
+				/* Start at the cup even if a slow frame skipped the approach. */
+				if (p->shown != i) {
+					p->t0 = now;
+					stopped(p);
+				}
+				p->redraw |= R_OVER;
+				if (now - p->t0 < 2 * CUP_DROP_MS) {
+					p->shown = i;
+					flags |= PL_ANIM;
+					break;
+				}
+			} else stopped(p);
 			result(p);
 			p->state = PS_RESULT;
 			p->t0 = now;
@@ -2556,10 +2619,10 @@ int play_frame(Play *p, Surface *s, Surface *bg, uint32_t now)
 			}
 		}
 		if (p->state >= PS_FLY && p->shown >= 0) {
-			draw_ball(p, s, !bg);
+			draw_ball(p, s, !bg, now);
 		} else if (p->rv.green) {
 			/* the green view leaves the ball to us */
-			ball_at(p, s, 0, p->rv.ball.x, p->rv.ball.y, hole_height(p->rv.hole, p->rv.ball.x, p->rv.ball.y));
+			ball_at(p, s, !bg, p->rv.ball.x, p->rv.ball.y, hole_height(p->rv.hole, p->rv.ball.x, p->rv.ball.y));
 		}
 	}
 	if (!s->fullview && (p->redraw & R_STRIP)) draw_strip(p, s);
@@ -2569,7 +2632,7 @@ int play_frame(Play *p, Surface *s, Surface *bg, uint32_t now)
 		/* only between where the marker was and where it is, as the power fill follows it */
 		int16_t m = MTR_X + meter_offset(meter_width(s), p->mpos >> 4);
 		int16_t a = m < p->mshown ? m : p->mshown, b = m < p->mshown ? p->mshown : m;
-		draw_meter(p, s, a - 3, b + 3);
+		draw_meter(p, s, a - 4, b + 3);
 	}
 	p->redraw = 0;
 	if (p->aim_mark) flags |= PL_ANIM;

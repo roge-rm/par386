@@ -800,8 +800,8 @@ static void pen_tests(const Course *c, Surface *s)
 	play_frame(&p, s, &bg, 0);
 	save(s, "pen-swing");
 	CHECK(play_tap(&p, 113, 140, 10) == 0 && p.state == PS_AIM);
-	CHECK(play_tap(&p, 58, 152, 10) == 0 && p.state == PS_AIM);
-	CHECK(play_tap(&p, 144, 152, 10) == 0 && p.state == PS_AIM);
+	CHECK(play_tap(&p, 20, 152, 10) == 0 && p.state == PS_AIM);
+	CHECK(play_tap(&p, 130, 152, 10) == 0 && p.state == PS_AIM);
 	CHECK(play_tap(&p, 20, 140, 10) == PL_CARD && p.card == CARD_CLUB);
 	play_card(s, &p);
 	save(s, "pen-clubs");
@@ -814,7 +814,7 @@ static void pen_tests(const Course *c, Surface *s)
 	gfx_copy(s, &bg, 0, 0, s->w, s->h);
 	play_frame(&p, s, &bg, 20);
 	save(s, "panel-address");
-	CHECK(play_tap(&p, 20, 152, 100) == PL_ANIM && p.state == PS_UP);
+	CHECK(play_tap(&p, 100, 152, 100) == PL_ANIM && p.state == PS_UP);
 	play_frame(&p, s, &bg, 100);
 	play_shown(&p, 100);
 	play_frame(&p, s, &bg, 600);
@@ -904,20 +904,42 @@ static void pen_tests(const Course *c, Surface *s)
 	CHECK(play_tap(&p, 20, 140, 2010) == 0 && p.state == PS_AIM && p.club == CLUB_PT);
 	CHECK(play_tap(&p, 144, 152, 2020) == PL_MAP && p.view == PLAY_MAP);
 	CHECK(play_key(&p, KEY_MAP, 2020) == PL_SCENE && p.view == PLAY_SCENE);
-	CHECK(play_tap(&p, 20, 152, 2100) == PL_ANIM && p.state == PS_UP);
+	CHECK(play_tap(&p, 100, 152, 2100) == PL_ANIM && p.state == PS_UP);
 	CHECK(play_tap(&p, 130, 80, 2700) == PL_ANIM && p.state == PS_FLY);
 	/* A tap on Next hole opens the normal scorecard before the next tee. */
 	r.pl[0].ball.y = h->pins[0].y - YD(1);
 	play_start(&p, h, g, &r);
 	CHECK(render_green(s, &p.rv) == 0);
 	gfx_copy(&bg, s, 0, 0, s->w, s->h);
-	play_frame(&p, s, &bg, 3000);
-	CHECK(play_tap(&p, 20, 152, 3100) == PL_ANIM);
-	play_frame(&p, s, &bg, 3100);
+	play_frame(&p, s, s->scale == 1 ? NULL : &bg, 3000);
+	CHECK(play_tap(&p, 100, 152, 3100) == PL_ANIM);
+	play_frame(&p, s, s->scale == 1 ? NULL : &bg, 3100);
 	play_shown(&p, 3100);
 	t = 3100 + (uint32_t)p.putt_tick * MTR_UP_MS / (MTR_W - MTR_SNAP);
 	CHECK(play_tap(&p, 130, 80, t) == PL_ANIM && p.state == PS_FLY);
-	for (; t < 20000 && p.state != PS_DONE; t += 40) play_frame(&p, s, &bg, t);
+	{
+		Surface *kept = s->scale == 1 ? NULL : &bg;
+		vec2 cup = h->pins[0];
+		fixed depth;
+		int16_t cx, cy, x, y, u = s->scale;
+		int ball = 0, drop = 0, empty = 0;
+		int visible = render_point(&p.cam, cup.x, cup.y, hole_height(h, cup.x, cup.y), &cx, &cy, &depth)
+		    && cx >= 2 * u && cy >= 2 * u && cx + 2 * u < s->w && cy + 2 * u < s->h;
+		CHECK(visible);
+		for (; t < 20000 && p.state != PS_DONE; t += 40) {
+			int white = 0;
+			play_frame(&p, s, kept, t);
+			if (!visible || p.shown != p.shot.n - 1) continue;
+			for (y = cy - 2 * u; y <= cy + 2 * u; y++)
+				for (x = cx - 2 * u; x <= cx + 2 * u; x++)
+					if (pixel(s, x, y) == s->pa[UIC_WHITE] && pixel(&bg, x, y) != s->pa[UIC_WHITE])
+						white++;
+			if (p.state == PS_FLY && white > ball) ball = white;
+			else if (p.state == PS_FLY && white && white < ball) drop = 1;
+			else if (p.state == PS_RESULT && white == 0) empty = 1;
+		}
+		CHECK(ball && drop && empty);
+	}
 	CHECK(p.state == PS_DONE && p.shot.result == SHOT_HOLED);
 	CHECK(map_pixel(s, 100, 123) == s->pa[UIC_BRASS_LT]);
 	save(s, "panel-next-hole");
@@ -1991,7 +2013,7 @@ static void practice_tests(const Course *c)
 	gfx_copy(&s, &bg, 0, 0, s.w, s.h);
 	play_frame(&p, &s, &bg, t);
 	save(&s, "short-game-practice");
-	CHECK(play_tap(&p, 93, 153, t) == 0 && q.repeat);
+	CHECK(play_tap(&p, 120, 140, t) == 0 && q.repeat);
 	play_frame(&p, &s, &bg, t);
 	save(&s, "short-game-repeat");
 	CHECK(shot(&p, &s, &bg, &t) == PL_RENDER && !q.balls && p.stroke == 1);
