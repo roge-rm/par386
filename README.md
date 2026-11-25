@@ -7,18 +7,24 @@ Play nine courses, take turns with up to four players on one Palm, or play again
 Enjoy,<br>
 Dan
 
-<p align="center"><img src="doc/images/gameplay.gif" width="320" alt="Par 386 on a Tungsten TX, from the Kelp Shore title to a drive, ball flight on the map and a putt at Carrig Head" /></p>
+<p align="center"><img src="doc/images/gameplay.gif" width="320" alt="Par 386 on a Tungsten TX, from the title screen through the tee shot, approach and putts on Puffin Ledge at Carrig Head" /></p>
+
+The demo starts at the title screen and plays one hole at Carrig Head. The waits are shortened.
 
 ## Screenshots
 
 <table>
   <tr>
     <td align="center"><img src="doc/images/tx-title.png" width="200" alt="The Par 386 title over the Kelp Shore fairway at Carrig Head" /><br>Title</td>
-    <td align="center"><img src="doc/images/tx-tee.png" width="200" alt="A golfer at the Kelp Shore tee with mown fairway bands and the shoreline to the left" /><br>Kelp Shore tee on the TX</td>
+    <td align="center"><img src="doc/images/tx-tee.png" width="200" alt="The Puffin Ledge tee, with Swing at the left edge and an 11 in the hole-number box" /><br>Left-handed portrait layout on the TX</td>
   </tr>
   <tr>
     <td align="center"><img src="doc/images/tx-flight.png" width="200" alt="An overhead map with a ball trail and a live carry distance" /><br>Ball flight</td>
     <td align="center"><img src="doc/images/tx-green.png" width="200" alt="The Carrig Head green with slope guides and an aim line toward the cup" /><br>Putting at Carrig Head on the TX</td>
+  </tr>
+  <tr>
+    <td align="center"><img src="doc/images/tx-layout.png" width="200" alt="The Settings menu with Layout set to Left" /><br>Layout setting on the TX</td>
+    <td align="center"><img src="doc/images/tx-result.png" width="200" alt="The result shown after the ball drops into the cup" /><br>Hole complete</td>
   </tr>
   <tr>
     <td align="center"><img src="doc/images/tx-character.png" width="200" alt="Character editor with outfit colour controls and a preview of a golfer in a gold shirt" /><br>Character editor on the TX</td>
@@ -35,7 +41,7 @@ Dan
   </tr>
 </table>
 
-Captured from the 0.11.0 development build on a Tungsten TX, Palm IIIx and AlphaSmart Dana in Frond. [Frond emulator](https://github.com/roge-rm/frond)
+The demo and round screenshots use 0.12.0 on a Tungsten TX in Frond. The character editor, Palm IIIx and AlphaSmart Dana screenshots are from 0.11.0. [Frond emulator](https://github.com/roge-rm/frond)
 
 ## Devices
 
@@ -53,7 +59,7 @@ Frond checks have covered the Palm IIIx, Tungsten TX, Zire 72, Sony CLIÉ and Al
 
 Install `Par386.prc` and at least one course file (`Par386-*.pdb`) from the same ZIP with HotSync. [Download the latest release](https://github.com/roge-rm/par386/releases/latest).
 
-The 0.11.0 build uses about 1.3 MB, and each bundled course uses about 1.3 to 1.9 MB. This build requires a terrain mesh and putting contours for each hole. The current course packs also include precomputed lie grids for faster loading. If you see **Update course**, install the current course PDB.
+Par 386 uses about 1.3 MB, and each bundled course uses about 1.3 to 1.9 MB. This build requires a terrain mesh and putting contours for each hole. The current course packs also include precomputed lie grids for faster loading. If you see **Update course**, install the current course PDB.
 
 On a Palm m125, put `Par386.prc` in `/PALM/Launcher/` on a FAT16 SD card and open it from the card category. The launcher needs enough free memory on the handheld to copy the app. If you see **Can't Copy** on a larger partition, install the [Palm File Manager Update](https://palmdb.net/app/palm-file-manager-update) in handheld memory and run SD Installer. A 32 MiB FAT16 partition also works in Frond on an unpatched m125.
 
@@ -96,6 +102,8 @@ Your best score on each course shows under its picture on the Courses board. Onl
 On the final card, tap Stats or press Scorecard to see fairways hit, greens in regulation, putts and penalties. Use Next to see the other players' stats. Gimmies count as putts.
 
 ## Controls
+
+On tall portrait screens like the Tungsten TX, use **Settings → Layout** to put Swing and Putt at the left or right edge during a round.
 
 While you play, the four app buttons belong to the game, so they don't open Date Book and the rest. To leave, use the Home (Applications) button.
 
@@ -150,7 +158,7 @@ On the Dana keyboard, use Left and Right to aim, Up and Down to change clubs, an
 
 You need prc-tools-remix, `arm-palmos-gcc`, PilRC, the Palm OS SDK 5r3 at `../palm-os-sdk/sdk-5r3`, and Python 3 with Pillow and NumPy.
 
-- `make release` builds `build/Par386.prc` and the course files. The 0.11.0 debug build currently exceeds the Palm code segment limit.
+- `make release` builds `build/Par386.prc` and the course files. The debug build currently exceeds the Palm code segment limit.
 - `make host-test` builds and tests the game core with GCC, ASan and UBSan.
 - `make courses` compiles the courses into `build/courses/`. See the [course format](doc/course-format.md) to make your own.
 

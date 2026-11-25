@@ -711,7 +711,9 @@ static void SEC_MENU settings_menu(Front *f)
 	const char *a = "Sound: ", *b = f->sound == SOUND_FX ? "Effects" : f->sound == SOUND_OFF ? "Off" : "On";
 	const char *c = "|CPU: ", *d = f->quick ? "Quick" : "Full";
 	const char *e = f->shotmap ? "|Shot view: Map" : "|Shot view: 3D";
-	const char *g = f->holeout ? "|Hole out|Back" : "|Gimmies: 2 ft|Back";
+	const char *g = f->holeout ? "|Hole out" : "|Gimmies: 2 ft";
+	const char *layout = f->left_layout ? "|Layout: Left" : "|Layout: Right";
+	const char *back = "|Back";
 	uint8_t n = 0, sel = f->screen == SCR_SETTINGS ? f->menu.sel : 0;
 
 	while (*a) f->settings_list[n++] = *a++;
@@ -720,6 +722,8 @@ static void SEC_MENU settings_menu(Front *f)
 	while (*d) f->settings_list[n++] = *d++;
 	if (!f->dana) while (*e) f->settings_list[n++] = *e++;
 	while (*g) f->settings_list[n++] = *g++;
+	if (!f->dana) while (*layout) f->settings_list[n++] = *layout++;
+	while (*back) f->settings_list[n++] = *back++;
 	f->settings_list[n] = 0;
 	f->screen = SCR_SETTINGS;
 	ui_menu_init(&f->menu, f->settings_list, 16, 36, 128, 18);
@@ -895,6 +899,11 @@ static int SEC_MENU open_item(Front *f, uint8_t i)
 			f->holeout ^= 1;
 			settings_menu(f);
 			return FR_REDRAW | FR_GIMMES;
+		}
+		if (i == 4 && !f->dana) {
+			f->left_layout ^= 1;
+			settings_menu(f);
+			return FR_REDRAW | FR_LAYOUT;
 		}
 		front_clubhouse(f, f->saved);
 		f->menu.sel = (uint8_t)(MAIN_SETTINGS + (f->saved ? 1 : 0));

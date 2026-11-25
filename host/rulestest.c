@@ -794,6 +794,22 @@ static void pen_tests(const Course *c, Surface *s)
 	art.golfer = &golfer;
 	rules_init(&r, "Par386 Test", 1, c->hole_count, c->par, 3);
 	play_start(&p, h, g, &r);
+	{
+		uint8_t left;
+		for (left = 0; left < 2; left++) {
+			p.left_layout = left;
+			play_start(&p, h, g, &r);
+			CHECK(p.left_layout == left);
+			p.geo.lw = 160;
+			p.geo.lh = 240;
+			CHECK(play_tap(&p, left ? 157 : 2, 234, 0) == 0 && p.state == PS_AIM);
+			CHECK(play_tap(&p, left ? 68 : 91, 234, 0) == PL_MAP && p.view == PLAY_MAP);
+			p.view = PLAY_SCENE;
+			CHECK(play_tap(&p, left ? 67 : 92, 234, 0) == PL_ANIM && p.state == PS_UP);
+		}
+		p.left_layout = 0;
+		play_start(&p, h, g, &r);
+	}
 	club = p.club;
 	CHECK(render_scene(s, &p.rv, &art, work, NULL) == 0);
 	gfx_copy(&bg, s, 0, 0, s->w, s->h);
@@ -2756,13 +2772,13 @@ static void sound_tests(void)
 	CHECK(front_key(&f, KEY_DOWN) & FR_LINES);
 	CHECK(snd_log_n == 1 && snd_log[0] == SND_MENU_MOVE);
 	f.menu.sel = MAIN_SETTINGS;
-	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_SETTINGS && f.menu.count == 5);
+	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_SETTINGS && f.menu.count == 6);
 	CHECK(snd_log_n == 2 && snd_log[1] == SND_MENU_SELECT);
-	CHECK(strcmp(f.settings_list, "Sound: On|CPU: Quick|Shot view: Map|Gimmies: 2 ft|Back") == 0);
+	CHECK(strcmp(f.settings_list, "Sound: On|CPU: Quick|Shot view: Map|Gimmies: 2 ft|Layout: Right|Back") == 0);
 	draw_front(&s, &f);
 	save(&s, "settings");
 	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_SOUND) && f.sound == SOUND_FX && f.menu.sel == 0);
-	CHECK(strcmp(f.settings_list, "Sound: Effects|CPU: Quick|Shot view: Map|Gimmies: 2 ft|Back") == 0);
+	CHECK(strcmp(f.settings_list, "Sound: Effects|CPU: Quick|Shot view: Map|Gimmies: 2 ft|Layout: Right|Back") == 0);
 	draw_front(&s, &f);
 	save(&s, "settings-fx");
 	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_SOUND) && f.sound == SOUND_OFF);
@@ -2770,21 +2786,24 @@ static void sound_tests(void)
 	/* the computer golfers' shots: quick or the full flight */
 	CHECK(front_key(&f, KEY_DOWN) & FR_LINES);
 	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_CPU) && !f.quick && f.menu.sel == 1);
-	CHECK(strcmp(f.settings_list, "Sound: On|CPU: Full|Shot view: Map|Gimmies: 2 ft|Back") == 0);
+	CHECK(strcmp(f.settings_list, "Sound: On|CPU: Full|Shot view: Map|Gimmies: 2 ft|Layout: Right|Back") == 0);
 	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_CPU) && f.quick);
 	/* full shots on the map or in the scene */
 	CHECK(front_key(&f, KEY_DOWN) & FR_LINES);
 	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_SHOT) && !f.shotmap && f.menu.sel == 2);
-	CHECK(strcmp(f.settings_list, "Sound: On|CPU: Quick|Shot view: 3D|Gimmies: 2 ft|Back") == 0);
+	CHECK(strcmp(f.settings_list, "Sound: On|CPU: Quick|Shot view: 3D|Gimmies: 2 ft|Layout: Right|Back") == 0);
 	draw_front(&s, &f);
 	save(&s, "settings-3d");
 	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_SHOT) && f.shotmap);
 	CHECK(front_key(&f, KEY_DOWN) & FR_LINES);
 	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_GIMMES) && f.holeout && f.menu.sel == 3);
-	CHECK(strcmp(f.settings_list, "Sound: On|CPU: Quick|Shot view: Map|Hole out|Back") == 0);
+	CHECK(strcmp(f.settings_list, "Sound: On|CPU: Quick|Shot view: Map|Hole out|Layout: Right|Back") == 0);
 	draw_front(&s, &f);
 	save(&s, "short-game-hole-out");
 	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_GIMMES) && !f.holeout);
+	CHECK(front_key(&f, KEY_DOWN) & FR_LINES);
+	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_LAYOUT) && f.left_layout);
+	CHECK(front_key(&f, KEY_SELECT) == (FR_REDRAW | FR_LAYOUT) && !f.left_layout);
 	CHECK(front_key(&f, KEY_DOWN) & FR_LINES);
 	CHECK(front_key(&f, KEY_SELECT) == FR_REDRAW && f.screen == SCR_MENU && f.menu.sel == MAIN_SETTINGS);
 	front_key(&f, KEY_SELECT);

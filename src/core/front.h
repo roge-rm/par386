@@ -63,6 +63,7 @@ enum { KEY_NONE, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_SELECT, KEY_OTHER, K
 /* Redraw the character editor's changed controls and, when needed, its preview. */
 #define FR_CHARACTER      2048
 #define FR_CHARACTER_POSE 4096
+#define FR_LAYOUT         8192
 
 /* The screens past the title are the menu board with a list. Games picks
  * the mode, players who plays each slot. */
@@ -98,6 +99,7 @@ typedef struct {
 	uint8_t mode;            /* MODE_*, picked on the games or practice screen */
 	uint8_t slot[RULES_PLAYERS];            /* who plays each slot: CPU_* or SLOT_OFF */
 	uint8_t cpu[RULES_PLAYERS];             /* the round's players in order, without the slots off */
+	uint8_t left_layout;
 	uint8_t quick;           /* computer golfers' shots as a result on the map */
 	uint8_t shotmap;         /* full shots fly on the map, not the scene */
 	uint8_t dana;
@@ -106,7 +108,7 @@ typedef struct {
 	uint8_t courses;         /* how many courses are installed */
 	uint8_t course;          /* the one picked on the courses screen */
 	uint8_t sound;           /* SOUND_* */
-	char settings_list[64];  /* "Sound: On|CPU: Quick|Shot view: Map|Gimmies: 2 ft|Back" */
+	char settings_list[80];
 	PlayerProfile player;
 	PlayerProfile character;              /* draft appearance until Done */
 	uint8_t character_row;

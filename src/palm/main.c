@@ -61,6 +61,7 @@ static UInt32 gHeapStart;      /* free dynamic heap at launch */
 #define kShotPref    5
 #define kGimmePref   6
 #define kPlayerPref  7
+#define kLayoutPref  8
 static Records gRecords;
 static Boolean gPlaying;
 static Play gPlay;
@@ -1086,6 +1087,7 @@ static Boolean SEC_MENU PlayStart(Boolean resume)
 	if (!MODE_PRACTICE(gRound.mode)) gFront.span = gRound.span;
 	gProfileSlot = rules_profile(&gRound, &gFront.player);
 	gPlay.quick = gFront.quick;
+	gPlay.left_layout = gFront.left_layout;
 	ScreenGame(true);
 	dana_reset(&gDana);
 	gPlay.mapview = gS.fullview ? 0 : gFront.shotmap;
@@ -2075,6 +2077,7 @@ static void Act(int r)
 	if (r & FR_CPU) PrefSetAppPreferences(kCreator, kCpuPref, 1, &gFront.quick, 1, true);
 	if (r & FR_SHOT) PrefSetAppPreferences(kCreator, kShotPref, 1, &gFront.shotmap, 1, true);
 	if (r & FR_GIMMES) PrefSetAppPreferences(kCreator, kGimmePref, 1, &gFront.holeout, 1, true);
+	if (r & FR_LAYOUT) PrefSetAppPreferences(kCreator, kLayoutPref, 1, &gFront.left_layout, 1, true);
 	if (r & FR_PLAYER) PlayerSave();
 	if (r & (FR_PLAY | FR_CONTINUE)) {
 		Boolean resume = (r & FR_CONTINUE) != 0;
@@ -2418,6 +2421,9 @@ UInt32 PilotMain(UInt16 cmd, void *cmdPBP, UInt16 launchFlags)
 		size = 1;
 		if (PrefGetAppPreferences(kCreator, kGimmePref, &q, &size, true) == noPreferenceFound || size != 1 || q > 1) q = 0;
 		gFront.holeout = q;
+		size = 1;
+		if (PrefGetAppPreferences(kCreator, kLayoutPref, &q, &size, true) == noPreferenceFound || size != 1 || q > 1) q = 0;
+		gFront.left_layout = q;
 	}
 	RecordsLoad();
 	FindCourses();

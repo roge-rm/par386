@@ -117,6 +117,7 @@ typedef struct {
 	RenderGolfer *golf;         /* the golfer in the scene, set by the platform; 0 for none */
 	/* computer golfers */
 	uint8_t cpu;                /* the skill of the player whose shot it is, CPU_HUMAN for a person */
+	uint8_t left_layout;
 	uint8_t quick;              /* their shots show as a result on the map, not a scene and flight; the platform sets it */
 	uint8_t wait;               /* tw is set on the next frame */
 	uint8_t applied;            /* play_settle has already counted the result being shown */
@@ -157,7 +158,7 @@ int SEC_UI play_debug_green(Play *p);
 #endif
 int SEC_UI play_key(Play *p, uint8_t key, uint32_t now);
 /* x and y in logical units. */
-int SEC_UI play_tap(Play *p, int16_t x, int16_t y, uint32_t now);
+int SEC_BALL play_tap(Play *p, int16_t x, int16_t y, uint32_t now);
 /* Moves the meter and the ball on to now and draws what changed over the
  * scene in s, taking old overlays off from bg (the kept scene, or 0 if
  * there's none). The golfer's pose follows the swing in s and bg. Call

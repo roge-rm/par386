@@ -49,6 +49,8 @@ enum { HEARD_LAND = 1, HEARD_LIP = 2 };
 #define WIDE_CLUB_ROW  22
 #define WIDE_CLUB_H    17
 #define MAP_W     BOX_W(3)
+#define PORTRAIT_INFO_W 28
+#define PORTRAIT_MAP_W 34
 #define AIM_MAP_X (s->lw - 2 - MAP_W)
 #define REPEAT_W  (BOX_W(6) + 5)
 #define REPEAT_X  (p->club == CLUB_PT ? s->lw - 2 - REPEAT_W : 1)
@@ -372,11 +374,12 @@ static int SEC_UI open_card(Play *p, uint8_t mode)
 void play_start(Play *p, const Hole *h, const SurfaceGrid *g, Round *r)
 {
 	int n;
-	uint8_t i, quick = p->quick, mapview = p->mapview;
+	uint8_t i, quick = p->quick, mapview = p->mapview, left_layout = p->left_layout;
 
 	play_init(p, h, g, rules_round_seed(r));
 	p->quick = quick;
 	p->mapview = mapview;
+	p->left_layout = left_layout;
 	p->round = r;
 	if (r->tour_stage == TOUR_BREAK) {
 		open_card(p, CARD_FINAL);
@@ -871,7 +874,7 @@ static int SEC_UI on_box(int16_t x, int16_t y, int16_t bx, int16_t by, int16_t w
 	return x >= bx && x < bx + w && y >= by && y < by + ROW_H;
 }
 
-static int SEC_MENU map_tap(Play *p, int16_t x, int16_t y, uint32_t now)
+static int SEC_BALL map_tap(Play *p, int16_t x, int16_t y, uint32_t now)
 {
 	const Surface *s = &p->geo;
 	int16_t sc = s->scale;
@@ -903,6 +906,15 @@ static int SEC_MENU map_tap(Play *p, int16_t x, int16_t y, uint32_t now)
 	return PL_MAP;
 }
 
+/* The portrait row runs from the left frame to the right frame. */
+static int SEC_MENU portrait_row(const Play *p, const Surface *s, int16_t *action, int16_t *map)
+{
+	if (s->fullview || s->lw < 160 || s->lh <= s->lw || practice(p)) return 0;
+	*action = p->left_layout ? 2 : 2 + 2 * PORTRAIT_INFO_W + PORTRAIT_MAP_W;
+	*map = p->left_layout ? s->lw - 2 - 2 * PORTRAIT_INFO_W - PORTRAIT_MAP_W : *action - PORTRAIT_MAP_W;
+	return s->lw - 4 - 2 * PORTRAIT_INFO_W - PORTRAIT_MAP_W;
+}
+
 int play_tap(Play *p, int16_t x, int16_t y, uint32_t now)
 {
 	const Surface *s = &p->geo;
@@ -931,8 +943,11 @@ int play_tap(Play *p, int16_t x, int16_t y, uint32_t now)
 	if (p->state == PS_DONE) return after_done(p);
 	if (p->state == PS_UP || p->state == PS_DOWN || p->state == PS_RESULT) return click(p, now);
 	if (!s->fullview && y >= STRIP_Y) {
+		int16_t action = ACTION_X, map = AIM_MAP_X;
+		int16_t width;
 		if (p->state != PS_AIM) return 0;
-		if (on_box(x, y, ACTION_X, ROW_B, ACTION_W)) return click(p, now);
+		width = portrait_row(p, s, &action, &map);
+		if (on_box(x, y, action, ROW_B, width ? width : ACTION_W)) return click(p, now);
 		if (p->lie != LIE_GREEN && on_box(x, y, CLUB_X, ROW_A, CLUB_W)) {
 			p->view = PLAY_CARD;
 			p->card = CARD_CLUB;
@@ -941,7 +956,7 @@ int play_tap(Play *p, int16_t x, int16_t y, uint32_t now)
 		}
 		if (practice_green(p) && on_box(x, y, REPEAT_X, REPEAT_Y, REPEAT_W))
 			return play_key(p, KEY_CARD, now);
-		if (on_box(x, y, AIM_MAP_X, ROW_B, MAP_W))
+		if (on_box(x, y, map, ROW_B, width ? PORTRAIT_MAP_W : MAP_W))
 			return play_key(p, practice_green(p) ? KEY_MAP : KEY_OTHER, now);
 		if (p->club != CLUB_PT && on_box(x, y, SHAPE_X, ROW_A, SHAPE_W)) return play_key(p, KEY_SHAPE, now);
 		return 0;
@@ -1584,6 +1599,21 @@ static int SEC_MENU landscape_hazard(Surface *s, const Play *p, int16_t w)
 	return 1;
 }
 
+static int SEC_MENU portrait_controls(Surface *s, const Play *p, const char *lie)
+{
+	char number[4];
+	int16_t action, map, info, w = portrait_row(p, s, &action, &map);
+
+	if (!w) return 0;
+	info = p->left_layout ? map + PORTRAIT_MAP_W : 2;
+	play_num(number, p->rv.hole->number);
+	readout(s, info, ROW_B, PORTRAIT_INFO_W, lie, 0, UIC_PAPER);
+	readout(s, info + PORTRAIT_INFO_W, ROW_B, PORTRAIT_INFO_W, number, 0, UIC_PAPER);
+	button(s, map, ROW_B, PORTRAIT_MAP_W, "Map");
+	button(s, action, ROW_B, w, p->club == CLUB_PT ? "Putt" : "Swing");
+	return 1;
+}
+
 static void SEC_MENU address_controls(Surface *s, const Play *p)
 {
 	static const char * const short_lie[] = {
@@ -1592,6 +1622,8 @@ static void SEC_MENU address_controls(Surface *s, const Play *p)
 	char t[24];
 	int16_t left = ACTION_X - LIE_X - 1, x, n;
 	const char *lie = short_lie[p->lie];
+
+	if (portrait_controls(s, p, lie)) return;
 
 	button(s, ACTION_X, ROW_B, ACTION_W, p->club == CLUB_PT ? "Putt" : "Swing");
 	button(s, AIM_MAP_X, ROW_B, MAP_W, "Map");
