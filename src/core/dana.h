@@ -38,7 +38,7 @@ typedef struct {
 void SEC_BALL dana_drop(DanaPanels *d);
 /* Start with a zero-initialised DanaPanels. */
 void SEC_DANA dana_reset(DanaPanels *d);
-/* Each pane is a 96 x 160 scale-1 surface. Returns the parts that changed. */
+/* Each pane is a 96 x 160 scale-1 surface. Returns the physical sides that changed, or DANA_METER for the meter alone. */
 uint8_t SEC_DANA dana_draw(DanaPanels *d, Surface *left, Surface *right, const Play *p);
 /* Coordinates are relative to the pane, in logical units. */
 int SEC_DANA dana_tap(const DanaPanels *d, Play *p, uint8_t pane, int16_t x, int16_t y, uint32_t now);

@@ -778,7 +778,7 @@ static void landscape_meter_test(const Hole *h, const SurfaceGrid *g)
 	play_init(&p, h, g, 7);
 	play_frame(&p, &s, NULL, 0);
 	CHECK(play_tap(&p, 20, 151, start) == 0 && p.state == PS_AIM);
-	CHECK(play_tap(&p, 165, 151, start) & PL_ANIM);
+	CHECK(play_tap(&p, 172, 151, start) & PL_ANIM);
 	CHECK(p.state == PS_UP);
 	play_frame(&p, &s, NULL, start + power);
 	width = s.lw - 2 * MTR_X;

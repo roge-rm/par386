@@ -722,7 +722,7 @@ static void SEC_MENU settings_menu(Front *f)
 	while (*d) f->settings_list[n++] = *d++;
 	if (!f->dana) while (*e) f->settings_list[n++] = *e++;
 	while (*g) f->settings_list[n++] = *g++;
-	if (!f->dana) while (*layout) f->settings_list[n++] = *layout++;
+	while (*layout) f->settings_list[n++] = *layout++;
 	while (*back) f->settings_list[n++] = *back++;
 	f->settings_list[n] = 0;
 	f->screen = SCR_SETTINGS;
@@ -900,7 +900,7 @@ static int SEC_MENU open_item(Front *f, uint8_t i)
 			settings_menu(f);
 			return FR_REDRAW | FR_GIMMES;
 		}
-		if (i == 4 && !f->dana) {
+		if (i == (f->dana ? 3 : 4)) {
 			f->left_layout ^= 1;
 			settings_menu(f);
 			return FR_REDRAW | FR_LAYOUT;

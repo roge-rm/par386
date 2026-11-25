@@ -979,6 +979,30 @@ int main(int argc, char **argv)
 			CHECK(dana_draw(&panels, &left, &right, &p) == (DANA_LEFT | DANA_RIGHT));
 			CHECK(panels.map_ready && !memcmp(last, centre.bits + (s.h - 1) * s.rowBytes, sizeof last));
 			CHECK(dana_draw(&panels, &left, &right, &p) == 0);
+			{
+				static uint8_t map_pixels[160][DANA_RAIL_W / 2], controls[160][DANA_RAIL_W / 2];
+				int swapped = 1;
+
+				for (y = 0; y < s.h; y++) {
+					memcpy(map_pixels[y], left.bits + y * s.rowBytes, sizeof map_pixels[0]);
+					memcpy(controls[y], right.bits + y * s.rowBytes, sizeof controls[0]);
+				}
+				p.left_layout = 1;
+				CHECK(dana_draw(&panels, &left, &right, &p) == (DANA_LEFT | DANA_RIGHT));
+				for (y = 0; y < s.h; y++)
+					swapped &= !memcmp(map_pixels[y], right.bits + y * s.rowBytes, sizeof map_pixels[0]) &&
+					           !memcmp(controls[y], left.bits + y * s.rowBytes, sizeof controls[0]);
+				CHECK(swapped && dana_draw(&panels, &left, &right, &p) == 0);
+				CHECK(dana_tap(&panels, &p, DANA_RIGHT, 20, 147, 0) == PL_CARD && p.card == CARD_BOOK);
+				play_init(&p, v.hole, v.grid, 3);
+				p.left_layout = 1;
+				CHECK(dana_tap(&panels, &p, DANA_LEFT, 20, 147, 0) == PL_ANIM && p.state == PS_UP);
+				CHECK(dana_draw(&panels, &left, &right, &p) & DANA_LEFT);
+				p.mpos += 16;
+				CHECK(dana_draw(&panels, &left, &right, &p) == DANA_METER);
+				play_init(&p, v.hole, v.grid, 3);
+				CHECK(dana_draw(&panels, &left, &right, &p) == (DANA_LEFT | DANA_RIGHT));
+			}
 			play_frame(&p, &centre, NULL, 0);
 			save(&s, "dana-tee");
 			CHECK(play_key(&p, KEY_MAP, 10) == PL_MAP);

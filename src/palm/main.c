@@ -1196,7 +1196,7 @@ static Boolean SEC_MENU DanaDraw(void)
 	changed = dana_draw(&gDana, &left, &right, &gPlay);
 	if (changed & DANA_LEFT) ScreenDanaShow(false, 0, left.h);
 	if (changed & DANA_RIGHT) ScreenDanaShow(true, 0, right.h);
-	else if (changed & DANA_METER) ScreenDanaShow(true, DANA_METER_Y, DANA_METER_H);
+	if (changed & DANA_METER) ScreenDanaShow(!gPlay.left_layout, DANA_METER_Y, DANA_METER_H);
 	return changed != 0;
 }
 

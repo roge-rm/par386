@@ -428,6 +428,11 @@ uint8_t dana_draw(DanaPanels *d, Surface *left, Surface *right, const Play *p)
 {
 	uint16_t carry = ball_shape_carry(p->club, p->lie, p->shape);
 	uint8_t changed;
+	if (p->left_layout) {
+		Surface *swap = left;
+		left = right;
+		right = swap;
+	}
 	if (d->pane_lg != left->lg || d->pane_stride != left->rowBytes) dana_reset(d);
 	if (d->left_dest != left->bits) d->map_ready = 0;
 	if (d->right_dest != right->bits) d->right_ready = 0;
@@ -436,7 +441,10 @@ uint8_t dana_draw(DanaPanels *d, Surface *left, Surface *right, const Play *p)
 	d->left_dest = left->bits;
 	d->right_dest = right->bits;
 	changed = left_draw(d, left, p, carry);
-	return changed | right_draw(d, right, p, play_dana_distance(p), carry);
+	changed |= right_draw(d, right, p, play_dana_distance(p), carry);
+	if (p->left_layout)
+		changed = (changed & DANA_METER) | ((changed & DANA_LEFT) << 1) | ((changed & DANA_RIGHT) >> 1);
+	return changed;
 }
 
 static uint8_t SEC_DANA on_row(int16_t y, int16_t top)
@@ -447,6 +455,7 @@ static uint8_t SEC_DANA on_row(int16_t y, int16_t top)
 int dana_tap(const DanaPanels *d, Play *p, uint8_t pane, int16_t x, int16_t y, uint32_t now)
 {
 	if (x < 2 || x >= DANA_RAIL_W - 2) return 0;
+	if (p->left_layout) pane ^= DANA_LEFT | DANA_RIGHT;
 	if (pane == DANA_LEFT && can_book(p->state, p->view, p->cpu)) {
 		if (on_row(y, BOOK_Y)) {
 			if (p->view == PLAY_SCENE) play_key(p, KEY_MAP, now);

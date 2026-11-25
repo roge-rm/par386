@@ -194,8 +194,10 @@ static void dana_front(void)
 	front_dana(&f, 1);
 	front_courses(&f, names, scenery, 2, 0);
 	CHECK(front_dana_tap(&f, 280, 75) == FR_REDRAW && f.screen == SCR_MENU);
-	CHECK(front_dana_tap(&f, 120, 90) == FR_REDRAW && f.screen == SCR_SETTINGS && f.menu.count == 4);
+	CHECK(front_dana_tap(&f, 120, 90) == FR_REDRAW && f.screen == SCR_SETTINGS && f.menu.count == 5);
 	CHECK(front_dana_tap(&f, 280, 74) == (FR_REDRAW | FR_GIMMES));
+	CHECK(front_dana_tap(&f, 280, 90) == (FR_REDRAW | FR_LAYOUT) && f.left_layout);
+	CHECK(front_dana_tap(&f, 280, 90) == (FR_REDRAW | FR_LAYOUT) && !f.left_layout);
 	CHECK(front_key(&f, KEY_BACK) == FR_REDRAW && f.screen == SCR_MENU);
 	CHECK(front_dana_tap(&f, 120, 74) == FR_REDRAW && f.screen == SCR_COURSES);
 	draw(&s, &f);

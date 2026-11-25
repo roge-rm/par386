@@ -795,18 +795,24 @@ static void pen_tests(const Course *c, Surface *s)
 	rules_init(&r, "Par386 Test", 1, c->hole_count, c->par, 3);
 	play_start(&p, h, g, &r);
 	{
+		static const int16_t sizes[][2] = {{160, 160}, {160, 240}, {240, 160}};
+		unsigned i;
 		uint8_t left;
-		for (left = 0; left < 2; left++) {
-			p.left_layout = left;
-			play_start(&p, h, g, &r);
-			CHECK(p.left_layout == left);
-			p.geo.lw = 160;
-			p.geo.lh = 240;
-			CHECK(play_tap(&p, left ? 157 : 2, 234, 0) == 0 && p.state == PS_AIM);
-			CHECK(play_tap(&p, left ? 68 : 91, 234, 0) == PL_MAP && p.view == PLAY_MAP);
-			p.view = PLAY_SCENE;
-			CHECK(play_tap(&p, left ? 67 : 92, 234, 0) == PL_ANIM && p.state == PS_UP);
-		}
+
+		for (i = 0; i < sizeof sizes / sizeof sizes[0]; i++)
+			for (left = 0; left < 2; left++) {
+				int16_t width = sizes[i][0], y = sizes[i][1] - 6;
+				p.left_layout = left;
+				play_start(&p, h, g, &r);
+				CHECK(p.left_layout == left);
+				p.geo.lw = width;
+				p.geo.lh = sizes[i][1];
+				p.geo.scale = 2;
+				CHECK(play_tap(&p, left ? width - 3 : 2, y, 0) == 0 && p.state == PS_AIM);
+				CHECK(play_tap(&p, left ? 68 : width - 69, y, 0) == PL_MAP && p.view == PLAY_MAP);
+				p.view = PLAY_SCENE;
+				CHECK(play_tap(&p, left ? 67 : width - 68, y, 0) == PL_ANIM && p.state == PS_UP);
+			}
 		p.left_layout = 0;
 		play_start(&p, h, g, &r);
 	}
@@ -817,7 +823,7 @@ static void pen_tests(const Course *c, Surface *s)
 	save(s, "pen-swing");
 	CHECK(play_tap(&p, 113, 140, 10) == 0 && p.state == PS_AIM);
 	CHECK(play_tap(&p, 20, 152, 10) == 0 && p.state == PS_AIM);
-	CHECK(play_tap(&p, 130, 152, 10) == 0 && p.state == PS_AIM);
+	CHECK(play_tap(&p, 55, 152, 10) == 0 && p.state == PS_AIM);
 	CHECK(play_tap(&p, 20, 140, 10) == PL_CARD && p.card == CARD_CLUB);
 	play_card(s, &p);
 	save(s, "pen-clubs");
@@ -918,7 +924,7 @@ static void pen_tests(const Course *c, Surface *s)
 	play_frame(&p, s, &bg, 2000);
 	save(s, "pen-putt");
 	CHECK(play_tap(&p, 20, 140, 2010) == 0 && p.state == PS_AIM && p.club == CLUB_PT);
-	CHECK(play_tap(&p, 144, 152, 2020) == PL_MAP && p.view == PLAY_MAP);
+	CHECK(play_tap(&p, 74, 152, 2020) == PL_MAP && p.view == PLAY_MAP);
 	CHECK(play_key(&p, KEY_MAP, 2020) == PL_SCENE && p.view == PLAY_SCENE);
 	CHECK(play_tap(&p, 100, 152, 2100) == PL_ANIM && p.state == PS_UP);
 	CHECK(play_tap(&p, 130, 80, 2700) == PL_ANIM && p.state == PS_FLY);

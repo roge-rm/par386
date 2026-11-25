@@ -37,7 +37,6 @@ enum { HEARD_LAND = 1, HEARD_LIP = 2 };
 #define LIE_X     2
 #define AIM_WIND_W 24
 #define AIM_WIND_X (s->lw - 2 - AIM_WIND_W)
-#define ACTION_X  ((s->lw - ACTION_W) / 2)
 #define CLUB_PICK_X  8
 #define CLUB_PICK_Y  29
 #define CLUB_PICK_W  72
@@ -48,12 +47,10 @@ enum { HEARD_LAND = 1, HEARD_LIP = 2 };
 #define WIDE_CLUB_Y    36
 #define WIDE_CLUB_ROW  22
 #define WIDE_CLUB_H    17
-#define MAP_W     BOX_W(3)
-#define PORTRAIT_INFO_W 28
-#define PORTRAIT_MAP_W 34
-#define AIM_MAP_X (s->lw - 2 - MAP_W)
+#define BAR_INFO_W 28
+#define BAR_MAP_W 34
 #define REPEAT_W  (BOX_W(6) + 5)
-#define REPEAT_X  (p->club == CLUB_PT ? s->lw - 2 - REPEAT_W : 1)
+#define PUTT_REPEAT_X (s->lw - 2 - REPEAT_W)
 #define REPEAT_Y  (p->club == CLUB_PT ? ROW_A : ROW_B)
 #define CARD_W    BOX_W(4)          /* the Card button on the map's panel */
 #define CARD_X    (s->lw - 2 - CARD_W)
@@ -80,17 +77,6 @@ static inline int SEC_UI landscape(const Surface *s)
 {
 	return !s->fullview && s->scale == 2 && s->lw >= 224 && s->lw > s->lh;
 }
-
-/* Leave room for lie and standing, or for carry distances on landscape. */
-static inline int16_t SEC_UI action_width(const Surface *s)
-{
-	int16_t w = s->lw * 11 / 25;
-	int16_t fit = s->lw - 2 * ((landscape(s) ? BOX_W(8) : 2 * BOX_W(3) + 1) + 3);
-	w -= w & 1;
-	return w < fit ? w : fit;
-}
-
-#define ACTION_W  action_width(s)
 
 static vec2 SEC_UI pin(const Play *p)
 {
@@ -906,13 +892,17 @@ static int SEC_BALL map_tap(Play *p, int16_t x, int16_t y, uint32_t now)
 	return PL_MAP;
 }
 
-/* The portrait row runs from the left frame to the right frame. */
-static int SEC_MENU portrait_row(const Play *p, const Surface *s, int16_t *action, int16_t *map)
+/* Use the extra landscape width for the status readout. */
+static int16_t SEC_MENU address_row(const Play *p, const Surface *s, int16_t *action, int16_t *map, int16_t *info)
 {
-	if (s->fullview || s->lw < 160 || s->lh <= s->lw || practice(p)) return 0;
-	*action = p->left_layout ? 2 : 2 + 2 * PORTRAIT_INFO_W + PORTRAIT_MAP_W;
-	*map = p->left_layout ? s->lw - 2 - 2 * PORTRAIT_INFO_W - PORTRAIT_MAP_W : *action - PORTRAIT_MAP_W;
-	return s->lw - 4 - 2 * PORTRAIT_INFO_W - PORTRAIT_MAP_W;
+	int16_t wide = landscape(s) ? s->lw - 160 : 0;
+	int16_t status = 2 * BAR_INFO_W + wide;
+	int16_t width = s->lw - 4 - status - BAR_MAP_W;
+
+	*action = p->left_layout ? 2 : 2 + status + BAR_MAP_W;
+	*map = p->left_layout ? *action + width : 2 + status;
+	*info = p->left_layout ? *map + BAR_MAP_W : 2;
+	return width;
 }
 
 int play_tap(Play *p, int16_t x, int16_t y, uint32_t now)
@@ -943,20 +933,21 @@ int play_tap(Play *p, int16_t x, int16_t y, uint32_t now)
 	if (p->state == PS_DONE) return after_done(p);
 	if (p->state == PS_UP || p->state == PS_DOWN || p->state == PS_RESULT) return click(p, now);
 	if (!s->fullview && y >= STRIP_Y) {
-		int16_t action = ACTION_X, map = AIM_MAP_X;
+		int16_t action, map, info;
 		int16_t width;
 		if (p->state != PS_AIM) return 0;
-		width = portrait_row(p, s, &action, &map);
-		if (on_box(x, y, action, ROW_B, width ? width : ACTION_W)) return click(p, now);
+		width = address_row(p, s, &action, &map, &info);
+		if (on_box(x, y, action, ROW_B, width)) return click(p, now);
 		if (p->lie != LIE_GREEN && on_box(x, y, CLUB_X, ROW_A, CLUB_W)) {
 			p->view = PLAY_CARD;
 			p->card = CARD_CLUB;
 			p->csel = p->club;
 			return PL_CARD;
 		}
-		if (practice_green(p) && on_box(x, y, REPEAT_X, REPEAT_Y, REPEAT_W))
+		if (practice_green(p) && on_box(x, y, p->club == CLUB_PT ? PUTT_REPEAT_X : info, REPEAT_Y,
+		                                  p->club == CLUB_PT ? REPEAT_W : s->lw - 4 - width - BAR_MAP_W))
 			return play_key(p, KEY_CARD, now);
-		if (on_box(x, y, map, ROW_B, width ? PORTRAIT_MAP_W : MAP_W))
+		if (on_box(x, y, map, ROW_B, BAR_MAP_W))
 			return play_key(p, practice_green(p) ? KEY_MAP : KEY_OTHER, now);
 		if (p->club != CLUB_PT && on_box(x, y, SHAPE_X, ROW_A, SHAPE_W)) return play_key(p, KEY_SHAPE, now);
 		return 0;
@@ -1577,7 +1568,7 @@ static void SEC_MENU shot_result(Surface *s, const Play *p)
 	box_text(s, 2, ROW_B, s->lw - 4, p->msg2, -1, 0, UIC_PAPER);
 }
 
-static int SEC_MENU landscape_hazard(Surface *s, const Play *p, int16_t w)
+static int SEC_MENU landscape_hazard(Surface *s, const Play *p, int16_t x, int16_t w)
 {
 	HazardCarry h;
 	int16_t n = 0;
@@ -1595,22 +1586,7 @@ static int SEC_MENU landscape_hazard(Surface *s, const Play *p, int16_t w)
 	}
 	t[n] = 0;
 	if (w >= BOX_W(n + 1)) add(t, &n, "y");
-	readout(s, LIE_X, ROW_B, w, t, -1, UIC_PAPER);
-	return 1;
-}
-
-static int SEC_MENU portrait_controls(Surface *s, const Play *p, const char *lie)
-{
-	char number[4];
-	int16_t action, map, info, w = portrait_row(p, s, &action, &map);
-
-	if (!w) return 0;
-	info = p->left_layout ? map + PORTRAIT_MAP_W : 2;
-	play_num(number, p->rv.hole->number);
-	readout(s, info, ROW_B, PORTRAIT_INFO_W, lie, 0, UIC_PAPER);
-	readout(s, info + PORTRAIT_INFO_W, ROW_B, PORTRAIT_INFO_W, number, 0, UIC_PAPER);
-	button(s, map, ROW_B, PORTRAIT_MAP_W, "Map");
-	button(s, action, ROW_B, w, p->club == CLUB_PT ? "Putt" : "Swing");
+	readout(s, x, ROW_B, w, t, -1, UIC_PAPER);
 	return 1;
 }
 
@@ -1620,17 +1596,17 @@ static void SEC_MENU address_controls(Surface *s, const Play *p)
 		"Tee", "Fwy", "Cut", "Rgh", "D/R", "Snd", "Plg", "Frg", "Grn", "Pth"
 	};
 	char t[24];
-	int16_t left = ACTION_X - LIE_X - 1, x, n;
-	const char *lie = short_lie[p->lie];
+	int16_t action, map, info, x, y, status, w;
 
-	if (portrait_controls(s, p, lie)) return;
-
-	button(s, ACTION_X, ROW_B, ACTION_W, p->club == CLUB_PT ? "Putt" : "Swing");
-	button(s, AIM_MAP_X, ROW_B, MAP_W, "Map");
+	w = address_row(p, s, &action, &map, &info);
+	status = s->lw - 4 - w - BAR_MAP_W;
+	button(s, action, ROW_B, w, p->club == CLUB_PT ? "Putt" : "Swing");
+	button(s, map, ROW_B, BAR_MAP_W, "Map");
 	if (practice_green(p)) {
-		int16_t y = REPEAT_Y;
-		x = REPEAT_X;
-		button(s, x, y, REPEAT_W, "");
+		y = REPEAT_Y;
+		x = p->club == CLUB_PT ? PUTT_REPEAT_X : info;
+		w = p->club == CLUB_PT ? REPEAT_W : status;
+		button(s, x, y, w, "");
 		box_text(s, x, y, BOX_W(6), "Repeat", 6, -1, UIC_INK);
 		x += BOX_W(6) - 1;
 		ui_fill(s, x, y + 3, 5, 5, UIC_INK);
@@ -1642,17 +1618,22 @@ static void SEC_MENU address_controls(Surface *s, const Play *p)
 		}
 		if (p->club != CLUB_PT) return;
 	}
-	if (landscape(s) && p->club != CLUB_PT && (!p->round || p->round->players == 1) &&
-	    landscape_hazard(s, p, left)) {
-		x = AIM_MAP_X - BOX_W(3) - 1;
-		readout(s, x, ROW_B, BOX_W(3), lie, -1, UIC_PAPER);
-		return;
+	readout(s, info, ROW_B, BAR_INFO_W, short_lie[p->lie], 0, UIC_PAPER);
+	x = info + BAR_INFO_W;
+	status -= BAR_INFO_W;
+	if (!practice(p)) {
+		play_num(t, p->rv.hole->number);
+		readout(s, x, ROW_B, BAR_INFO_W, t, 0, UIC_PAPER);
+		x += BAR_INFO_W;
+		status -= BAR_INFO_W;
 	}
-	readout(s, LIE_X, ROW_B, BOX_W(3), lie, -1, UIC_PAPER);
-	x = LIE_X + BOX_W(3) + 1;
-	n = left - BOX_W(3) - 1;
-	standing(p, t, (n - 3) / UI_CHAR);
-	readout(s, x, ROW_B, n, t, 0, UIC_PAPER);
+	if (!status) return;
+	if (landscape(s) && p->club != CLUB_PT && (!p->round || p->round->players == 1) &&
+	    landscape_hazard(s, p, x, status)) return;
+	if (practice(p) && status == BAR_INFO_W) {
+		play_num(t, p->round->balls < 998 ? (uint32_t)p->round->balls + 1 : 999);
+	} else standing(p, t, (status - 3) / UI_CHAR);
+	readout(s, x, ROW_B, status, t, 0, UIC_PAPER);
 }
 
 static void SEC_MENU landscape_hole(Surface *s, const Play *p, int16_t end)
@@ -1683,7 +1664,7 @@ static void SEC_UI draw_strip(Play *p, Surface *s)
 		panel_club(s, p, address);
 		if (p->club == CLUB_PT) {
 			uint8_t repeat = address && practice_green(p);
-			int16_t end = repeat ? REPEAT_X - 1 : landscape(s) ? PIN_X + PIN_W : s->lw - 2;
+			int16_t end = repeat ? PUTT_REPEAT_X - 1 : landscape(s) ? PIN_X + PIN_W : s->lw - 2;
 			if (!repeat) add(t, &n, "Cup ");
 			n += play_num(t + n, pin_feet(p));
 			if (end - SHAPE_X >= BOX_W(n + 3)) add(t, &n, " ");
