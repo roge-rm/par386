@@ -4,6 +4,8 @@
 #   make host-test   builds and runs the core tests on the host, then course-test
 #   make course-test compiles the test course, round-trips it and checks it loads
 #   make courses     compiles every course in courses/ to build/courses/
+#   make small       builds build/Par386-small.prc
+#   make compact-courses  writes smaller course PDBs in build/compact-courses/
 #   make tables      makes src/core/trigtab.h, fonttab.h, pal.h and paltab.h again (the output is committed)
 #   make art         makes the title and menu pictures and the renderer's sprites in build/art/ (part of the PRC)
 #   make sounds      makes the sampled sounds in build/snd/ (part of the PRC)
@@ -29,7 +31,12 @@
 SDK      = ../palm-os-sdk/sdk-5r3
 PRC      = Par386.prc
 
-ifdef RELEASE
+ifdef SMALL_SCREEN
+BUILD    = build/small
+PRC      = Par386-small.prc
+DEFS     = -DSMALL_SCREEN -DNO_ARM $(EXTRA)
+PILRC_FLAGS = -D SMALL_SCREEN
+else ifdef RELEASE
 BUILD    = build/release
 DEFS     = $(EXTRA)
 else
@@ -50,6 +57,9 @@ all: build/$(PRC) courses
 
 release:
 	$(MAKE) RELEASE=1 build/$(PRC) courses
+
+small:
+	$(MAKE) SMALL_SCREEN=1 build/Par386-small.prc
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -76,7 +86,7 @@ $(BUILD)/par386: $(OBJS) $(BUILD)/par386-sections.o $(BUILD)/par386-sections.ld
 	$(CC) $(LDFLAGS) $(OBJS) $(BUILD)/par386-sections.o $(BUILD)/par386-sections.ld -o $@
 
 $(BUILD)/par386.ro: src/par386.rcp src/palm/resource.h res/*.bmp res/wtap.bin | $(BUILD)
-	pilrc -q -ro -I src src/par386.rcp $@
+	pilrc -q -ro $(PILRC_FLAGS) -I src src/par386.rcp $@
 
 # Title and menu pictures use frames from the course renderer.
 TITLE_SCENES = $(addprefix art/title/,wide.png tall.png square-grey.png dana-grey.png)
@@ -145,8 +155,21 @@ build/arm/arm.ro: build/arm/armc-1000.bin build/arm/armc-1001.bin build/arm/mott
 	printf 'DATA "armc" ID 1000 "build/arm/armc-1000.bin"\nDATA "armc" ID 1001 "build/arm/armc-1001.bin"\nDATA "Motl" ID 1000 "build/arm/mottle.bin"\n' > build/arm/arm.rcp
 	pilrc -q -ro build/arm/arm.rcp $@
 
-build/$(PRC): src/par386.def $(BUILD)/par386 $(BUILD)/par386.ro $(ART)/art.ro $(ART)/obj.ro $(SND)/snd.ro build/arm/arm.ro
-	build-prc -o $@ src/par386.def $(BUILD)/par386 $(BUILD)/par386.ro $(ART)/art.ro $(ART)/obj.ro $(SND)/snd.ro build/arm/arm.ro
+ifdef SMALL_SCREEN
+PALM_RESOURCES = $(BUILD)/small-art.ro
+
+# Keep greyscale pictures, 1x backdrops and golfers, and all object sizes.
+$(BUILD)/small-art.rcp: $(ART)/art.rcp $(ART)/obj.rcp Makefile | $(BUILD)
+	awk '$$2 == "\"Pic2\"" || ($$2 == "\"Bkd8\"" && $$4 % 2 == 0) || ($$2 == "\"Spr8\"" && ($$4 < 2000 || $$4 >= 2200 || $$4 % 2 == 0))' $(filter %.rcp,$^) > $@
+
+$(BUILD)/small-art.ro: $(BUILD)/small-art.rcp
+	pilrc -q -ro $< $@
+else
+PALM_RESOURCES = $(ART)/art.ro $(ART)/obj.ro $(SND)/snd.ro build/arm/arm.ro
+endif
+
+build/$(PRC): src/par386.def $(BUILD)/par386 $(BUILD)/par386.ro $(PALM_RESOURCES)
+	build-prc -o $@ $^
 
 HOSTSRC  = $(addprefix src/core/,$(addsuffix .c,$(CORESRCS)))
 HOSTCC   = gcc -Wall -Wextra -O2 -Isrc/core -fsanitize=address,undefined -fno-sanitize-recover=all
@@ -168,7 +191,14 @@ build/coursetest: host/coursetest.c $(HOSTSRC) src/core/*.h $(RENDER_INC) | $(BU
 	$(HOSTCC) host/coursetest.c $(HOSTSRC) -lm -o $@
 
 COURSES  = $(notdir $(wildcard courses/*))
-courses: $(foreach c,$(COURSES),build/courses/Par386-$(shell echo $(c) | sed 's/./\u&/').pdb)
+COURSE_PDBS = $(foreach c,$(COURSES),Par386-$(shell echo $(c) | sed 's/./\u&/').pdb)
+courses: $(addprefix build/courses/,$(COURSE_PDBS))
+compact-courses: $(addprefix build/compact-courses/,$(COURSE_PDBS))
+
+build/compact-courses/Par386-%.pdb: build/courses/Par386-%.pdb tools/compact_course.py tools/coursec.py tools/terrainmesh.py
+	python3 tools/compact_course.py $< $@
+
+.PHONY: small compact-courses
 
 build/courses/Par386-%.pdb: tools/coursec.py tools/terrainmesh.py
 	python3 tools/coursec.py build courses/$(shell echo $* | tr A-Z a-z) $@

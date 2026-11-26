@@ -37,7 +37,11 @@ ALERT ID RomIncompatibleAlert
 ERROR
 BEGIN
   TITLE "Par 386"
+#ifdef SMALL_SCREEN
+  MESSAGE "Par 386 needs Palm OS 3.0 or newer."
+#else
   MESSAGE "Par 386 needs Palm OS 3.1 or newer."
+#endif
   BUTTONS "OK"
 END
 

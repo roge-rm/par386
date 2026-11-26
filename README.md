@@ -45,9 +45,10 @@ The TX demo and round pictures are from 0.12.0. The character editor, IIIx and D
 
 ## Install
 
-[Download Par 386](https://github.com/roge-rm/par386/releases/latest). HotSync `Par386.prc` and at least one course PDB from the ZIP.
+[Download Par 386](https://github.com/roge-rm/par386/releases/latest). Pick a ZIP and HotSync the PRC and at least one course PDB.
 
-- The app takes about 1.3 MB. Each course takes 1.3 to 1.9 MB.
+- `Par386-0.13.0.zip` has the regular app (1.3 MB) and nine full courses (1.3–1.8 MB each).
+- `Par386-small-0.13.0.zip` has the 160×160 monochrome and greyscale app (516 KiB) and all nine courses in compact form (672–905 KiB each). The compact courses work with either app. Install one app and one version of each course.
 - Copy course PDBs to `/PALM/Programs/Par386/`, `/PALM/Launcher/` or the root of the SD card. Leave enough free handheld memory for the whole course.
 - If you see **Update course**, install the current PDB. Each hole needs a terrain mesh and putting contours. The bundled PDBs also have lie grids for quicker loading.
 
@@ -58,6 +59,8 @@ The ZIP includes Auld Kirk, Banksia Heath, Bracken Mere, Carrig Head, Cascade Sp
 ## Devices
 
 Palm OS 3.1 or newer. Displays can be 1-bit monochrome, 2-bit or 4-bit greyscale, or 8-bit or 16-bit colour. The title shows Carrig Head. The title and menus fill tall and landscape colour screens.
+
+The small build runs on Palm OS 3.0 on the Palm III in CloudpilotEmu.
 
 Older Palms play tones. Palm OS 5 Palms with sound streams also play samples for the strike, landing, splash and cup. **Settings → Sound** has **On**, **Effects** and **Off**.
 
@@ -163,6 +166,7 @@ On the Dana, Left and Right aim. Up and Down change clubs. Enter swings or selec
 Install prc-tools-remix, `arm-palmos-gcc` and PilRC. Put the Palm OS SDK 5r3 at `../palm-os-sdk/sdk-5r3`. You also need Python 3, Pillow and NumPy.
 
 - `make release` builds `build/Par386.prc` and the course files. The debug build currently exceeds the Palm code segment limit.
+- `make small compact-courses` builds `build/Par386-small.prc` and the smaller PDBs in `build/compact-courses/`. The small app uses greyscale and tone sound. You can use the compact courses with either app.
 - `make host-test` builds and tests the game core with GCC, ASan and UBSan.
 - `make courses` compiles the courses into `build/courses/`. See the [course format](doc/course-format.md) to make your own.
 

@@ -303,6 +303,9 @@ static void StreamOpen(void)
 	MemHandle h;
 	Err e;
 
+	h = DmGetResource(kSmpType, kSmpFirst);
+	if (!h) return;
+	DmReleaseResource(h);
 	gMix = (Mix *)MemPtrNew(sizeof(Mix));
 	if (!gMix) return;
 	MemSet(gMix, sizeof(Mix), 0);

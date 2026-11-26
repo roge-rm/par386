@@ -36,6 +36,11 @@ static UInt8 *gOffBits;         /* 16-bit mode: gOff's pixels */
 static UInt16 gOffRb;
 static Boolean gLE;             /* gOff's 16-bit pixels are low byte first */
 static Boolean g16, gDD, gRom35, gPins, gPinsClosed, gSmall;
+#ifdef SMALL_SCREEN
+enum { kSmallScreen = 1 };
+#else
+enum { kSmallScreen = 0 };
+#endif
 static Boolean gDepthSet, gPalSet;
 static UInt32 gOldDepth, gDepths, gPinsVer;
 static UInt16 gPinsOld;         /* the input area's state at launch */
@@ -216,7 +221,7 @@ static void SEC_DANA Size(Int16 *w, Int16 *h)
 	Coord ew = 160, eh = 160;
 	Int16 sc = gS.scale;
 
-	if (gRom35 && (!gSony || gSilk) && !gSmall) Extent(&ew, &eh);
+	if (!kSmallScreen && gRom35 && (!gSony || gSilk) && !gSmall) Extent(&ew, &eh);
 	if (sc == 1 && ew == DANA_SCREEN_W && eh == 160) {
 		*w = ew;
 		*h = eh;
@@ -404,22 +409,24 @@ Err ScreenOpen(void)
 	FtrGet(sysFtrCreator, sysFtrNumROMVersion, &rom);
 	gRom35 = rom >= kRom35;
 	gOS5 = rom >= 0x05000000UL;
-	if (gRom35) FtrGet(sysFtrCreator, sysFtrNumWinVersion, &win);
-	if (win >= 4) WinScreenGetAttribute(winScreenDensity, &density);
-	gDD = density == kDensityDouble;
-	gPins = FtrGet(pinCreator, pinFtrAPIVersion, &v) == errNone;
-	if (gPins) gPinsVer = v;
-	if (FtrGet(kSonyCreator, sonyFtrSysInfo, &sv) == errNone) {
-		if (!gDD && win < 4) SonyOpen();
-		if (gRom35) SilkOpen();
+	if (!kSmallScreen) {
+		if (gRom35) FtrGet(sysFtrCreator, sysFtrNumWinVersion, &win);
+		if (win >= 4) WinScreenGetAttribute(winScreenDensity, &density);
+		gDD = density == kDensityDouble;
+		gPins = FtrGet(pinCreator, pinFtrAPIVersion, &v) == errNone;
+		if (gPins) gPinsVer = v;
+		if (FtrGet(kSonyCreator, sonyFtrSysInfo, &sv) == errNone) {
+			if (!gDD && win < 4) SonyOpen();
+			if (gRom35) SilkOpen();
+		}
 	}
 	if (WinScreenMode(winScreenModeGetSupportedDepths, NULL, NULL, &depths, NULL) != errNone)
 		depths = 1;
 	gDepths = depths;
 
 	/* the deepest the screen has; colour needs OS 3.5 */
-	if (gRom35 && (depths & 0x8000)) depth = 16;
-	else if (gRom35 && (depths & 0x80)) depth = 8;
+	if (!kSmallScreen && gRom35 && (depths & 0x8000)) depth = 16;
+	else if (!kSmallScreen && gRom35 && (depths & 0x80)) depth = 8;
 	else if (depths & 0x08) depth = 4;
 	else if (depths & 0x02) depth = 2;
 	else depth = 1;

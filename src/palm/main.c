@@ -14,7 +14,11 @@
 #include "sound.h"
 #include "records.h"
 
+#ifdef SMALL_SCREEN
+#define kMinRomVersion sysMakeROMVersion(3, 0, 0, sysROMStageRelease, 0)
+#else
 #define kMinRomVersion sysMakeROMVersion(3, 1, 0, sysROMStageRelease, 0)
+#endif
 #define kRom35 sysMakeROMVersion(3, 5, 0, sysROMStageRelease, 0)
 
 /* palmOne 5-way: keyCode holds the held bits, the change bits sit 8 above. */
