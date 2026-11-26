@@ -45,66 +45,72 @@ The TX demo and round pictures are from 0.12.0. The character editor, IIIx and D
 
 ## Install
 
-[Download Par 386](https://github.com/roge-rm/par386/releases/latest). Pick a ZIP and HotSync the PRC and at least one course PDB.
+[Download Par 386](https://github.com/roge-rm/par386/releases/latest). HotSync one PRC and at least one course PDB.
 
-- `Par386-0.13.0.zip` has the regular app (1.3 MB) and nine full courses (1.3–1.8 MB each).
-- `Par386-small-0.13.0.zip` has the 160×160 monochrome and greyscale app (516 KiB) and all nine courses in compact form (672–905 KiB each). The compact courses work with either app. Install one app and one version of each course.
-- Copy course PDBs to `/PALM/Programs/Par386/`, `/PALM/Launcher/` or the root of the SD card. Leave enough free handheld memory for the whole course.
-- If you see **Update course**, install the current PDB. Each hole needs a terrain mesh and putting contours. The bundled PDBs also have lie grids for quicker loading.
+| ZIP | Palm OS | App size | Size per course |
+|---|---|---:|---:|
+| `Par386-0.13.0.zip` | 3.1 or newer | 1.3 MB | 1.3 to 1.8 MB |
+| `Par386-small-0.13.0.zip` | 3.0 or newer | 516 KiB | 672 to 905 KiB |
 
-On a Palm m125, you can put `Par386.prc` in `/PALM/Launcher/` on a FAT16 card and open it from the card category. Leave enough room in handheld memory for the app. If you see **Can't Copy** on a large partition, install the [Palm File Manager Update](https://palmdb.net/app/palm-file-manager-update) in handheld memory and run **SD Installer**. A 32 MiB FAT16 partition worked in Frond with an unpatched m125.
+Both ZIPs have Auld Kirk, Banksia Heath, Bracken Mere, Carrig Head, Cascade Springs, Crocodile Bend, Falesia Grove, Saffron Dunes and Sakura Bay. Compact courses work with either app. Install one version of each course. The picker holds up to 12.
 
-The ZIP includes Auld Kirk, Banksia Heath, Bracken Mere, Carrig Head, Cascade Springs, Crocodile Bend, Falesia Grove, Saffron Dunes and Sakura Bay. The picker holds up to 12 courses.
+If you see **Update course**, install the current PDB. Each hole needs a terrain mesh and putting contours. The bundled courses also have lie grids for quicker loading.
+
+### SD cards
+
+Copy course PDBs to `/PALM/Programs/Par386/`, `/PALM/Launcher/` or the root of the card. Leave room in handheld memory for the whole course.
+
+On a Palm m125, put `Par386.prc` in `/PALM/Launcher/` on a FAT16 card. Open it from the card category. Leave room in handheld memory for the app.
+
+If a large partition gives you **Can't Copy**, install the [Palm File Manager Update](https://palmdb.net/app/palm-file-manager-update) in handheld memory and run **SD Installer**. A 32 MiB FAT16 partition worked in Frond with an unpatched m125.
 
 ## Devices
 
-Palm OS 3.1 or newer. Displays can be 1-bit monochrome, 2-bit or 4-bit greyscale, or 8-bit or 16-bit colour. The title shows Carrig Head. The title and menus fill tall and landscape colour screens.
+- The regular app supports 1-bit monochrome, 2-bit and 4-bit greyscale, and 8-bit and 16-bit colour. The Carrig Head title and menus fill tall and landscape colour screens.
+- The small app is for 160×160 monochrome and greyscale screens. Tested on the Palm III with Palm OS 3.0 in CloudpilotEmu.
+- The regular app was tested in Frond on the Palm IIIx, Tungsten TX, Zire 72, Sony CLIÉ and AlphaSmart Dana.
 
-The small build runs on Palm OS 3.0 on the Palm III in CloudpilotEmu.
+Older Palms and the small app play tones. The regular app plays samples for the strike, landing, splash and cup on Palm OS 5 devices with sound streams. **Settings → Sound** has **On**, **Effects** and **Off**.
 
-Older Palms play tones. Palm OS 5 Palms with sound streams also play samples for the strike, landing, splash and cup. **Settings → Sound** has **On**, **Effects** and **Off**.
+Putting contours work on all displays. 68k Palms use compact meshes. On the TX, the regular app uses ARM code for detailed meshes and colour conversion.
 
-Putting contours work on all displays. 68k Palms use compact terrain meshes. The TX uses native ARM code for the detailed mesh and colour conversion.
-
-On the Dana (560×160), tap the side map to aim. The trail stays there during the shot. **Map** opens a larger view. The course picker shows a preview beside the list. Round setup puts the players beside the tee and hole choices. The 18-hole card shows both nines together.
+On the Dana (560×160), tap the side map to aim and follow the ball there. **Map** opens a larger view. The course picker puts the preview beside the list. Round setup puts players beside the tee and hole choices. The 18-hole card shows both nines.
 
 In landscape, the bottom bar also shows hazards or round standings. The swing meter uses the full width.
-
-Tested in Frond on the Palm IIIx, Tungsten TX, Zire 72, Sony CLIÉ and AlphaSmart Dana.
 
 ## Playing
 
 1. Pick a course under **Courses**. Choose **Play a round**.
 2. Pick a game and set the player slots. Choose **Tee off**.
-3. Tap the view to aim. The aim mark fades after a moment. Tap the club to change the one the game picked.
+3. Tap the view to aim. The aim mark fades after a moment. Tap the club to change it.
 4. Tap **Swing**, tap again for power, then tap as the marker comes back to the snap line. An early or late snap sends the shot off line.
 5. On the green, tap **Putt**, then tap again for power. The cup mark accounts for green speed and slope.
 
-Open **Map** and tap a target to see its yardage. **Book** shows the hazards along that line. On standard layouts, **Settings → Shot view** switches between the map and 3D view during shots.
+On standard layouts, **Settings → Shot view** switches between the map and 3D view during shots.
 
-The game saves when you leave a round. Pick **Continue round** in the clubhouse to carry on.
+The game saves when you leave a round. Pick **Continue round** to carry on.
 
 In **Player**, set a name of up to eight characters for the first human player. **Aa** switches case. **Edit Character** changes their gender, handedness, skin colour and clothes. The preview updates as you make changes.
 
 ## Games and practice
 
-Each player is Human, a computer golfer (**Easy**, **Fair**, **Good** or **Pro**) or **Off**. The computer plays the same shots and makes more mistakes on the lower levels. **CPU: Quick** shows where the shot ended. **CPU: Full** shows the whole shot. Tap or press any key to hurry them along.
+Set each slot to Human, a computer golfer (**Easy**, **Fair**, **Good** or **Pro**) or **Off**. The computer makes more mistakes on lower levels. **CPU: Quick** shows where the shot ended. **CPU: Full** shows the whole shot. Tap or press any key to skip ahead.
 
 On an 18-hole course, **Holes** offers **All 18**, **Front 9** and **Back 9**. Each tee and hole set has its own record. Tournaments use the whole course.
 
 | Game | Players | Scoring |
 |---|---|---|
 | Stroke play | 1 to 4 | Fewest strokes |
-| Match play | 2 | Win, lose or halve each hole. The match ends when the lead is greater than the holes left, as in 3 & 2 |
+| Match play | 2 | Win, lose or halve each hole. A lead greater than the holes left ends the match (3 & 2, for example) |
 | Skins | 2 to 4 | The lowest score wins the skin. A tie carries it to the next hole |
 | Best ball | 4 | P1 and P2 play P3 and P4. Use each side's better score |
-| Tournament | 1 to 4 | Two rounds of stroke play against eight computer golfers. See the running total after each hole or on the card. Setup shows your best finish after you've played both rounds |
+| Tournament | 1 to 4 | Two rounds of stroke play against eight computer golfers. The card and hole result show the running total. Setup shows your best finish after two rounds |
 
 **Gimmies: 2 ft** gives short putts and counts the stroke. **Hole out** makes you play them. This applies to new rounds.
 
-The driving range uses the first par 5. Each ball starts at the tee. Putting practice moves the ball around the first green. Tap **Repeat** or press Scorecard to stay at the same spot. Tap again to switch back.
+The driving range starts each ball on the first par 5 tee. Putting practice moves the ball around the first green. Toggle **Repeat** with the pen or Scorecard button to stay in one spot.
 
-Your best score is under the course picture in **Courses**. The game keeps up to 36 course, tee and hole-set records from human rounds. A new record replaces the oldest when the list is full.
+**Courses** shows your best score under the course picture. The game keeps up to 36 course, tee and hole-set records from human rounds. A new record replaces the oldest when the list is full.
 
 On the final card, **Stats** or Scorecard shows fairways hit, greens in regulation, putts and penalties. **Next** shows the other players. Gimmies count as putts.
 
@@ -116,7 +122,7 @@ The game uses the four app buttons during play. Press Home (Applications) to lea
 
 **Shape** resets after each shot. Draw, fade, high and low work with any club except the putter. Punch starts at the 3 iron, open at the 9 iron.
 
-Palm IIIx and other Palms with app buttons:
+### Palm IIIx and other Palms with app buttons
 
 | Button | What it does |
 |---|---|
@@ -127,7 +133,7 @@ Palm IIIx and other Palms with app buttons:
 | Scroll up and down | Change club, move in menus |
 | Menu | Back to the clubhouse |
 
-5-way (Tungsten, Zire 72, Treo and the like):
+### 5-way (Tungsten, Zire 72, Treo and the like)
 
 | Key | What it does |
 |---|---|
@@ -138,7 +144,7 @@ Palm IIIx and other Palms with app buttons:
 
 On the map, Left and Right move the target in 5° steps. Up opens **Book**. The arrow shows which way the wind is blowing. Centre or Map goes back to the scene.
 
-Clie Jog Dial:
+### Sony CLIÉ Jog Dial
 
 | Control | What it does |
 |---|---|
@@ -147,17 +153,15 @@ Clie Jog Dial:
 | Back | Back to the clubhouse |
 | App buttons | As on the IIIx |
 
-Pen, on any device:
+### Pen
 
 | Tap | What it does |
 |---|---|
-| The view | Aim there |
-| Swing or Putt | Start the meter. Tap again for power and, on a swing, snap |
-| The club on the panel | Open the club picker. On the green, only the putter is available |
-| Shape on the panel | Next shot shape |
-| Map on the panel | Tap to aim and see the yardage. **Near** zooms in. **Hole** zooms out. **Back** keeps the target |
-| Book on the map's panel | Yards to the near and far edges of hazards on your line. A `+` means there's no far edge shown |
-| Card on the map's panel | Scorecard |
+| Club | Open the club picker. On the green, only the putter is available |
+| Shape | Next shot shape |
+| Map | Tap a target to aim and see the yardage. **Near** zooms in. **Hole** zooms out. **Back** keeps the target |
+| Book (on the map) | Yards to the near and far edges of hazards on your line. A `+` means there's no far edge shown |
+| Card (on the map) | Scorecard |
 
 On the Dana, Left and Right aim. Up and Down change clubs. Enter swings or selects. C or S opens the scorecard. Other letters open the map. Backspace goes back to the clubhouse.
 
@@ -166,7 +170,7 @@ On the Dana, Left and Right aim. Up and Down change clubs. Enter swings or selec
 Install prc-tools-remix, `arm-palmos-gcc` and PilRC. Put the Palm OS SDK 5r3 at `../palm-os-sdk/sdk-5r3`. You also need Python 3, Pillow and NumPy.
 
 - `make release` builds `build/Par386.prc` and the course files. The debug build currently exceeds the Palm code segment limit.
-- `make small compact-courses` builds `build/Par386-small.prc` and the smaller PDBs in `build/compact-courses/`. The small app uses greyscale and tone sound. You can use the compact courses with either app.
+- `make small compact-courses` builds `build/Par386-small.prc` and the PDBs in `build/compact-courses/`.
 - `make host-test` builds and tests the game core with GCC, ASan and UBSan.
 - `make courses` compiles the courses into `build/courses/`. See the [course format](doc/course-format.md) to make your own.
 
