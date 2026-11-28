@@ -255,7 +255,7 @@ static void poses(const RenderView *v, const RenderArt *a, int scale, int depth,
 	if (name) {
 		Play p;
 		Surface bg;
-		uint32_t down = 100 + MTR_UP_MS * 3 / 4, strike = down + MTR_DOWN_MS * 3 / 4;
+		uint32_t down = 100 + MTR_UP_MS * 3 / 4, strike = down + (depth < 8 ? MTR_GREY_DOWN_MS : MTR_DOWN_MS) * 3 / 4;
 
 		surface_d(&bg, scale, depth);
 		memcpy(bg.bits, s.bits, n);

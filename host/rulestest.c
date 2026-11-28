@@ -519,7 +519,7 @@ static int shot(Play *p, Surface *s, Surface *bg, uint32_t *t)
 		uint32_t up = 950, c = ball_carry(p->club, p->lie), down;
 		if (d < c * 0.95) up = ten(1000 * d / c);
 		if (up < 200) up = 200;
-		down = ten(up * (double)MTR_DOWN_MS / MTR_UP_MS);
+		down = ten(up * (double)(s->depth < 8 ? MTR_GREY_DOWN_MS : MTR_DOWN_MS) / MTR_UP_MS);
 		*t += up;
 		play_tap(p, 80, 60, *t);
 		tap_at(rt + up, 80, 60);
@@ -612,7 +612,7 @@ static void map_aim_tests(const Course *c, Surface *s)
 	Round r;
 	angle aim;
 	fixed distance[2];
-	uint8_t i;
+	uint8_t i, wind_ink = s->pa[s->depth < 8 ? UIC_INK : UIC_TEXT_HI];
 
 	rules_init(&r, "Par386 Test", 1, c->hole_count, c->par, 3);
 	play_start(&p, h, g, &r);
@@ -623,11 +623,11 @@ static void map_aim_tests(const Course *c, Surface *s)
 	aim = p.aim;
 	p.aim = 0;
 	play_status(s, &p, NULL);
-	CHECK(map_pixel(s, 145, 140) == s->pa[UIC_TEXT_HI] && map_pixel(s, 149, 144) != s->pa[UIC_TEXT_HI]);
+	CHECK(map_pixel(s, 145, 140) == wind_ink && map_pixel(s, 149, 144) != wind_ink);
 	p.wind_dir = 0;
 	p.aim = aim;
 	play_status(s, &p, NULL);
-	CHECK(map_pixel(s, 145, 140) != s->pa[UIC_TEXT_HI] && map_pixel(s, 149, 144) == s->pa[UIC_TEXT_HI]);
+	CHECK(map_pixel(s, 145, 140) != wind_ink && map_pixel(s, 149, 144) == wind_ink);
 	CHECK(play_tap(&p, 1, 1, 0) == 0 && p.view == PLAY_MAP);
 	CHECK(surface_at(g, YD(135), YD(235)) == SURF_WATER);
 	for (i = 0; i < 2; i++) {
@@ -861,8 +861,9 @@ static void pen_tests(const Course *c, Surface *s)
 			landed = 1;
 		}
 		if (t == 2200) {
+			uint8_t wind_ink = s->pa[s->depth < 8 ? UIC_INK : UIC_TEXT_HI];
 			play_status(s, &p, NULL);
-			CHECK(map_pixel(s, 145, 140) == s->pa[UIC_TEXT_HI] && map_pixel(s, 149, 144) != s->pa[UIC_TEXT_HI]);
+			CHECK(map_pixel(s, 145, 140) == wind_ink && map_pixel(s, 149, 144) != wind_ink);
 			save(s, "panel-map-flight");
 		}
 	}
@@ -872,7 +873,7 @@ static void pen_tests(const Course *c, Surface *s)
 		CHECK(play_frame(&p, s, NULL, t) == PL_ANIM);
 		play_result_pending(&p, 0);
 		CHECK(play_frame(&p, s, NULL, t) == (PL_ANIM | PL_DIRTY));
-		CHECK(map_pixel(s, 100, 123) == s->pa[UIC_BRASS_LT]);
+		CHECK(map_pixel(s, 100, 123) == s->pa[s->depth < 8 ? UIC_INK : UIC_BRASS_LT]);
 		CHECK(before != map_pixel(s, 100, 123));
 	}
 	save(s, "panel-result");
@@ -963,7 +964,7 @@ static void pen_tests(const Course *c, Surface *s)
 		CHECK(ball && drop && empty);
 	}
 	CHECK(p.state == PS_DONE && p.shot.result == SHOT_HOLED);
-	CHECK(map_pixel(s, 100, 123) == s->pa[UIC_BRASS_LT]);
+	CHECK(map_pixel(s, 100, 123) == s->pa[s->depth < 8 ? UIC_INK : UIC_BRASS_LT]);
 	save(s, "panel-next-hole");
 	CHECK(play_tap(&p, 115, 128, t) == PL_CARD && p.card == CARD_HOLE);
 	free((void *)art.backdrop.p);

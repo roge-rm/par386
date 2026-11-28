@@ -1513,7 +1513,7 @@ static void SEC_DANA golfer(const R *r, const RenderGolfer *g, uint8_t pose, int
 		int16_t e = r->w - x0;
 		uint16_t i0 = x0 < 0 ? (uint16_t)-x0 : 0, i1 = e < 0 ? 0 : e < (int16_t)w ? (uint16_t)e : w;
 		const uint8_t *tags = golfer_clothes(colours, g, gd, MULU16(w, h));
-		int edge = course && (r->lg == 1 || r->lg == 3);
+		int edge = course;
 		for (j = 0; j < h; j++, px += w) {
 			int16_t y = y0 + (int16_t)j;
 			int16_t k = g->left ? (int16_t)(w - 1 - i0) : (int16_t)i0;
@@ -1547,12 +1547,14 @@ static void SEC_DANA golfer(const R *r, const RenderGolfer *g, uint8_t pose, int
 				     ((k + 1 == w || !px[k + 1]) && k >= 2 && px[k - 1] && px[k - 2]))) {
 					uint8_t bg = getpx(r, (int16_t)(x << dbl), (int16_t)(y << dbl));
 					if (r->lg == 3) c = golfer_edge_colour(c, bg);
-					else {
+					else if (r->lg == 1) {
 						uint8_t ink = pixval(r, x, y, c);
 						if (ink == bg || (ink | bg) < 2) {
 							c = bg < 2 ? PAL_GREY + 2 : bg == 2 ? PAL_GREY + 7 : PAL_GREY + 6;
 							if (bg == 2 && pixval(r, x, y, c) == 2) c = PAL_WHITE;
 						}
+					} else if (r->lg == 0 || fix_abs((int16_t)pixval(r, x, y, c) - bg) < 5) {
+						c = bg < (r->lg == 0 ? 1 : 8) ? PAL_BLACK : PAL_WHITE;
 					}
 				}
 				if (dbl) plot(r, x, y, c, 1);

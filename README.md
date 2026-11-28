@@ -49,8 +49,8 @@ The TX demo and round pictures are from 0.12.0. The character editor, IIIx and D
 
 | ZIP | Palm OS | App size | Size per course |
 |---|---|---:|---:|
-| `Par386-0.13.0.zip` | 3.1 or newer | 1.3 MB | 1.3 to 1.8 MB |
-| `Par386-small-0.13.0.zip` | 3.0 or newer | 516 KiB | 672 to 905 KiB |
+| `Par386-0.13.1.zip` | 3.1 or newer | 1.3 MB | 1.3 to 1.8 MB |
+| `Par386-small-0.13.1.zip` | 3.0 or newer | 517 KiB | 672 to 905 KiB |
 
 Both ZIPs have Auld Kirk, Banksia Heath, Bracken Mere, Carrig Head, Cascade Springs, Crocodile Bend, Falesia Grove, Saffron Dunes and Sakura Bay. Compact courses work with either app. Install one version of each course. The picker holds up to 12.
 

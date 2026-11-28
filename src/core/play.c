@@ -6,6 +6,7 @@
 #define R_STRIP  1
 #define R_OVER   2      /* the aim marker or the ball moved */
 #define R_METER  4
+#define R_TURN  16      /* the first return frame includes the selected power */
 #define R_ALL    8      /* the scene under the overlays is new */
 
 enum { HEARD_LAND = 1, HEARD_LIP = 2 };
@@ -400,6 +401,11 @@ void play_start(Play *p, const Hole *h, const SurfaceGrid *g, Round *r)
 	take(p, (uint8_t)(n < 0 ? 0 : n));
 }
 
+static inline uint16_t SEC_UI meter_down_ms(const Play *p)
+{
+	return p->geo.depth < 8 ? MTR_GREY_DOWN_MS : MTR_DOWN_MS;
+}
+
 /* The meter's marker at now, 1/16 units from the bar's left. */
 static int16_t SEC_UI meter_pos(const Play *p, uint32_t now)
 {
@@ -411,8 +417,8 @@ static int16_t SEC_UI meter_pos(const Play *p, uint32_t now)
 		return (int16_t)(S16 + (int32_t)(W16 - S16) * (int32_t)e / MTR_UP_MS);
 	}
 	e = now - p->t1;
-	if (e > 2 * MTR_DOWN_MS) e = 2 * MTR_DOWN_MS;
-	return (int16_t)(p->turn - (int32_t)(W16 - S16) * (int32_t)e / MTR_DOWN_MS);
+	if (e > 2 * meter_down_ms(p)) e = 2 * meter_down_ms(p);
+	return (int16_t)(p->turn - (int32_t)(W16 - S16) * (int32_t)e / meter_down_ms(p));
 }
 
 static void SEC_UI launch(Play *p)
@@ -624,10 +630,11 @@ static int SEC_UI click(Play *p, uint32_t now)
 		}
 		snd_play(SND_CLICK);
 		p->state = PS_DOWN;
+		p->redraw |= R_TURN;
 		return PL_ANIM;
 	case PS_DOWN: {
 		uint32_t ts;
-		int32_t err, a;
+		int32_t err, a, window = p->geo.depth < 8 ? 35 : 10;
 		fixed e;
 		if (p->autoturn && (uint32_t)(now - p->tg) < MTR_GRACE_MS) {
 			/* just after the meter turned back by itself: the power press at full, and the way down starts now */
@@ -640,10 +647,10 @@ static int SEC_UI click(Play *p, uint32_t now)
 		}
 		p->autoturn = 0;
 		/* when the marker crossed (or will cross) the snap line, and how far off the click was */
-		ts = p->t1 + (uint32_t)((int32_t)(p->turn - S16) * MTR_DOWN_MS / (W16 - S16));
+		ts = p->t1 + (uint32_t)((int32_t)(p->turn - S16) * meter_down_ms(p) / (W16 - S16));
 		err = (int32_t)(now - ts);
 		a = err < 0 ? -err : err;
-		a = a > 10 ? a - 10 : 0;
+		a = a > window ? a - window : 0;
 		e = a >= MTR_SNAP_MS ? FIX_ONE : (fixed)((a << 16) / MTR_SNAP_MS);
 		p->snap = err > 0 ? -e : e;
 		p->mpos = meter_pos(p, now);
@@ -1231,7 +1238,7 @@ static void SEC_UI add(char *t, int16_t *n, const char *s)
 
 /* The panel: a raised face with two rows of boxes, ROW_H units each.
  * Readouts are sunken wells with light text, buttons raised brass, as in
- * the dialogs. On greys the face is white and the wells black. */
+ * the dialogs. On greys the readouts are black on white. */
 static void SEC_UI face(Surface *s)
 {
 	ui_fill(s, 0, STRIP_Y, s->lw, 1, UIC_BLACK);
@@ -1241,8 +1248,8 @@ static void SEC_UI face(Surface *s)
 
 static void SEC_UI well(Surface *s, int16_t x, int16_t y, int16_t w, int16_t h)
 {
-	ui_fill(s, x + 1, y + 1, w - 2, h - 2, UIC_TITLE);
-	ui_bevel(s, x, y, w, h, UIC_INK, UIC_WHITE);
+	ui_fill(s, x + 1, y + 1, w - 2, h - 2, s->depth < 8 ? UIC_WHITE : UIC_TITLE);
+	ui_bevel(s, x, y, w, h, UIC_INK, s->depth < 8 ? UIC_INK : UIC_WHITE);
 }
 
 /* Text in a box w wide at row y, left, centred or right (align -1, 0, 1),
@@ -1261,13 +1268,13 @@ static void SEC_UI box_text(Surface *s, int16_t x, int16_t y, int16_t w, const c
 static void SEC_UI readout(Surface *s, int16_t x, int16_t y, int16_t w, const char *t, int8_t align, uint8_t c)
 {
 	well(s, x, y, w, ROW_H);
-	box_text(s, x, y, w, t, -1, align, c);
+	box_text(s, x, y, w, t, -1, align, s->depth < 8 ? UIC_INK : c);
 }
 
 static void SEC_UI button(Surface *s, int16_t x, int16_t y, int16_t w, const char *t)
 {
 	ui_fill(s, x, y, w, ROW_H, UIC_BRASS);
-	ui_bevel(s, x, y, w, ROW_H, UIC_BRASS_LT, UIC_BRASS_DK);
+	ui_bevel(s, x, y, w, ROW_H, s->depth < 8 ? UIC_INK : UIC_BRASS_LT, UIC_BRASS_DK);
 	box_text(s, x, y, w, t, -1, 0, UIC_INK);
 }
 
@@ -1294,6 +1301,8 @@ static int SEC_RENDER arrow_bit(const uint16_t *rows, uint8_t d, int16_t r, int1
 static void SEC_UI rose(const Play *p, Surface *s, uint8_t map)
 {
 	int16_t x = ROSE_X, y = ROW_A, u = s->scale, r2 = 12 * u, i, j, n;
+	uint8_t ring = s->depth < 8 ? UIC_INK : UIC_PAPER_DK;
+	uint8_t text = s->depth < 8 ? UIC_INK : UIC_PAPER;
 	int16_t cx = (int16_t)(2 * (x + 12) * u + u), cy = (int16_t)(2 * (y + 7) * u + u);
 	int32_t lo = (int32_t)(r2 - u) * (r2 - u), hi = (int32_t)(r2 + u) * (r2 + u);
 	char t[4];
@@ -1304,20 +1313,20 @@ static void SEC_UI rose(const Play *p, Surface *s, uint8_t map)
 		for (i = (cx - r2 - u) >> 1; i <= (cx + r2 + u) >> 1; i++) {
 			int32_t d = 2 * i + 1 - cx;
 			d = d * d + e * e;
-			if (d >= lo && d < hi) gfx_fill(s, i, j, 1, 1, UIC_PAPER_DK);
+			if (d >= lo && d < hi) gfx_fill(s, i, j, 1, 1, ring);
 		}
 	}
 	/* The axis at the top of the view. */
-	ui_fill(s, x + 12, y + 1, 1, 1, UIC_PAPER);
+	ui_fill(s, x + 12, y + 1, 1, 1, text);
 	if (p->wind_mph) {
 		angle up = map ? 0x4000 : p->aim;
 		uint8_t d = (uint8_t)((((uint16_t)(p->wind_dir - up) + 4096) >> 13) & 7);
 		for (j = 0; j < 9; j++)
 			for (i = 0; i < 9; i++)
-				if (arrow_bit(arrows[d & 1], d, j, i, 8)) ui_fill(s, x + 8 + i, y + 3 + j, 1, 1, UIC_TEXT_HI);
+				if (arrow_bit(arrows[d & 1], d, j, i, 8)) ui_fill(s, x + 8 + i, y + 3 + j, 1, 1, s->depth < 8 ? UIC_INK : UIC_TEXT_HI);
 	}
 	n = play_num(t, p->wind_mph);
-	box_text(s, x, y + 12, ROSE_W, t, n, 0, UIC_PAPER);
+	box_text(s, x, y + 12, ROSE_W, t, n, 0, text);
 }
 
 static const uint16_t small_arrows[2][5] = {
@@ -1337,9 +1346,9 @@ static void SEC_RENDER address_wind(const Play *p, Surface *s)
 		for (j = 0; j < 5; j++)
 			for (i = 0; i < 5; i++)
 				if (arrow_bit(small_arrows[d & 1], d, j, i, 4))
-					ui_fill(s, x + 1 + i, ROW_A + 3 + j, 1, 1, UIC_TEXT_HI);
+					ui_fill(s, x + 1 + i, ROW_A + 3 + j, 1, 1, s->depth < 8 ? UIC_INK : UIC_TEXT_HI);
 	i = play_num(t, p->wind_mph);
-	ui_text(s, x + AIM_WIND_W - 1 - i * UI_CHAR, ROW_A + 2, t, i, UIC_PAPER, -1);
+	ui_text(s, x + AIM_WIND_W - 1 - i * UI_CHAR, ROW_A + 2, t, i, s->depth < 8 ? UIC_INK : UIC_PAPER, -1);
 }
 
 /* The shot or the player, in room characters: "2nd" (or "Shot 2" if
@@ -1564,8 +1573,8 @@ static void SEC_MENU shot_result(Surface *s, const Play *p)
 		return;
 	}
 	well(s, 2, ROW_A, s->lw - 4, 2 * ROW_H + 1);
-	box_text(s, 2, ROW_A, s->lw - 4, p->msg1, -1, 0, UIC_TEXT_HI);
-	box_text(s, 2, ROW_B, s->lw - 4, p->msg2, -1, 0, UIC_PAPER);
+	box_text(s, 2, ROW_A, s->lw - 4, p->msg1, -1, 0, s->depth < 8 ? UIC_INK : UIC_TEXT_HI);
+	box_text(s, 2, ROW_B, s->lw - 4, p->msg2, -1, 0, s->depth < 8 ? UIC_INK : UIC_PAPER);
 }
 
 static int SEC_MENU landscape_hazard(Surface *s, const Play *p, int16_t x, int16_t w)
@@ -1717,7 +1726,7 @@ static inline int16_t SEC_UI meter_offset(int16_t width, int16_t pos)
 }
 
 /* The meter in a well on the panel's lower row, columns x0 to x1 only: the
- * track, the power so far in brass, quarter marks, the snap line and the
+ * track, the power in brass with a lighter fill on return, the snap line and the
  * marker (black outlined in white, wider on the way back on greys).
  * The well's edge only on a full draw (x0 0); a frame's redraw
  * keeps to the rows inside and draws each pixel about once, to stay cheap
@@ -1725,9 +1734,13 @@ static inline int16_t SEC_UI meter_offset(int16_t width, int16_t pos)
 static void SEC_UI draw_meter(Play *p, Surface *s, int16_t x0, int16_t x1)
 {
 	int16_t mw = meter_width(s), snap = meter_offset(mw, MTR_SNAP);
-	int16_t y = ROW_B, top = p->state == PS_UP ? p->mpos : p->turn, k;
+	int16_t y = ROW_B, k;
 	int16_t m = MTR_X + meter_offset(mw, p->mpos >> 4);
 	int16_t wx = MTR_X - 2, ww = mw + 4, sx = MTR_X + snap, i0 = x0, i1 = x1;
+	int16_t end = p->state == PS_DOWN ? MTR_X + meter_offset(mw, p->turn >> 4) : m;
+	int16_t split = m < sx ? sx : m;
+
+	if (end < sx) end = sx;
 
 	if (x0 <= 0) {
 		mfill(s, x0, x1, wx, y, ww, 1, UIC_INK);
@@ -1746,14 +1759,15 @@ static void SEC_UI draw_meter(Play *p, Surface *s, int16_t x0, int16_t x1)
 	mfill(s, i0, i1, MTR_X - 1, y + 8, mw + 2, 1, UIC_PAPER_DK);
 	mfill(s, i0, i1, MTR_X - 1, y + 3, 1, 5, UIC_PAPER_DK);
 	mfill(s, i0, i1, MTR_X + mw, y + 3, 1, 5, UIC_PAPER_DK);
-	k = top > S16 ? meter_offset(mw, top >> 4) - snap : 0;
+	k = split - sx;
 	mfill(s, i0, i1, MTR_X, y + 3, snap, 5, UIC_BLACK);
 	if (k) {
 		mfill(s, i0, i1, sx, y + 3, k, 1, UIC_BRASS_LT);
 		mfill(s, i0, i1, sx, y + 4, k, 3, UIC_BRASS);
 		mfill(s, i0, i1, sx, y + 7, k, 1, UIC_BRASS_DK);
 	}
-	mfill(s, i0, i1, sx + k, y + 3, mw - snap - k, 5, UIC_BLACK);
+	if (end > split) mfill(s, i0, i1, split, y + 3, end - split, 5, UIC_BRASS_LT);
+	mfill(s, i0, i1, end, y + 3, MTR_X + mw - end, 5, UIC_BLACK);
 	for (k = 1; k < 4; k++) mfill(s, i0, i1, sx + (mw - snap) * k / 4, y + 8, 1, 2, UIC_PAPER);
 	mfill(s, i0, i1, sx, y + 1, 1, ROW_H - 2, UIC_TEXT_HI);
 	if (p->club == CLUB_PT) {
@@ -1764,7 +1778,7 @@ static void SEC_UI draw_meter(Play *p, Surface *s, int16_t x0, int16_t x1)
 	if (p->mpos >= 0) {
 		int16_t border = s->depth < 8 && p->state == PS_DOWN ? 2 : 1;
 		mfill(s, i0, i1, m - 2 * border, y + 1, 4 * border - 1, ROW_H - 2, UIC_WHITE);
-		mfill(s, i0, i1, m - border, y + 1 + border, 2 * border - 1, ROW_H - 2 - 2 * border, UIC_BLACK);
+		mfill(s, i0, i1, m - border, y + 2, 2 * border - 1, ROW_H - 4, UIC_BLACK);
 	}
 	p->mshown = m;
 	if (x0 <= 0) dirty(p, (int16_t)(x0 * s->scale), (int16_t)(y * s->scale), (int16_t)((x1 - x0) * s->scale), (int16_t)(ROW_H * s->scale));
@@ -2642,9 +2656,13 @@ int play_frame(Play *p, Surface *s, Surface *bg, uint32_t now)
 	if (!s->fullview && (p->redraw & R_STRIP) && (p->state == PS_UP || p->state == PS_DOWN)) {
 		draw_meter(p, s, 0, s->lw);
 	} else if (!s->fullview && (p->redraw & R_METER) && (p->state == PS_UP || p->state == PS_DOWN)) {
-		/* only between where the marker was and where it is, as the power fill follows it */
+		/* Only redraw the part of the track touched by the marker or fill. */
 		int16_t m = MTR_X + meter_offset(meter_width(s), p->mpos >> 4);
 		int16_t a = m < p->mshown ? m : p->mshown, b = m < p->mshown ? p->mshown : m;
+		if (p->redraw & R_TURN) {
+			int16_t end = MTR_X + meter_offset(meter_width(s), p->turn >> 4);
+			if (b < end) b = end;
+		}
 		draw_meter(p, s, a - 4, b + 3);
 	}
 	p->redraw = 0;
@@ -2658,6 +2676,7 @@ void play_shown(Play *p, uint32_t now)
 	if (p->autoturn == 1) {
 		/* the full marker is on the screen: the grace for a late power press runs from now */
 		p->tg = now;
+		if (p->geo.depth < 8) p->t1 = now;  /* show full power before starting back */
 		p->autoturn = 2;
 	}
 	if (!p->mfirst) return;

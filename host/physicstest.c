@@ -723,7 +723,7 @@ static void return_marker_test(const Hole *h, const SurfaceGrid *g)
 
 	for (depth = 1; depth <= 4; depth *= 2) {
 		Surface s = {0};
-		int16_t x, old, y, i;
+		int16_t x, old, y, i, fill_x;
 
 		s.w = s.h = 160;
 		s.scale = 1;
@@ -738,6 +738,8 @@ static void return_marker_test(const Hole *h, const SurfaceGrid *g)
 		play_frame(&p, &s, NULL, 1800);
 		old = p.mshown;
 		y = p.dirty.y;
+		fill_x = (old - 5) & ~1;
+		CHECK(packed_pixel(&s, fill_x, (y + 4) & ~1) == s.pa[UIC_BRASS]);
 		CHECK(packed_pixel(&s, old - 4, y) == s.pa[UIC_BLACK]);
 		CHECK(play_key(&p, KEY_SELECT, 1800) & PL_ANIM);
 		CHECK(p.state == PS_DOWN);
@@ -747,7 +749,9 @@ static void return_marker_test(const Hole *h, const SurfaceGrid *g)
 
 		CHECK(play_frame(&p, &s, NULL, 1900) & PL_DIRTY);
 		x = p.mshown;
-		CHECK(x < old - 7);
+		CHECK(x < fill_x - 2);
+		CHECK(packed_pixel(&s, fill_x, (y + 4) & ~1) == s.pa[UIC_BRASS_LT]);
+		CHECK(packed_pixel(&s, (x - 6) & ~1, (y + 4) & ~1) == s.pa[UIC_BRASS]);
 		CHECK(p.dirty.x <= x - 4 && p.dirty.x + p.dirty.w > old + 2);
 		CHECK(packed_pixel(&s, old - 4, y) == s.pa[UIC_BLACK]);
 		for (i = -4; i <= 2; i++) {
@@ -755,6 +759,9 @@ static void return_marker_test(const Hole *h, const SurfaceGrid *g)
 			CHECK(packed_pixel(&s, x + i, y + 4) ==
 			      s.pa[i >= -2 && i <= 0 ? UIC_BLACK : UIC_WHITE]);
 		}
+		/* A click just after the snap line is still straight on a slow LCD. */
+		CHECK(play_key(&p, KEY_SELECT, 1800 + MTR_GREY_DOWN_MS * 4 / 5 + 30) & PL_ANIM);
+		CHECK(p.state == PS_FLY && p.snap == 0 && !p.mishit);
 		free(s.bits);
 	}
 }
@@ -786,7 +793,7 @@ static void landscape_meter_test(const Hole *h, const SurfaceGrid *g)
 	CHECK(p.mshown == x && x > MTR_X + MTR_W);
 	CHECK(play_tap(&p, 235, 151, start + power) & PL_ANIM);
 	CHECK(p.state == PS_DOWN && p.power > YD(0.79) && p.power < YD(0.81));
-	CHECK(play_tap(&p, 235, 151, start + power + power * MTR_DOWN_MS / MTR_UP_MS) & PL_ANIM);
+	CHECK(play_tap(&p, 235, 151, start + power + power * MTR_GREY_DOWN_MS / MTR_UP_MS) & PL_ANIM);
 	CHECK(p.state == PS_FLY && p.snap == 0);
 	free(s.bits);
 }
@@ -802,7 +809,7 @@ static void swing(Play *p, Surface *s, Surface *bg, uint32_t t, uint32_t up, int
 	CHECK(play_tap(p, 80, 60, t + up) & PL_ANIM);
 	CHECK(p->state == PS_DOWN);
 	play_frame(p, s, bg, t + up + 100);
-	ts = t + up + (uint32_t)up * MTR_DOWN_MS / MTR_UP_MS;
+	ts = t + up + (uint32_t)up * (s->depth < 8 ? MTR_GREY_DOWN_MS : MTR_DOWN_MS) / MTR_UP_MS;
 	play_key(p, KEY_SELECT, (uint32_t)((int32_t)ts + off));
 }
 
@@ -872,10 +879,10 @@ static void press_tests(const Hole *h, const SurfaceGrid *g)
 	play_frame(&p, &s, &bg, 2250);
 	CHECK(p.state == PS_DOWN);
 	gate_release(&k, TX, ROCK);
-	CHECK(gated(&p, &k, TX, 0, 1, 1800 + 600) & PL_ANIM);
+	CHECK(gated(&p, &k, TX, 0, 1, 1800 + 960) & PL_ANIM);
 	CHECK(p.state == PS_FLY && p.power > YD(0.79) && p.power < YD(0.81) && p.snap == 0);
 
-	/* a quick real double press at the top: power, then snap 120 ms later */
+	/* a quick real double press at the top: power, then snap 192 ms later */
 	play_init(&p, h, g, 7);
 	play_frame(&p, &s, &bg, 0);
 	CHECK(gated(&p, &k, TX, 0, 1, 10000) & PL_ANIM);
@@ -883,7 +890,7 @@ static void press_tests(const Hole *h, const SurfaceGrid *g)
 	CHECK(gated(&p, &k, TX, 0, 1, 10000 + MTR_UP_MS * 16 / 100) & PL_ANIM);
 	gate_release(&k, TX, ROCK);
 	CHECK(p.state == PS_DOWN);
-	CHECK(gated(&p, &k, TX, 0, 1, 10000 + MTR_UP_MS * 16 / 100 + 120) & PL_ANIM);
+	CHECK(gated(&p, &k, TX, 0, 1, 10000 + MTR_UP_MS * 16 / 100 + 192) & PL_ANIM);
 	CHECK(p.state == PS_FLY && p.snap == 0);
 
 	/* the meter runs out at the top and turns back: a press within MTR_GRACE_MS is the power press at
@@ -897,7 +904,7 @@ static void press_tests(const Hole *h, const SurfaceGrid *g)
 	CHECK(play_key(&p, KEY_SELECT, 30000 + MTR_UP_MS + 100) & PL_ANIM);
 	CHECK(p.state == PS_DOWN && !p.autoturn && p.t1 == 30000 + MTR_UP_MS + 100 && p.power == FIX_ONE);
 	play_frame(&p, &s, &bg, 30000 + MTR_UP_MS + 400);
-	CHECK(play_key(&p, KEY_SELECT, 30000 + MTR_UP_MS + 100 + MTR_DOWN_MS) & PL_ANIM);
+	CHECK(play_key(&p, KEY_SELECT, 30000 + MTR_UP_MS + 100 + MTR_GREY_DOWN_MS) & PL_ANIM);
 	CHECK(p.state == PS_FLY && p.snap == 0 && p.power == FIX_ONE && !p.mishit);
 	play_init(&p, h, g, 7);
 	play_frame(&p, &s, &bg, 0);
@@ -914,7 +921,7 @@ static void press_tests(const Hole *h, const SurfaceGrid *g)
 	play_frame(&p, &s, &bg, 45000 + MTR_UP_MS + 10);
 	CHECK(p.autoturn == 1 && p.tg == 45000 + MTR_UP_MS + 10);
 	play_shown(&p, 45000 + MTR_UP_MS + 200);
-	CHECK(p.autoturn == 2 && p.tg == 45000 + MTR_UP_MS + 200);
+	CHECK(p.autoturn == 2 && p.tg == 45000 + MTR_UP_MS + 200 && p.t1 == p.tg);
 	CHECK(play_key(&p, KEY_SELECT, 45000 + MTR_UP_MS + 300) & PL_ANIM);
 	CHECK(p.state == PS_DOWN && p.power == FIX_ONE && p.t1 == 45000 + MTR_UP_MS + 300);
 	/* a power press before the top turns it as usual, so no grace after it */
@@ -1099,11 +1106,11 @@ static void meter_tests(const Hole *h, const SurfaceGrid *g)
 	play_frame(&p, &s, &bg, t + 10);
 
 	/* late and early clicks give a hook and a slice in proportion */
-	swing(&p, &s, &bg, 50000, MTR_UP_MS / 2, 50);
+	swing(&p, &s, &bg, 50000, MTR_UP_MS / 2, 75);
 	CHECK(p.snap == -YD(0.5));
 	play_init(&p, h, g, 7);
 	play_frame(&p, &s, &bg, 0);
-	swing(&p, &s, &bg, 1000, MTR_UP_MS / 2, -30);
+	swing(&p, &s, &bg, 1000, MTR_UP_MS / 2, -55);
 	CHECK(p.snap == YD(0.25));
 	/* no clicks after the start: full power, then a mis-hit */
 	play_init(&p, h, g, 7);
@@ -1111,7 +1118,7 @@ static void meter_tests(const Hole *h, const SurfaceGrid *g)
 	play_key(&p, KEY_SELECT, 1000);
 	for (t = 1000; t < 4000 && p.state != PS_FLY; t += 20) play_frame(&p, &s, &bg, t);
 	CHECK(p.state == PS_FLY && p.mishit && p.power == FIX_ONE && p.snap == -FIX_ONE);
-	CHECK(t > 1000 + MTR_UP_MS + MTR_DOWN_MS);
+	CHECK(t > 1000 + MTR_UP_MS + MTR_GREY_DOWN_MS);
 	/* the map with the path, and back */
 	for (; t < 40000 && p.state != PS_RESULT; t += 30) play_frame(&p, &s, &bg, t);
 	CHECK(play_key(&p, KEY_OTHER, t) == 0);

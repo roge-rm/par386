@@ -48,9 +48,10 @@ static void SEC_DANA box(Surface *s, int16_t x, int16_t y, int16_t w, const char
 {
 	int16_t n = 0, room = (w - 4) / UI_CHAR;
 	while (n < room && t[n]) n++;
-	ui_fill(s, x, y, w, BOX_H, active ? UIC_BRASS : UIC_TITLE);
-	ui_bevel(s, x, y, w, BOX_H, active ? UIC_BRASS_LT : UIC_INK, active ? UIC_BRASS_DK : UIC_WHITE);
-	ui_ctext(s, x + w / 2, y + 3, t, n, active ? UIC_INK : UIC_PAPER, -1);
+	ui_fill(s, x, y, w, BOX_H, active ? UIC_BRASS : s->depth < 8 ? UIC_WHITE : UIC_TITLE);
+	ui_bevel(s, x, y, w, BOX_H, s->depth < 8 || !active ? UIC_INK : UIC_BRASS_LT,
+	         s->depth < 8 || active ? UIC_BRASS_DK : UIC_WHITE);
+	ui_ctext(s, x + w / 2, y + 3, t, n, s->depth < 8 || active ? UIC_INK : UIC_PAPER, -1);
 }
 
 static void SEC_DANA well(Surface *s, int16_t y, const char *t, uint8_t active)
@@ -258,25 +259,33 @@ static uint8_t SEC_DANA left_draw(DanaPanels *d, Surface *s, const Play *p, uint
 	return DANA_LEFT;
 }
 
-static int16_t SEC_DANA meter_x(int16_t pos)
+static int16_t SEC_UI meter_x(int16_t pos)
 {
 	return (int16_t)(4 + (int32_t)pos * (DANA_RAIL_W - 8) / (MTR_W * 16));
 }
 
-static void SEC_DANA meter(Surface *s, const Play *p)
+static void SEC_UI meter(Surface *s, const Play *p)
 {
 	int16_t snap = meter_x(MTR_SNAP * 16);
 	int16_t mark_x = meter_x(p->mpos), power_x = meter_x(p->state == PS_UP ? p->mpos : p->turn);
+	int16_t split = mark_x < snap ? snap : mark_x;
 	ui_fill(s, 2, DANA_METER_Y, RAIL_IN, DANA_METER_H, UIC_TITLE);
 	ui_bevel(s, 2, DANA_METER_Y, RAIL_IN, DANA_METER_H, UIC_INK, UIC_WHITE);
 	ui_fill(s, 3, DANA_METER_Y + 3, RAIL_IN - 2, 7, UIC_BLACK);
-	if (power_x > snap) ui_fill(s, snap, DANA_METER_Y + 4, power_x - snap, 5, UIC_BRASS);
+	if (split > snap) ui_fill(s, snap, DANA_METER_Y + 4, split - snap, 5, UIC_BRASS);
+	if (power_x > split) ui_fill(s, split, DANA_METER_Y + 4, power_x - split, 5, UIC_BRASS_LT);
 	ui_fill(s, snap, DANA_METER_Y + 2, 1, BOX_H - 4, UIC_TEXT_HI);
 	if (p->club == CLUB_PT) {
 		int16_t pace = meter_x((MTR_SNAP + p->putt_tick) * 16);
 		ui_fill(s, pace, DANA_METER_Y + 8, 1, 4, UIC_TEE);
 	}
-	ui_fill(s, mark_x, DANA_METER_Y + 2, 1, BOX_H - 4, UIC_WHITE);
+	if (s->depth < 8 && p->state == PS_DOWN) {
+		/* Keep the marker inside the well at either end of the track. */
+		if (mark_x < 5) mark_x = 5;
+		if (mark_x > DANA_RAIL_W - 6) mark_x = DANA_RAIL_W - 6;
+		ui_fill(s, mark_x - 2, DANA_METER_Y + 2, 5, BOX_H - 4, UIC_WHITE);
+		ui_fill(s, mark_x - 1, DANA_METER_Y + 3, 3, BOX_H - 6, UIC_BLACK);
+	} else ui_fill(s, mark_x, DANA_METER_Y + 2, 1, BOX_H - 4, UIC_WHITE);
 }
 
 static int16_t SEC_DANA wrap(Surface *s, int16_t y, const char *t)

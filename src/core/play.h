@@ -56,6 +56,7 @@ enum { PS_AIM, PS_UP, PS_DOWN, PS_FLY, PS_RESULT, PS_DONE };
 #define MTR_SNAP   16   /* the snap line, from the bar's left */
 #define MTR_UP_MS  1000 /* the snap line to full power */
 #define MTR_DOWN_MS 750 /* full power back to the snap line */
+#define MTR_GREY_DOWN_MS 1200 /* full power back to snap on greyscale LCDs */
 #define MTR_SNAP_MS 80  /* this far off the snap line past a 10 ms window is a full miss */
 #define MTR_GRACE_MS 120 /* a press this soon after the meter turns back by itself is the power press at full */
 
